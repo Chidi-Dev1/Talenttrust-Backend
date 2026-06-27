@@ -96,6 +96,12 @@ function forbidden(res: Response, message = "Forbidden"): void {
  * Validates the `Authorization: Bearer <token>` header using `jsonwebtoken`.
  * On success, attaches a typed `User` to `req.user`.
  *
+ * Security notes:
+ *  - Accepts ONLY HS256-signed JWTs (algorithm pinned via JWT_VERIFY_OPTIONS).
+ *  - Required claims: `sub` (user id), `email`, and `role`.
+ *  - `role` is validated against the platform allowlist (admin, auditor, client, freelancer).
+ *  - `alg: none` and other algorithms are rejected before signature verification.
+ *
  * Failure cases (all → HTTP 401):
  *  - Missing or malformed `Authorization` header
  *  - Token signature invalid (wrong secret / tampered payload)
