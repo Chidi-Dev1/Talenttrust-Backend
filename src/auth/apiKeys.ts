@@ -128,6 +128,48 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
 }
 
 /**
+ * Validates that a stored credential is a well-formed salt:hash string.
+ *
+ * The stored format must be: `<salt>:<hash>`
+ * - Salt must be 32 hex characters (16 bytes)
+ * - Hash must be 128 hex characters (64 bytes)
+ *
+ * This validation runs BEFORE calling PBKDF2 to fail closed on malformed
+ * stored values (e.g., from botched migrations) rather than risk exceptions
+ * on the authentication hot path.
+ *
+ * @param storedCredential - The stored credential to validate.
+ * @returns True if the format is valid, false otherwise.
+ */
+function isValidSaltHashFormat(storedCredential: string): boolean {
+  // Must not be empty and must contain exactly one colon separator
+  if (!storedCredential || storedCredential.indexOf(':') === -1) {
+    return false;
+  }
+
+  const parts = storedCredential.split(':');
+
+  // Must have exactly 2 parts (salt and hash, no extra colons)
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const [salt, hash] = parts;
+
+  // Both parts must be present and non-empty
+  if (!salt || !hash) {
+    return false;
+  }
+
+  // Salt: 16 bytes = 32 hex characters
+  // Hash: 64 bytes = 128 hex characters (PBKDF2 with sha256, 10000 iterations, 64 output)
+  const isValidSalt = /^[a-f0-9]{32}$/i.test(salt);
+  const isValidHash = /^[a-f0-9]{128}$/i.test(hash);
+
+  return isValidSalt && isValidHash;
+}
+
+/**
  * Validates an API key and returns the associated key info if valid.
  *
  * @param apiKey - The plain API key to validate.
@@ -136,10 +178,10 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
 export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null> {
   // Compute the deterministic selector for O(1) indexed lookup
   const selector = computeKeySelector(apiKey);
-  
+
   // Try indexed lookup first (fast path, O(1) via key_selector)
   let dbKey = await database.getApiKeyBySelector(selector);
-  
+
   // Fallback: scan legacy keys that predate the key_selector index
   if (!dbKey) {
     const db = await (database as any).loadDatabase();
@@ -147,13 +189,22 @@ export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null>
       (k: ApiKey) => !k.key_selector && k.is_active
     );
   }
-  
+
   if (!dbKey) {
     return null;
   }
-  
-  // Verify with the slow salted hash (source of truth)
+
+  // Validate the stored credential format BEFORE splitting and calling PBKDF2
+  // This fails closed on malformed input (empty, missing separator, wrong hex length)
+  // rather than risking exceptions on the authentication hot path
+  if (!isValidSaltHashFormat(dbKey.key_hash)) {
+    return null;
+  }
+
+  // Split the validated format
   const [salt, hash] = dbKey.key_hash.split(':');
+
+  // Verify with the slow salted hash (source of truth)
   if (!verifyApiKey(apiKey, salt, hash)) {
     return null;
   }
