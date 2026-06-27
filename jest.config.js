@@ -5,19 +5,19 @@ module.exports = {
     '/node_modules/',
     'queue-manager.test.ts',
     'queue-manager.dedupe.test.ts',
-    'reputation-recompute-processor.test.ts',
+    // 'reputation-recompute-processor.test.ts', — re-enabled: real paginated query
     'retry-manager.test.ts',
     'api/jobs.test',
     'tests/load',
     'tests/stress',
-    'webhookDelivery.test.ts',
+    // 'webhookDelivery.test.ts',
     'reputation-scheduler.service.test.ts',
     'occ.integration.test.ts',
     'deployment/integration.test.ts',
     'retention/integration.test.ts',
     'contractMetadata.integration.test.ts',
     'requestLogger.test.ts',
-    'reputation.controller.test.ts',
+    // 'reputation.controller.test.ts', — re-enabled: rating range validation tests
     'validate.middleware.test.ts',
     'src/auth/__tests__/roles.test.ts',
     'src/config/config.test.ts',
@@ -30,8 +30,7 @@ module.exports = {
     'src/middleware/auth.test.ts',
     'src/rateLimit.integration.test.ts',
     'src/repositories/contracts.repository.test.ts',
-    'src/repositories/reputationRepository.test.ts',
-    'src/routes/admin.routes.test.ts',
+    // 'src/repositories/reputationRepository.test.ts', — re-enabled: getDistinctTargetIdPage coverage
     'src/routes/reputation.api.test.ts',
     'src/services/contracts.service.test.ts',
     // 'src/services/reputation.service.test.ts', — re-enabled: anti-abuse guard tests

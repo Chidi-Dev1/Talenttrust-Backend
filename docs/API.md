@@ -715,11 +715,12 @@ Rules:
 
 ## Sensitive Data Protection
 
-Metadata marked as `is_sensitive: true` is automatically masked for unauthorized users:
+Metadata marked as `is_sensitive: true` is strictly protected using a **fail-closed** masking policy:
 
-- **Owners** (users who created the metadata) can see the actual value
-- **Admins** can see all sensitive values
-- **Other users** see `***REDACTED***` instead of the actual value
+- **Owners** (users who created the metadata) can see the actual clear-text value
+- **Admins** can see all sensitive clear-text values
+- **Other authenticated users** see `***REDACTED***` instead of the actual value
+- **Unknown/Unauthenticated callers** (or any scenario where user context is missing) ALWAYS see `***REDACTED***` instead of the actual value
 
 ## Validation Rules
 

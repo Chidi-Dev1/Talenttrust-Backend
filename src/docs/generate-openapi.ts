@@ -12,7 +12,7 @@ import '../routes/contracts.routes';
 import '../routes/reputation.routes';
 import '../routes/health';
 
-export function generateOpenApiSpec() {
+export function generateOpenApiSpec(): any { {
   const generator = new OpenApiGeneratorV3(registry.definitions);
 
   const spec = generator.generateDocument({

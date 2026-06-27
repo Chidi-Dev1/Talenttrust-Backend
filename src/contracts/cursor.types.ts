@@ -14,6 +14,9 @@ export const CURSOR_MAX_LIMIT = 100;
 /** Default page size when the caller omits `limit`. */
 export const CURSOR_DEFAULT_LIMIT = 20;
 
+/** Maximum allowed length for an incoming opaque cursor string. */
+export const CURSOR_MAX_LENGTH = 256;
+
 /**
  * The decoded position of the last item on a returned page.
  * Both fields must be present for unambiguous ordering.
@@ -52,6 +55,9 @@ export interface CursorPage<T> {
   nextCursor: string | null;
   hasNextPage: boolean;
   limit: number;
+}
+
+/**
  * @notice Cursor checkpoint for resuming indexing from stable checkpoints.
  * @dev Cursor captures the last successfully indexed event sequence for a contract.
  *      Multiple sources (e.g., onchain blocks, API pagination) use cursors to resume safely.

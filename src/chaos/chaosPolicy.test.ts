@@ -123,6 +123,16 @@ describe('ChaosPolicy', () => {
 
       expect(policy.decide('contracts')).toBe('none');
     });
+
+    it('returns none for an unknown mode, falling back to default', () => {
+      const policy = new ChaosPolicy({
+        chaosMode: 'invalid_mode' as any,
+        chaosTargets: ['contracts'],
+        chaosProbability: 1,
+      });
+
+      expect(policy.decide('contracts')).toBe('none');
+    });
   });
 
   describe('probability logic in random mode', () => {

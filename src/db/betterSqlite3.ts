@@ -228,12 +228,16 @@ try {
     });
   };
 
+  const dbPathToState = new Map<string, Record<string, any[]>>();
+
   class MockDatabase {
     open: boolean;
     private _pragmaValues: Record<string, any> = {};
 
     constructor(_path: string) {
       this.open = true;
+      this.state = getDbState(_path);
+      this._state = this.state;
     }
 
     pragma(stmt: string, ..._args: any[]) {
@@ -266,11 +270,178 @@ try {
       return [];
     }
 
-    prepare(_sql: string) {
+    prepare(sql: string) {
+      const self = this;
+      const upperSql = sql.trim().replace(/\s+/g, ' ').toUpperCase();
+
       return {
-        run: (..._args: any[]) => ({ lastInsertRowid: 0, changes: 0 }),
-        get: (..._args: any[]) => undefined,
-        all: (..._args: any[]) => [],
+        run: (...args: any[]) => {
+          const flatArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+
+          // Handle parameterized INSERT
+          if (upperSql.startsWith('INSERT')) {
+            const tableMatch = sql.match(/INTO\s+(\w+)\s*\(([^)]+)\)/i);
+            if (tableMatch) {
+              const tableName = tableMatch[1].toLowerCase();
+              if (!self._state[tableName]) self._state[tableName] = [];
+              const cols = tableMatch[2].split(',').map((c: string) => c.trim().toLowerCase());
+              const newRow: any = {};
+              for (let i = 0; i < cols.length; i++) {
+                newRow[cols[i]] = flatArgs[i];
+              }
+              // UNIQUE constraint enforcement for dedupe_key
+              const isOrIgnore = upperSql.includes('OR IGNORE');
+              const isOrReplace = upperSql.includes('OR REPLACE');
+              const dedupeCol = 'dedupe_key';
+              if (newRow[dedupeCol] !== undefined) {
+                const existing = self._state[tableName].findIndex((r: any) => r[dedupeCol] === newRow[dedupeCol]);
+                if (existing !== -1) {
+                  if (isOrIgnore) return { lastInsertRowid: 0, changes: 0 };
+                  if (isOrReplace) {
+                    self._state[tableName][existing] = newRow;
+                    return { lastInsertRowid: 0, changes: 1 };
+                  }
+                  const err: any = new Error('UNIQUE constraint failed: ' + tableName + '.' + dedupeCol);
+                  err.code = 'SQLITE_CONSTRAINT_UNIQUE';
+                  throw err;
+                }
+              }
+              self._state[tableName].push(newRow);
+              return { lastInsertRowid: self._state[tableName].length, changes: 1 };
+            }
+          }
+
+          // Handle parameterized UPDATE
+          if (upperSql.startsWith('UPDATE')) {
+            const tableMatch = upperSql.match(/UPDATE\s+(\w+)\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$/);
+            if (tableMatch) {
+              const tableName = tableMatch[1].toLowerCase();
+              const rows = self._state[tableName] || [];
+              const whereClause = tableMatch[3];
+              let changes = 0;
+              const setClause = tableMatch[2];
+              const setCols = setClause.split(',').map((s: string) => s.split('=')[0].trim().toLowerCase());
+              const setParamCount = (setClause.match(/\?/g) || []).length;
+              const setParams = flatArgs.slice(0, setParamCount);
+              const whereParams = flatArgs.slice(setParamCount);
+              if (whereClause) {
+                rows.forEach((row: any) => {
+                  const idx = { value: 0 };
+                  const condParts = splitByAnd(whereClause);
+                  const matches = condParts.every((cond: string) => {
+                    cond = cond.trim();
+                    const m = cond.match(/^(\w+)\s*=\s*\?$/i);
+                    if (m) {
+                      return row[m[1].toLowerCase()] === whereParams[idx.value++];
+                    }
+                    return true;
+                  });
+                  if (matches) {
+                    for (let i = 0; i < setCols.length && i < setParamCount; i++) {
+                      row[setCols[i]] = setParams[i];
+                    }
+                    changes++;
+                  }
+                });
+              } else {
+                rows.forEach((row: any) => {
+                  for (let i = 0; i < setCols.length && i < setParamCount; i++) {
+                    row[setCols[i]] = setParams[i];
+                  }
+                  changes++;
+                });
+              }
+              return { lastInsertRowid: 0, changes };
+            }
+          }
+
+          // Handle parameterized DELETE
+          if (upperSql.startsWith('DELETE')) {
+            const tableMatch = sql.match(/DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+(.+))?/i);
+            if (tableMatch) {
+              const tableName = tableMatch[1].toLowerCase();
+              const rows = self._state[tableName] || [];
+              const whereClause = tableMatch[2];
+              if (whereClause) {
+                const before = rows.length;
+                self._state[tableName] = filterRows(rows, whereClause, flatArgs).length !== rows.length
+                  ? rows.filter((_: any, i: number) => !filterRows([rows[i]], whereClause, flatArgs).length ? false : true)
+                  : rows;
+                // Simpler: remove rows matching WHERE
+                const kept: any[] = [];
+                rows.forEach((row: any) => {
+                  const filtered = filterRows([row], whereClause, flatArgs);
+                  if (filtered.length === 0) kept.push(row);
+                });
+                self._state[tableName] = kept;
+                return { lastInsertRowid: 0, changes: before - kept.length };
+              } else {
+                const changes = rows.length;
+                self._state[tableName] = [];
+                return { lastInsertRowid: 0, changes };
+              }
+            }
+          }
+
+          return { lastInsertRowid: 0, changes: 0 };
+        },
+        get: (...args: any[]) => {
+          const flatArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+
+          // Handle COUNT(*) queries
+          if (upperSql.includes('COUNT(*)')) {
+            const tableMatch = sql.match(/FROM\s+(\w+)/i);
+            const table = tableMatch ? tableMatch[1].toLowerCase() : '';
+            const rows = self._state[table] || [];
+            const whereMatch = sql.match(/WHERE\s+(.+)/i);
+            if (whereMatch) {
+              const filtered = filterRows(rows, whereMatch[1], flatArgs);
+              return { count: filtered.length };
+            }
+            return { count: rows.length };
+          }
+          // Handle SELECT queries
+          if (upperSql.startsWith('SELECT')) {
+            const tableMatch = sql.match(/FROM\s+(\w+)/i);
+            const table = tableMatch ? tableMatch[1].toLowerCase() : '';
+            const rows = self._state[table] || [];
+            const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER|\s+LIMIT|$)/i);
+            if (whereMatch) {
+              const filtered = filterRows(rows, whereMatch[1], flatArgs);
+              return filtered[0];
+            }
+            return rows[0];
+          }
+          return undefined;
+        },
+        all: (...args: any[]) => {
+          const flatArgs = args.length === 1 && Array.isArray(args[0]) ? args[0] : args;
+          const tableMatch = sql.match(/FROM\s+(\w+)/i);
+          const table = tableMatch ? tableMatch[1].toLowerCase() : '';
+          const rows = self._state[table] || [];
+          const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER|\s+LIMIT|$)/i);
+          // Separate WHERE params from LIMIT/OFFSET params (LIMIT ? OFFSET ? consume last 2 params)
+          const limitParamCount = (sql.match(/LIMIT\s*\?/gi) || []).length;
+          const offsetParamCount = (sql.match(/OFFSET\s*\?/gi) || []).length;
+          const trailingParamCount = limitParamCount + offsetParamCount;
+          const whereParams = trailingParamCount > 0 ? flatArgs.slice(0, -trailingParamCount) : flatArgs;
+          const trailingParams = flatArgs.slice(flatArgs.length - trailingParamCount);
+          // LIMIT/OFFSET: from SQL literals, or from trailing params
+          let limitMatch = sql.match(/LIMIT\s+(\d+)/i);
+          let offsetMatch = sql.match(/OFFSET\s+(\d+)/i);
+          let limitVal = limitMatch ? parseInt(limitMatch[1], 10) : undefined;
+          let offsetVal = offsetMatch ? parseInt(offsetMatch[1], 10) : undefined;
+          // Consume trailing params for LIMIT ? OFFSET ?
+          let pi = 0;
+          if (sql.match(/LIMIT\s*\?/i)) limitVal = parseInt(String(trailingParams[pi++]), 10);
+          if (sql.match(/OFFSET\s*\?/i)) offsetVal = parseInt(String(trailingParams[pi++]), 10);
+          // Strip 1=1 (no-op) before filtering
+          const rawWhere = whereMatch ? whereMatch[1].replace(/^1\s*=\s*1\s*(AND\s*)?/i, '').trim() : '';
+          let result = rawWhere ? filterRows(rows, rawWhere, whereParams) : [...rows];
+          if (offsetVal !== undefined && !isNaN(offsetVal)) result = result.slice(offsetVal);
+          if (limitVal !== undefined && !isNaN(limitVal)) result = result.slice(0, limitVal);
+          return result;
+        },
         iterate: function* () {},
       };
     }
@@ -288,7 +459,7 @@ try {
             const tableState = this.state[table];
             if (tableState) {
               if (whereSql) {
-                const rowsToKeep = tableState.filter(row => {
+                const rowsToKeep = tableState.filter((row: any) => {
                   const paramIndex = { value: 0 };
                   const conditions = splitByAnd(whereSql);
                   for (const cond of conditions) {
@@ -354,11 +525,11 @@ try {
                 if (cleanUpper.includes('IGNORE')) {
                   let exists = false;
                   if (tableName === 'users') {
-                    exists = tableState.some(u => u.id === newRow.id || u.username === newRow.username || u.email === newRow.email);
+                    exists = tableState.some((u: any) => u.id === newRow.id || u.username === newRow.username || u.email === newRow.email);
                   } else if (tableName === 'reputation_entries') {
-                    exists = tableState.some(r => r.reviewer_id === newRow.reviewer_id && r.target_id === newRow.target_id && r.context_id === newRow.context_id);
+                    exists = tableState.some((r: any) => r.reviewer_id === newRow.reviewer_id && r.target_id === newRow.target_id && r.context_id === newRow.context_id);
                   } else if (tableName === 'contracts') {
-                    exists = tableState.some(c => c.id === newRow.id);
+                    exists = tableState.some((c: any) => c.id === newRow.id);
                   }
                   if (exists) continue;
                 }
@@ -373,7 +544,6 @@ try {
     transaction(fn: (...args: any[]) => any) {
       return fn;
     }
-    exec(_sql: string) {}
     close() { this.open = false; }
   }
   Database = MockDatabase as any;

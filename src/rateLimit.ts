@@ -67,6 +67,7 @@ export class TokenBucketLimiter {
   private readonly capacity: number;
   private readonly refillRatePerSec: number;
   private readonly store: RateLimitStoreInterface;
+  private samplingIntervalId: ReturnType<typeof setInterval> | null = null;
 
   /**
    * @param config - Parsed configuration.  Defaults to
@@ -96,8 +97,7 @@ export class TokenBucketLimiter {
    * @returns A promise that resolves when the caller may proceed with delivery.
    */
   public async acquireToken(providerId: string): Promise<void> {
-    try {
-      const { allowed } = await this.store.consume(providerId, this.capacity, this.refillRatePerSec);
+    const bucket = this.getOrCreateBucket(providerId);
 
     if (bucket.tokens >= 1) {
       bucket.tokens -= 1;
@@ -125,10 +125,9 @@ export class TokenBucketLimiter {
    * @param providerId - Opaque provider identifier.
    */
   public getTokenCount(providerId: string): number | Promise<number> {
-    if (this.store instanceof MemoryBucketStore) {
-      return this.store.getTokensSync(providerId, this.capacity, this.refillRatePerSec);
-    }
-    return this.store.getTokens(providerId, this.capacity, this.refillRatePerSec);
+    const bucket = this.getOrCreateBucket(providerId);
+    this.refillBucket(providerId);
+    return bucket.tokens;
   }
 
   /**
@@ -144,8 +143,8 @@ export class TokenBucketLimiter {
    * Close connections or clean up resources.
    */
   public async close(): Promise<void> {
-    if (this.store instanceof RedisBucketStore) {
-      await this.store.disconnect();
+    if (this.store && typeof (this.store as any).disconnect === 'function') {
+      await (this.store as any).disconnect();
     }
   }
 
@@ -172,9 +171,11 @@ export class TokenBucketLimiter {
     }
 
     const sample = () => {
-      for (const [providerId] of this.buckets) {
+      for (const providerId of this._sampledProviders) {
         const redactedProviderId = redactId(providerId);
-        const tokens = this.getTokenCount(providerId);
+        const tokens = typeof this.getTokenCount(providerId) === 'number'
+          ? (this.getTokenCount(providerId) as number)
+          : 0;
         const queueDepth = this.getQueueDepth(providerId);
 
         tokenGauge.set({ provider_id: redactedProviderId }, tokens);
@@ -210,9 +211,15 @@ export class TokenBucketLimiter {
   // -------------------------------------------------------------------------
 
   /**
+   * The sampled provider IDs whose token count / queue depth are reported to
+   * Prometheus gauges so the SLO evaluator and dashboards have data.
+   */
+  private readonly _sampledProviders = new Set<string>();
+
+  /**
    * Retrieve or lazily create the bucket state for a provider.
    */
-  private getBucket(providerId: string): TokenBucketEntry {
+  private getOrCreateBucket(providerId: string): TokenBucketEntry {
     const existing = this.store.getTokenBucket(providerId);
     if (existing) return existing;
 
@@ -222,6 +229,7 @@ export class TokenBucketLimiter {
       queue: [],
     };
     this.store.setTokenBucket(providerId, created);
+    this._sampledProviders.add(providerId);
     return created;
   }
 
@@ -265,26 +273,13 @@ export class TokenBucketLimiter {
    * then re-schedule if the queue is still non-empty.
    */
   private async drainQueue(providerId: string): Promise<void> {
-    const bucket = this.getOrCreateBucket(providerId);
+    this.refillBucket(providerId);
+    const bucket = this.getBucket(providerId);
 
-    while (bucket.queue.length > 0) {
-      try {
-        const { allowed } = await this.store.consume(providerId, this.capacity, this.refillRatePerSec);
-        if (allowed) {
-          const waiter = bucket.queue.shift()!;
-          waiter.resolve();
-        } else {
-          break;
-        }
-      } catch (err) {
-        console.error(`[rateLimit] Redis store consume error in drainQueue:`, err);
-        // Fail all pending waiters for this provider
-        while (bucket.queue.length > 0) {
-          const waiter = bucket.queue.shift()!;
-          waiter.reject(err instanceof Error ? err : new Error(String(err)));
-        }
-        break;
-      }
+    while (bucket.queue.length > 0 && bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      const resolve = bucket.queue.shift()!;
+      resolve();
     }
     this.store.setTokenBucket(providerId, bucket);
 

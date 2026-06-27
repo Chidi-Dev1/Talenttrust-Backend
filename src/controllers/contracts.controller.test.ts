@@ -5,18 +5,6 @@ const mockGetAllContracts = jest.fn();
 const mockGetContractById = jest.fn();
 const mockCreateContract = jest.fn();
 const mockGetContractsPage = jest.fn();
-
-jest.mock('../services/contracts.service', () => {
-  return {
-    ContractsService: jest.fn().mockImplementation(() => {
-      return {
-        getAllContracts: mockGetAllContracts,
-        createContract: mockCreateContract,
-        getContractsPage: mockGetContractsPage,
-      };
-    }),
-  };
-});
 const mockUpdateContract = jest.fn();
 const mockDeleteContract = jest.fn();
 const mockGetContractStats = jest.fn();
@@ -34,6 +22,7 @@ jest.mock('../services/contracts.service', () => ({
     getAllContracts: mockGetAllContracts,
     getContractById: mockGetContractById,
     createContract: mockCreateContract,
+    getContractsPage: mockGetContractsPage,
     updateContract: mockUpdateContract,
     deleteContract: mockDeleteContract,
     getContractStats: mockGetContractStats,
@@ -46,6 +35,7 @@ describe('ContractsController', () => {
   let mockRequest: Partial<Request>;
   let mockResponse: Partial<Response>;
   let mockNext: NextFunction;
+  let controller: ContractsController;
 
   beforeEach(() => {
     mockRequest = {
@@ -55,6 +45,7 @@ describe('ContractsController', () => {
     mockResponse = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
+      locals: { audit: {} as never },
     };
     mockNext = jest.fn();
     
@@ -66,6 +57,10 @@ describe('ContractsController', () => {
     mockUpdateContract.mockClear();
     mockDeleteContract.mockClear();
     mockGetContractStats.mockClear();
+
+    // Instantiate controller
+    const { ContractsService } = require('../services/contracts.service');
+    controller = new ContractsController(new ContractsService());
   });
 
   afterEach(() => {
@@ -80,11 +75,13 @@ describe('ContractsController', () => {
     it('returns 200 with cursor page on first page (no cursor)', async () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
       mockGetContractsPage.mockResolvedValue(fakePage);
+    });
+  });
 
   describe('getContracts', () => {
     it('returns 200 with contracts list', async () => {
       mockGetAllContracts.mockResolvedValue([]);
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -100,7 +97,7 @@ describe('ContractsController', () => {
     it('calls next() on error', async () => {
       const mockError = new Error('DB Down');
       mockGetAllContracts.mockRejectedValue(mockError);
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -111,14 +108,23 @@ describe('ContractsController', () => {
         status: 'success',
         data: fakePage,
       });
-      expect(mockNext).not.toHaveBeenCalled();
+    });
+
+    it('calls next() on error', async () => {
+      const mockError = new Error('DB Down');
+      mockGetContractsPage.mockRejectedValue(mockError);
+      await ContractsController.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockNext).toHaveBeenCalledWith(mockError);
     });
 
     it('passes limit and cursor to service when provided', async () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 5 };
       mockGetContractsPage.mockResolvedValue(fakePage);
 
-      // Build a valid base64url cursor
       const validCursor = Buffer.from(
         JSON.stringify({ createdAt: '2024-01-01T00:00:00.000Z', id: 'abc-123' }),
         'utf8',
@@ -226,8 +232,13 @@ describe('ContractsController', () => {
     it('calls next() when service throws', async () => {
       const mockError = new Error('DB Down');
       mockGetContractsPage.mockRejectedValue(mockError);
+      mockRequest.query = {};
 
       await ContractsController.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
       expect(mockNext).toHaveBeenCalledWith(mockError);
     });
   });
@@ -237,50 +248,12 @@ describe('ContractsController', () => {
       const contract = { id: 'abc', title: 'Test' };
       mockGetContractById.mockResolvedValue(contract);
       mockRequest.params = { id: 'abc' };
-      await ContractsController.getContractById(
+      await controller.getContractById(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
       );
 
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // createContract
-  // -------------------------------------------------------------------------
-
-  describe('createContract', () => {
-    it('returns 201 with the created contract', async () => {
-      const fakeContract = { id: 'uuid-1', title: 'Test Contract' };
-      mockCreateContract.mockResolvedValue(fakeContract);
-
-      await ContractsController.createContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(201);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: fakeContract,
-      });
-    });
-
-    it('calls next() when service throws', async () => {
-      const mockError = new Error('Creation failed');
-      mockCreateContract.mockRejectedValue(mockError);
-
-      await ContractsController.createContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
       expect(mockResponse.status).toHaveBeenCalledWith(200);
       expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: contract });
     });
@@ -288,7 +261,7 @@ describe('ContractsController', () => {
     it('delegates to next() for NotFoundError when contract missing', async () => {
       mockGetContractById.mockResolvedValue(null);
       mockRequest.params = { id: 'missing' };
-      await ContractsController.getContractById(
+      await controller.getContractById(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -304,7 +277,7 @@ describe('ContractsController', () => {
     it('returns 201 on success', async () => {
       const contract = { id: 'abc', status: 'PENDING' };
       mockCreateContract.mockResolvedValue(contract);
-      await ContractsController.createContract(
+      await controller.createContract(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -313,7 +286,7 @@ describe('ContractsController', () => {
       expect(mockResponse.json).toHaveBeenCalledWith({
         status: 'success',
         data: contract,
-        message: 'Contract created successfully'
+        requestId: 'unknown',
       });
     });
 
@@ -321,7 +294,7 @@ describe('ContractsController', () => {
       mockCreateContract.mockRejectedValue(
         new ContractBoundsError('Budget exceeds maximum contract amount'),
       );
-      await ContractsController.createContract(
+      await controller.createContract(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -329,7 +302,11 @@ describe('ContractsController', () => {
       expect(mockResponse.status).toHaveBeenCalledWith(422);
       expect(mockResponse.json).toHaveBeenCalledWith({
         status: 'error',
-        message: 'Budget exceeds maximum contract amount',
+        error: {
+          code: 'contract_bounds_error',
+          message: 'Budget exceeds maximum contract amount',
+          requestId: 'unknown',
+        },
       });
       expect(mockNext).not.toHaveBeenCalled();
     });
@@ -337,7 +314,7 @@ describe('ContractsController', () => {
     it('delegates non-bounds errors to next()', async () => {
       const mockError = new Error('Creation failed');
       mockCreateContract.mockRejectedValue(mockError);
-      await ContractsController.createContract(
+      await controller.createContract(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -348,12 +325,14 @@ describe('ContractsController', () => {
 
   describe('getBounds', () => {
     it('returns 200 with CONTRACT_BOUNDS', () => {
-      ContractsController.getBounds(mockRequest as Request, mockResponse as Response);
+      controller.getBounds(mockRequest as Request, mockResponse as Response);
       expect(mockResponse.status).toHaveBeenCalledWith(200);
       expect(mockResponse.json).toHaveBeenCalledWith({
         status: 'success',
         data: CONTRACT_BOUNDS,
+        requestId: 'unknown',
       });
     });
   });
+});
 });

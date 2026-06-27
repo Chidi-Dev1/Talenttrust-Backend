@@ -23,7 +23,7 @@ const contractBaseSchema = {
 
 // Create contract schema with strict validation
 export const createContractSchema = z.object({
-  body: z.object(contractBaseSchema).strict(),
+  body: z.object(contractBaseSchema),
 });
 
 // Update contract schema with partial fields for PATCH and OCC version
@@ -45,7 +45,7 @@ export const updateContractSchema = z.object({
       deadline: z.string().datetime().optional(),
       completed: z.boolean().default(false),
     })).optional(),
-  }).strict(),
+  }),
 });
 
 // Query parameters schema for filtering and pagination

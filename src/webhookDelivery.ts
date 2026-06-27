@@ -12,6 +12,7 @@ import {
   CircuitOpenError,
   CircuitState,
 } from './circuit-breaker';
+import { WebhookRetryConfig } from './appConfiguration';
 import {
   BREAKER_STATE_VALUES,
   createWebhookMetrics,
@@ -178,19 +179,6 @@ export class WebhookDeliveryService {
         this.metrics.deliveryRetriesTotal.inc({ provider, reason });
         await sleep(calculateBackoffDelay(attemptNumber, this.retryConfig));
       }
-      errorType = errWithStatus.code ?? 'unknown';
-
-      const { status, reason } = getLabelValues(statusCode, errorType);
-      const durationSeconds = endTimer({ status });
-
-      this.metrics.deliveryAttemptsTotal.inc({ status, provider, reason });
-      this.emitBreakerState(provider, breaker);
-
-      return {
-        success: false,
-        statusCode,
-        durationSeconds,
-      };
     }
 
     return { success: false, durationSeconds: 0 };

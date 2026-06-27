@@ -7,12 +7,20 @@
  * - timingSafeEqual is used for all secret comparisons to prevent timing attacks.
  * - Refresh tokens are stored as SHA-256 hashes; the raw token is never persisted.
  * - All error paths return the same generic message to prevent user-enumeration.
- * - JWTs are HS256, signed with JWT_SECRET, payload shape: { sub, email, role }.
+ * - JWTs are signed with HS256, payload shape: { sub, email, role }. The
+ *   signing algorithm is sourced from `JWT_SIGN_ALGORITHMS` in
+ *   `auth/jwtConfig.ts` so a future rotation is a one-file edit.
+ * - All verification on the auth path passes the centralized `JWT_VERIFY_OPTIONS`
+ *   allowlist, which pins the accepted signature algorithms to HS256. This
+ *   blocks `alg: none`, HS/RS confusion, and any future algorithm the
+ *   platform might be tricked into honouring. The allowlist lives in
+ *   `auth/jwtConfig.ts` so a single edit governs every verifier.
  */
 
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from "crypto";
 import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
+import { JWT_VERIFY_OPTIONS, JWT_SIGN_ALGORITHMS } from "../auth/jwtConfig";
 
 const SCRYPT_KEYLEN = 64;
 const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1 };
@@ -76,13 +84,16 @@ function hashRefreshToken(raw: string): string {
 function issueTokens(user: { id: string; email: string; role: string }): AuthTokens {
   const payload: TokenPayload = { sub: user.id, email: user.email, role: user.role };
   const secret = getSecret();
+  // Sign with HS256 (the only algorithm accepted by JWT_VERIFY_OPTIONS).
+  // Using a typed constant here makes a future algorithm change a single
+  // edit in `auth/jwtConfig.ts`.
   const accessToken = jwt.sign(payload, secret, {
-    algorithm: "HS256",
+    algorithm: JWT_SIGN_ALGORITHMS[0],
     expiresIn: ACCESS_TOKEN_TTL,
   });
   const rawRefresh = randomBytes(REFRESH_TOKEN_BYTES).toString("hex");
   const refreshToken = jwt.sign({ sub: user.id, tok: rawRefresh }, secret, {
-    algorithm: "HS256",
+    algorithm: JWT_SIGN_ALGORITHMS[0],
     expiresIn: REFRESH_TOKEN_TTL,
   });
   return { accessToken, refreshToken };
@@ -164,7 +175,7 @@ export class AuthService {
     const valid = verifyPassword(password, storedHash);
 
     if (!row || !valid) {
-      const err = new Error("Invalid email or password.");
+      const err = new Error("Authentication failed.");
       (err as NodeJS.ErrnoException).code = "invalid_credentials";
       throw err;
     }
@@ -197,7 +208,12 @@ export class AuthService {
 
     let decoded: jwt.JwtPayload;
     try {
-      decoded = jwt.verify(refreshToken, getSecret(), { algorithms: ["HS256"] }) as jwt.JwtPayload;
+      // Use the centralized JWT_VERIFY_OPTIONS so this verifier agrees
+      // with the rest of the auth path on exactly which signature
+      // algorithms are accepted. The allowlist is sourced from
+      // `auth/jwtConfig.ts` to make a future edit (e.g. rotating to
+      // RS256) a one-file change.
+      decoded = jwt.verify(refreshToken, getSecret(), JWT_VERIFY_OPTIONS) as jwt.JwtPayload;
     } catch {
       invalidErr();
     }

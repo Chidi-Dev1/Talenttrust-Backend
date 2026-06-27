@@ -42,7 +42,7 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
 
   // Secrets
-  JWT_SECRET: z.string(), // Required in non-test environments, validated by superRefine
+  JWT_SECRET: z.string().optional(), // Required in non-test environments, validated by superRefine
   // Compliance audit HMAC secret – required for proof generation.
   COMPLIANCE_AUDIT_SECRET: z.string()
     .min(32, "COMPLIANCE_AUDIT_SECRET must be at least 32 characters")
@@ -107,6 +107,11 @@ export const envSchema = z.object({
     .transform((val) => val ? val.split(',').map(p => p.trim()) : undefined)
     .pipe(z.array(z.string()).optional()),
 
+  IDEMPOTENCY_TTL_MS: z.string()
+    .optional()
+    .transform((val) => val === undefined ? undefined : parseInt(val, 10))
+    .pipe(z.number().int().positive().optional()),
+
   ROUTE_BODY_LIMITS: z.string()
     .optional()
     .refine(val => {
@@ -146,21 +151,20 @@ export const envSchema = z.object({
 
   REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
     .default('exp-decay-v1'),
-  .superRefine((obj, ctx) => {
-    if (obj.NODE_ENV !== 'test') {
-      if (!obj.JWT_SECRET) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['JWT_SECRET'],
-          message: 'JWT_SECRET is required in non-test environments',
-        });
-      } else if (obj.JWT_SECRET.length < 32) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['JWT_SECRET'],
-          message: 'JWT_SECRET must be at least 32 characters in non-test environments',
-        });
-      }
+}).superRefine((obj, ctx) => {
+  if (obj.NODE_ENV !== 'test') {
+    if (!obj.JWT_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message: 'JWT_SECRET is required in non-test environments',
+      });
+    } else if (obj.JWT_SECRET.length < 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message: 'JWT_SECRET must be at least 32 characters in non-test environments',
+      });
     }
   });
 

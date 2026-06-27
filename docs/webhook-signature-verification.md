@@ -1,6 +1,6 @@
 # Webhook Signature Verification
 
-This document explains how to verify webhook signatures sent by the Talenttrust Backend using HMAC-SHA256 signing.
+This document outlines the security assumptions, design principles, and implementation details for the webhook signature verification system in the TalentTrust backend.
 
 ## Overview
 

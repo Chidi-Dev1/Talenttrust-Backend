@@ -285,3 +285,71 @@ No existing bugs or missing `createdAt` fields were found during reconnaissance.
 - **Dispute mechanism**: Allow users to contest fraudulent or retaliatory ratings
 - **Configurable decay models**: Support alternative decay functions (linear, logarithmic, step-wise)
 - **Time-windowed scoring**: Compute scores over rolling time windows (e.g., last 90 days only)
+
+---
+
+## Bulk Recompute Flow
+
+The `REPUTATION_RECOMPUTE` background job recomputes scores for **every subject** that has at least one rating in the database.
+
+### Entry point
+
+`src/queue/processors/reputation-recompute-processor.ts` — `processReputationRecompute(payload, repo)`
+
+The function accepts an injected `ReputationRepository` instance so it can be tested without a live database.
+
+### Paginated subject enumeration
+
+Instead of loading all subject IDs into memory, the processor streams them in pages using an async generator:
+
+```
+freelancerIdPages(repo, pageSize)
+  └─ calls repo.getDistinctTargetIdPage(limit, offset) repeatedly
+       until an empty page is returned
+```
+
+`getDistinctTargetIdPage` issues:
+
+```sql
+SELECT DISTINCT target_id
+FROM reputation_entries
+ORDER BY target_id
+LIMIT ? OFFSET ?
+```
+
+The deterministic `ORDER BY target_id` guarantees stable pages across multiple calls during the same run.
+
+### Per-subject processing
+
+For each subject ID on a page:
+
+1. Call `ReputationService.getProfile(targetId)` — this aggregates all entries from the DB, computes the arithmetic mean (`score`) and the recency-weighted mean (`weightedScore`).
+2. If `forceRecompute` is `false` and `profile.lastUpdated` is within the last 24 hours, the subject is skipped (stale-while-revalidate optimisation).
+3. The returned profile is persisted to the in-memory `reputationStore` via `reputationStore.set(profile)`.
+4. `reputationCheckpointStore.updateProgress(checkpointJobId, targetId)` records the last successfully processed subject.
+
+A failure on any single subject is **caught, logged, and skipped** — it does not abort the batch. This preserves the per-subject error isolation guarantee.
+
+### Checkpointing
+
+| Action | When |
+|---|---|
+| `createCheckpoint` | Once per job run (or reuses the active checkpoint when `resumeFromCheckpoint: true`) |
+| `updateProgress` | After each successfully processed subject |
+| `markCompleted` | After the last page is drained (including the empty-store case) |
+
+If a run is interrupted before `markCompleted`, the checkpoint remains in `running` state. A subsequent run with `resumeFromCheckpoint: true` will pick up that checkpoint and continue from where it left off.
+
+### Payload options
+
+| Field | Default | Description |
+|---|---|---|
+| `batchSize` | `100` | Page size for `getDistinctTargetIdPage` |
+| `forceRecompute` | `false` | When `true`, skip the 24-hour recency guard |
+| `resumeFromCheckpoint` | `true` | When `true`, resume from an existing active checkpoint |
+
+### Edge cases
+
+- **Empty store** — the generator yields nothing; the job returns `totalProcessed: 0` without error.
+- **All subjects fresh** — with `forceRecompute: false`, all subjects are skipped; `totalProcessed: 0`, job succeeds.
+- **Single failing subject** — isolated; the rest of the batch continues.

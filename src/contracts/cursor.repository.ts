@@ -12,7 +12,8 @@
  */
 
 import type { CursorPosition } from './cursor.types';
-import { CURSOR_MAX_LIMIT, CURSOR_DEFAULT_LIMIT } from './cursor.types';
+import { CURSOR_MAX_LIMIT, CURSOR_DEFAULT_LIMIT, CURSOR_MAX_LENGTH } from './cursor.types';
+import { IndexerCursor, CursorUpdateResult, CursorResumeResult, CursorResumeRequest } from './cursor.types';
 
 /**
  * Encodes a {@link CursorPosition} into an opaque base-64 string suitable for
@@ -29,11 +30,24 @@ export function encodeCursor(position: CursorPosition): string {
 /**
  * Decodes a cursor string previously produced by {@link encodeCursor}.
  *
+ * Enforces a maximum length of {@link CURSOR_MAX_LENGTH} characters and strict
+ * base64url charset validation before performing any buffer allocations or
+ * JSON parsing to prevent DoS via excessively large or malformed inputs.
+ *
  * @param cursor - The opaque cursor string from the client.
  * @returns The decoded {@link CursorPosition}.
- * @throws {Error} When the cursor is malformed, tampered, or missing required fields.
+ * @throws {Error} When the cursor is malformed, oversized, tampered, or missing required fields.
  */
 export function decodeCursor(cursor: string): CursorPosition {
+  if (typeof cursor !== 'string' || cursor.length > CURSOR_MAX_LENGTH) {
+    throw new Error('Invalid pagination cursor: malformed');
+  }
+
+  // Base64url strict charset (RFC 4648 §5). Rejects padding (=), whitespace, or other encodings.
+  if (!/^[A-Za-z0-9_-]+$/.test(cursor)) {
+    throw new Error('Invalid pagination cursor: malformed');
+  }
+
   let parsed: unknown;
   try {
     const json = Buffer.from(cursor, 'base64url').toString('utf8');
@@ -83,6 +97,8 @@ export function parseLimit(raw: unknown): number {
     );
   }
   return n;
+}
+
 import { IndexerCursor, CursorUpdateResult, CursorResumeResult, CursorResumeRequest } from './cursor.types';
 
 /**

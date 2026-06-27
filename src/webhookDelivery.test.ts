@@ -135,7 +135,7 @@ async function tripBreaker(
 ): Promise<void> {
   const failingClient = jest
     .fn()
-    .mockRejectedValue(Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }));
+    .mockResolvedValue({ statusCode: 400 });
   for (let i = 0; i < count; i++) {
     await service.deliver(payload, failingClient);
   }
@@ -319,7 +319,7 @@ describe('WebhookDeliveryService', () => {
       const dlqCallback = jest.fn(async (entry: DLQEntry) => {
         dlqEntries.push(entry);
       });
-      const service = makeService(registry, defaultRetryConfig, dlqCallback);
+      const service = makeService(registry, {}, defaultRetryConfig, dlqCallback);
       const httpClient = jest.fn().mockResolvedValue({ statusCode: 500 });
 
       const result = await service.deliver(basePayload, httpClient);
@@ -425,7 +425,7 @@ describe('WebhookDeliveryService', () => {
       const dlqCallback = jest.fn(async (entry: DLQEntry) => {
         dlqEntries.push(entry);
       });
-      const service = makeService(registry, defaultRetryConfig, dlqCallback);
+      const service = makeService(registry, {}, defaultRetryConfig, dlqCallback);
       const err = Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
       const httpClient = jest.fn().mockRejectedValue(err);
 
@@ -477,7 +477,7 @@ describe('WebhookDeliveryService', () => {
         multiplier: 3, // High multiplier to exceed max quickly
         jitterFactor: 0.1,
       };
-      const service = makeService(registry, fastRetryConfig);
+      const service = makeService(registry, {}, fastRetryConfig);
       const timings: number[] = [];
       const httpClient = jest.fn(async () => {
         timings.push(Date.now());
@@ -601,7 +601,7 @@ describe('WebhookDeliveryService', () => {
       const dlqCallback = jest.fn(async () => {
         throw new Error('DLQ storage failed');
       });
-      const service = makeService(registry, defaultRetryConfig, dlqCallback);
+      const service = makeService(registry, {}, defaultRetryConfig, dlqCallback);
       const httpClient = jest.fn().mockResolvedValue({ statusCode: 500 });
 
       const result = await service.deliver(basePayload, httpClient);
@@ -614,7 +614,7 @@ describe('WebhookDeliveryService', () => {
 
     it('records failure even if DLQ callback is not set', async () => {
       const registry = makeRegistry();
-      const service = makeService(registry, defaultRetryConfig, undefined);
+      const service = makeService(registry, {}, defaultRetryConfig, undefined);
       const httpClient = jest.fn().mockResolvedValue({ statusCode: 500 });
 
       const result = await service.deliver(basePayload, httpClient);
@@ -715,7 +715,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
       const service = makeService(registry, { failureThreshold: 3 });
       const failingClient = jest
         .fn()
-        .mockRejectedValue(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
+        .mockResolvedValue({ statusCode: 400 });
 
       // 2 failures — still CLOSED
       await service.deliver(basePayload, failingClient);
@@ -732,7 +732,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
       const service = makeService(registry, { failureThreshold: 3 });
       const failingClient = jest
         .fn()
-        .mockRejectedValue(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }));
+        .mockResolvedValue({ statusCode: 400 });
       const successClient = jest.fn().mockResolvedValue({ statusCode: 200 });
 
       await service.deliver(basePayload, failingClient);
@@ -916,7 +916,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
 
       const failingClient = jest
         .fn()
-        .mockRejectedValue(Object.assign(new Error('still down'), { code: 'ECONNREFUSED' }));
+        .mockResolvedValue({ statusCode: 400 });
       await service.deliver(basePayload, failingClient);
 
       expect(service.getBreakerState('stripe')).toBe('OPEN');
@@ -931,7 +931,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
       });
       const failingClient = jest
         .fn()
-        .mockRejectedValue(Object.assign(new Error('down'), { code: 'ECONNREFUSED' }));
+        .mockResolvedValue({ statusCode: 400 });
       const successClient = jest.fn().mockResolvedValue({ statusCode: 200 });
 
       // Trip to OPEN
@@ -1020,7 +1020,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
       const service = makeService(registry, { failureThreshold: 3 });
       const failingClient = jest
         .fn()
-        .mockRejectedValue(Object.assign(new Error('down'), { code: 'ECONNREFUSED' }));
+        .mockResolvedValue({ statusCode: 400 });
 
       // Trip via one unknown provider
       for (let i = 0; i < 3; i++) {
@@ -1044,7 +1044,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
   describe('non-2xx HTTP responses count as failures', () => {
     it('trips the breaker after repeated 500 responses', async () => {
       const registry = makeRegistry();
-      const service = makeService(registry, { failureThreshold: 3 });
+      const service = makeService(registry, { failureThreshold: 3 }, { maxAttempts: 1 });
       const serverErrorClient = jest.fn().mockResolvedValue({ statusCode: 500 });
 
       await service.deliver(basePayload, serverErrorClient);
@@ -1078,7 +1078,7 @@ describe('WebhookDeliveryService — circuit breaker', () => {
       });
       const failingClient = jest
         .fn()
-        .mockRejectedValue(Object.assign(new Error('down'), { code: 'ECONNREFUSED' }));
+        .mockResolvedValue({ statusCode: 400 });
       const successClient = jest.fn().mockResolvedValue({ statusCode: 200 });
 
       // CLOSED (0)
@@ -1096,5 +1096,94 @@ describe('WebhookDeliveryService — circuit breaker', () => {
       // After successful probe the breaker closes, so gauge should be 0
       expect(await getBreakerGaugeValue(registry, 'stripe')).toBe(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbound Webhook HMAC Verification Property Tests
+// ---------------------------------------------------------------------------
+
+import * as fc from 'fast-check';
+import {
+  constantTimeCompareHex,
+  verifyWebhookSignature,
+  WEBHOOK_SIGNATURE_HEX_LENGTH,
+  generateSignature,
+} from './utils/webhook-signing.util';
+
+describe('WebhookSignature Verification — Property Tests (fast-check)', () => {
+  const secret = 'property-test-webhook-secret-fast-check';
+  const now = 1_700_000_000_000;
+
+  it('accepts valid signatures and rejects forgeries (fuzzing signatures, payloads, and timestamps)', () => {
+    fc.assert(
+      fc.property(
+        fc.dictionary(fc.string(), fc.string()),
+        fc.integer({ min: -300_000, max: 300_000 }),
+        fc.option(fc.string(), { freq: 5, nil: undefined }),
+        fc.option(fc.integer(), { freq: 5, nil: undefined }),
+        fc.option(fc.string(), { freq: 5, nil: undefined }),
+        (fuzzedPayload, validOffset, tamperedSignature, tamperedTimestamp, tamperedSecret) => {
+          const timestamp = tamperedTimestamp ?? (now + validOffset);
+          const validSignature = generateSignature(fuzzedPayload, secret, timestamp);
+          const signatureToTest = tamperedSignature ?? validSignature;
+          const secretToTest = tamperedSecret ?? secret;
+          
+          const result = verifyWebhookSignature(
+            fuzzedPayload,
+            signatureToTest,
+            timestamp,
+            secretToTest,
+            { now }
+          );
+
+          if (
+            tamperedSignature === undefined &&
+            tamperedTimestamp === undefined &&
+            tamperedSecret === undefined &&
+            Math.abs(validOffset) <= 300_000
+          ) {
+            expect(result.valid).toBe(true);
+            expect(result.code).toBe('valid');
+          } else {
+            const isActuallyValid =
+              signatureToTest === validSignature &&
+              secretToTest === secret &&
+              timestamp >= now - 300_000 &&
+              timestamp <= now + 300_000 &&
+              Number.isFinite(timestamp);
+
+            if (!isActuallyValid) {
+              expect(result.valid).toBe(false);
+              expect(result.code).not.toBe('valid');
+              expect(result.message.length).toBeGreaterThan(0);
+              
+              if (secretToTest && secretToTest.length > 5) {
+                expect(result.message).not.toContain(secretToTest);
+              }
+              expect(result.message).not.toContain(validSignature);
+            }
+          }
+        }
+      ),
+      { seed: 0x277a11ce, numRuns: 400 }
+    );
+  });
+
+  it('constant-time comparison behaves correctly and routes errors', () => {
+    const spy = jest.spyOn(require('crypto'), 'timingSafeEqual');
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: 0, max: 15 }), { minLength: WEBHOOK_SIGNATURE_HEX_LENGTH, maxLength: WEBHOOK_SIGNATURE_HEX_LENGTH }).map(arr => arr.map(n => n.toString(16)).join('')),
+        fc.array(fc.integer({ min: 0, max: 15 }), { minLength: WEBHOOK_SIGNATURE_HEX_LENGTH, maxLength: WEBHOOK_SIGNATURE_HEX_LENGTH }).map(arr => arr.map(n => n.toString(16)).join('')),
+        (a: string, b: string) => {
+          spy.mockClear();
+          constantTimeCompareHex(a, b);
+          expect(spy).toHaveBeenCalled();
+        }
+      ),
+      { seed: 0x277a11ce, numRuns: 50 }
+    );
+    spy.mockRestore();
   });
 });

@@ -422,4 +422,83 @@ describe('TransactionPoller', () => {
       errorSpy.mockRestore();
     });
   });
+
+  describe('duration ceiling (maxTotalDurationMs)', () => {
+    it('throws an error if ceiling is set to an invalid value (<= 0, NaN, Infinity)', () => {
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, 0)).toThrow('maxTotalDurationMs must be a positive finite number');
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, -50)).toThrow('maxTotalDurationMs must be a positive finite number');
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, NaN)).toThrow('maxTotalDurationMs must be a positive finite number');
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, Infinity)).toThrow('maxTotalDurationMs must be a positive finite number');
+    });
+
+    it('transitions to TIMEOUT immediately if ceiling is reached before max retries', async () => {
+      const txHash = '0xceiling-timeout';
+      // Poller with a strict 200ms ceiling.
+      const ceilingPoller = new TransactionPoller(mockProvider, maxRetries, initialDelay, 200);
+      mockProvider.getTransactionReceipt.mockResolvedValue(null);
+
+      const pollPromise = ceilingPoller.poll(txHash);
+      
+      await flushMicrotasks();
+      expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
+
+      // Advance by 200ms, which hits the ceiling exactly
+      await advanceTimersAndFlush(200);
+
+      const stored = transactionsDb.get(txHash);
+      // Even though retryCount is 1 (maxRetries is 3), we hit the ceiling
+      expect(stored?.status).toBe(TransactionStatus.TIMEOUT);
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
+
+      await pollPromise;
+    });
+
+    it('transitions to TIMEOUT before the first retry if the initial delay itself exceeds the ceiling', async () => {
+      const txHash = '0xceiling-before-first-retry';
+      // Poller with a ceiling of 50ms, while initialDelay is 100ms.
+      const ceilingPoller = new TransactionPoller(mockProvider, maxRetries, 100, 50);
+      mockProvider.getTransactionReceipt.mockResolvedValue(null);
+
+      const pollPromise = ceilingPoller.poll(txHash);
+      
+      await flushMicrotasks();
+      // Initially, retryCount is 1 because of the first inline attempt.
+      expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
+
+      // The first delay scheduled will be 100 * 0.75 = 75ms.
+      // So let's advance time by 75ms to wake it up.
+      await advanceTimersAndFlush(75);
+
+      const stored = transactionsDb.get(txHash);
+      // On waking up at 75ms, elapsed time is 75 >= 50, so it immediately times out
+      // without incrementing retryCount or calling the provider again.
+      expect(stored?.status).toBe(TransactionStatus.TIMEOUT);
+      expect(stored?.retryCount).toBe(1);
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
+
+      await pollPromise;
+    });
+
+    it('does not transition to TIMEOUT if transaction completes before ceiling', async () => {
+      const txHash = '0xceiling-success';
+      const ceilingPoller = new TransactionPoller(mockProvider, maxRetries, initialDelay, 200);
+      
+      mockProvider.getTransactionReceipt
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ status: 1, transactionHash: txHash });
+
+      const pollPromise = ceilingPoller.poll(txHash);
+      
+      await flushMicrotasks();
+      expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
+
+      // Advance by less than the ceiling (e.g., 100ms)
+      await advanceTimersAndFlush(100);
+
+      const stored = transactionsDb.get(txHash);
+      expect(stored?.status).toBe(TransactionStatus.SUCCESS);
+      
+      await pollPromise;
+    });
+  });
 });

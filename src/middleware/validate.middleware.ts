@@ -28,11 +28,14 @@ const mapZodErrorToDetails = (error: ZodError): ValidationErrorDetail[] => {
 export const validateSchema = (schema: ZodTypeAny) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      await schema.parseAsync({
+      const validData = await schema.parseAsync({
         body: req.body,
         query: req.query,
         params: req.params,
       });
+      req.body = validData.body;
+      req.query = validData.query;
+      req.params = validData.params;
       next();
     } catch (error) {
       if (error instanceof ZodError) {

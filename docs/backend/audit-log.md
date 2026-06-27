@@ -352,16 +352,18 @@ Numbers, booleans, and `null`/`undefined` pass through unmodified.
 ## Testing
 
 ```bash
-npm test                          # run all tests
-npm test -- --coverage            # with coverage report
+npm test                              # run all tests
+npm test -- --coverage                # with coverage report
+npm test -- src/audit                 # just the audit module
 ```
 
-The test suite (`src/audit/audit.test.ts`) covers:
+The audit module's test suite is split across three files so each one pins a
+single layer of the architecture:
 
-- Unit tests for `AuditStore` (append, query, getById, verifyIntegrity, immutability)
-- Unit tests for `AuditService` (all convenience wrappers, error propagation)
-- Unit tests for `auditMiddleware`
-- Integration tests for all REST endpoints via `supertest`
-- Security threat scenario tests (tampering, deletion, mutation, injection)
+| File | Pins | Notes |
+| --- | --- | --- |
+| `src/audit/audit.test.ts` | `AuditStore`, `auditMiddleware`, `auditRouter`, `protectedEndpointAuditMiddleware`, `redact` module | Broad integration + security threat-scenario coverage. |
+| `src/audit/service.test.ts` | `AuditService` contract | Routing of `action`/`actor`/`ipAddress`/`correlationId` to the repository, the redaction responsibility (callers must pre-process via `redactBody()`), write-failure surfacing, and convenience-wrapper severity rules. Uses a pure in-memory mock repository — no SQLite dependency. |
+| `src/audit/sqliteRepository.test.ts` | `SqliteAuditRepository` behaviour | Append → read round-trip with deeply nested metadata, every supported filter (`action`, `severity`, `actor`, `resource`, `resourceId`, `from`/`to`) and combinations thereof, pagination edge cases (`offset > count`, `limit = 0`), incremental `stream()`, transactional write-failure surfacing with no partial rows left behind, two-`:memory:`-DB isolation, and chain-integrity verification over a 100-entry chain. All tests run on a fresh in-memory SQLite connection (`':memory:'`) for determinism and DB isolation. |
 
 Coverage targets: ≥ 95% for all audit modules.

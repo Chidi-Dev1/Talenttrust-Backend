@@ -25,6 +25,10 @@
  *  - Tokens are verified with `JWT_SECRET` using HS256; forged or tampered
  *    tokens are rejected at the HMAC-verification step before any claims
  *    are read.
+ *  - Verification is pinned to the allowlist exported from
+ *    `auth/jwtConfig` (currently `['HS256']`). The library rejects any
+ *    token whose header advertises a different algorithm — including
+ *    `alg: none` and HS/RS confusion attempts — before signature checks.
  *  - `jwt.verify()` also enforces the `exp` claim — expired tokens are
  *    rejected without any additional check.
  *  - Role values are re-validated against the ALL_ROLES allowlist after
@@ -40,6 +44,7 @@ import type { Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { isAuthorized, isValidRole } from "../lib/authorization";
 import type { Action, User, Resource, Role, AuthenticatedRequest } from "../lib/types";
+import { JWT_VERIFY_OPTIONS } from "../auth/jwtConfig";
 
 // ─── JWT configuration ────────────────────────────────────────────────────────
 
@@ -116,8 +121,11 @@ export function requireAuth(
   const token = authHeader.slice(7); // strip "Bearer "
 
   try {
-    // jwt.verify throws for any invalid token (bad signature, expired, etc.)
-    const decoded = jwt.verify(token, getJwtSecret()) as JwtPayload;
+    // jwt.verify throws for any invalid token (bad signature, expired,
+    // wrong algorithm, etc.). Passing JWT_VERIFY_OPTIONS pins the
+    // accepted signature algorithms to JWT_ALLOWED_ALGORITHMS so that
+    // alg: none and HS/RS confusion attempts cannot succeed.
+    const decoded = jwt.verify(token, getJwtSecret(), JWT_VERIFY_OPTIONS) as JwtPayload;
 
     // Guard required claims — a well-formed token always carries these.
     if (!decoded.sub || !decoded.email) {

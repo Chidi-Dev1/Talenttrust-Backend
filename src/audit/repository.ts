@@ -2,7 +2,7 @@ import path from 'path';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport } from './types';
 import { auditStore } from './store';
 import { SqliteAuditRepository } from './sqliteRepository';
-import * as Database from '../db/betterSqlite3';
+import Database from '../db/betterSqlite3';
 
 export interface AuditLogRepository {
   append(input: CreateAuditEntryInput): AuditEntry;

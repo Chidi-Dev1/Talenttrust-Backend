@@ -7,7 +7,8 @@ import {
   decodeCursor,
   parseLimit,
 } from './cursor.repository';
-import { CURSOR_MAX_LIMIT, CURSOR_DEFAULT_LIMIT } from './cursor.types';
+import { InMemoryCursorRepository } from './cursor.repository';
+import { CURSOR_MAX_LIMIT, CURSOR_DEFAULT_LIMIT, CURSOR_MAX_LENGTH } from './cursor.types';
 
 describe('encodeCursor / decodeCursor', () => {
   const position = { createdAt: '2024-06-01T12:00:00.000Z', id: 'abc-123' };
@@ -16,6 +17,7 @@ describe('encodeCursor / decodeCursor', () => {
     const cursor = encodeCursor(position);
     expect(typeof cursor).toBe('string');
     expect(cursor.length).toBeGreaterThan(0);
+    expect(cursor.length).toBeLessThanOrEqual(CURSOR_MAX_LENGTH);
     const decoded = decodeCursor(cursor);
     expect(decoded).toEqual(position);
   });
@@ -29,6 +31,31 @@ describe('encodeCursor / decodeCursor', () => {
     expect(() => decodeCursor('not-base64-json')).toThrow(
       /invalid pagination cursor/i,
     );
+  });
+
+  it('throws if cursor length exceeds CURSOR_MAX_LENGTH', () => {
+    const oversizedCursor = 'a'.repeat(CURSOR_MAX_LENGTH + 1);
+    expect(() => decodeCursor(oversizedCursor)).toThrow(/invalid pagination cursor/i);
+  });
+
+  it('throws if cursor contains characters outside the base64url charset', () => {
+    const validCursor = encodeCursor(position);
+    
+    // Add invalid chars one by one
+    expect(() => decodeCursor(validCursor + '=')).toThrow(/invalid pagination cursor/i);
+    expect(() => decodeCursor(validCursor + '/')).toThrow(/invalid pagination cursor/i);
+    expect(() => decodeCursor(validCursor + '+')).toThrow(/invalid pagination cursor/i);
+    expect(() => decodeCursor(' ' + validCursor)).toThrow(/invalid pagination cursor/i);
+    expect(() => decodeCursor(validCursor + '!')).toThrow(/invalid pagination cursor/i);
+  });
+
+  it('accepts cursor at exactly CURSOR_MAX_LENGTH if valid base64url', () => {
+    // Note: since it's hard to make a valid JSON object that encodes exactly to 256 base64url chars
+    // without actually doing parsing, we can just ensure that if the size is exactly at max
+    // AND it fails later in JSON parsing, it throws the specific JSON parse error
+    // instead of the malformed error from the length guard.
+    const maxCursor = 'a'.repeat(CURSOR_MAX_LENGTH);
+    expect(() => decodeCursor(maxCursor)).toThrow(/invalid pagination cursor: cannot decode/i);
   });
 
   it('throws on valid base64 that is not JSON', () => {
@@ -118,6 +145,9 @@ describe('parseLimit', () => {
 
   it('throws when limit is a float string that truncates to 0', () => {
     expect(() => parseLimit('0.9')).toThrow(/positive integer/i);
+  });
+});
+
 import { InMemoryCursorRepository } from './cursor.repository';
 
 describe('InMemoryCursorRepository', () => {

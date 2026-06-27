@@ -135,6 +135,10 @@ export const secretsManager = new SecretsManager();
 /**
  * Initialize core application secrets.
  * This should be called early in the application lifecycle.
+ * 
+ * @remarks
+ * - Secrets with defaults are for development only and must be overridden in production.
+ * - `DATABASE_URL` and `JWT_SECRET` are required in production.
  */
 export function initializeSecrets(): void {
   // Clear any existing registrations to avoid "already registered" errors on re-init
@@ -144,7 +148,7 @@ export function initializeSecrets(): void {
   secretsManager.register('PORT', new EnvSecret<number>('PORT', 3001, (v) => parseInt(v, 10)));
   secretsManager.register('NODE_ENV', new EnvSecret('NODE_ENV', 'development'));
   
-  // These would typically be required in production but can have defaults for development
+  // These have defaults for development but MUST be overridden in production
   secretsManager.register('DATABASE_URL', new EnvSecret('DATABASE_URL', 'postgresql://localhost:5432/talenttrust'));
   secretsManager.register('JWT_SECRET', new EnvSecret('JWT_SECRET', 'dev-secret-keep-it-safe'));
 }

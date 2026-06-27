@@ -19,6 +19,7 @@ export interface Transaction {
   receipt?: any;
   lastCheckedAt?: Date;
   retryCount: number;
+  startedAt?: Date;
 }
 
 interface TransactionsDbInterface {
@@ -42,24 +43,27 @@ export const transactionsDb: TransactionsDbInterface = {
       receipt: row.receipt ? JSON.parse(row.receipt) : undefined,
       lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at) : undefined,
       retryCount: row.retry_count,
+      startedAt: row.started_at ? new Date(row.started_at) : undefined,
     };
   },
 
   set(hash: string, tx: Transaction): typeof transactionsDb {
     getDb().prepare(`
-      INSERT INTO transactions (hash, status, receipt, last_checked_at, retry_count)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO transactions (hash, status, receipt, last_checked_at, retry_count, started_at)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(hash) DO UPDATE SET
         status = excluded.status,
         receipt = excluded.receipt,
         last_checked_at = excluded.last_checked_at,
-        retry_count = excluded.retry_count
+        retry_count = excluded.retry_count,
+        started_at = excluded.started_at
     `).run(
       tx.hash,
       tx.status,
       tx.receipt ? JSON.stringify(tx.receipt) : null,
       tx.lastCheckedAt ? tx.lastCheckedAt.toISOString() : null,
-      tx.retryCount
+      tx.retryCount,
+      tx.startedAt ? tx.startedAt.toISOString() : null
     );
     return this;
   },
@@ -81,6 +85,7 @@ export const transactionsDb: TransactionsDbInterface = {
       receipt: row.receipt ? JSON.parse(row.receipt) : undefined,
       lastCheckedAt: row.last_checked_at ? new Date(row.last_checked_at) : undefined,
       retryCount: row.retry_count,
+      startedAt: row.started_at ? new Date(row.started_at) : undefined,
     }));
     return mapped.values();
   }

@@ -30,6 +30,136 @@ describe('ContractsService', () => {
     });
   });
 
+  describe('getContractsPage', () => {
+    it('delegates to the repository page implementation', async () => {
+      const fakePage = {
+        data: [],
+        nextCursor: null,
+        hasNextPage: false,
+        limit: 10,
+      };
+      const mockRepository = {
+        findPage: jest.fn().mockResolvedValue(fakePage),
+      } as any;
+
+      const service = new ContractsService(mockRepository);
+      const page = await service.getContractsPage({ limit: 10 });
+
+      expect(page).toBe(fakePage);
+      expect(mockRepository.findPage).toHaveBeenCalledWith({ limit: 10 });
+    });
+  });
+
+  describe('getAllContracts', () => {
+    it('delegates to the repository findAll implementation', async () => {
+      const fakeContracts = [{ id: '1' }, { id: '2' }];
+      const mockRepository = {
+        findAll: jest.fn().mockResolvedValue(fakeContracts),
+      } as any;
+
+      const service = new ContractsService(mockRepository);
+      const contracts = await service.getAllContracts();
+
+      expect(contracts).toBe(fakeContracts);
+      expect(mockRepository.findAll).toHaveBeenCalled();
+    });
+  });
+
+  describe('getContractById', () => {
+    it('delegates to the repository findById implementation', async () => {
+      const fakeContract = { id: 'abc' };
+      const mockRepository = {
+        findById: jest.fn().mockResolvedValue(fakeContract),
+      } as any;
+
+      const service = new ContractsService(mockRepository);
+      const contract = await service.getContractById('abc');
+
+      expect(contract).toBe(fakeContract);
+      expect(mockRepository.findById).toHaveBeenCalledWith('abc');
+    });
+  });
+
+  describe('createContract', () => {
+    it('creates a contract and delegates to the repository create implementation', async () => {
+      const contractData: CreateContractDto = {
+        title: 'Repo-backed contract',
+        description: 'Test create delegate',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      };
+
+      const fakeContract = {
+        id: 'abc',
+        title: contractData.title,
+        clientId: contractData.clientId,
+        freelancerId: '',
+        amount: contractData.budget,
+        status: 'draft',
+        version: 0,
+        createdAt: new Date().toISOString(),
+      };
+
+      const mockRepository = {
+        create: jest.fn().mockReturnValue(fakeContract),
+      } as any;
+      const service = new ContractsService(mockRepository);
+      const mockSorobanService = { prepareEscrow: jest.fn().mockResolvedValue(undefined) } as any;
+      (service as any).sorobanService = mockSorobanService;
+
+      const result = await service.createContract(contractData);
+
+      expect(result).toBe(fakeContract);
+      expect(mockRepository.create).toHaveBeenCalledWith({
+        title: contractData.title,
+        clientId: contractData.clientId,
+        freelancerId: '',
+        amount: contractData.budget,
+        status: 'draft',
+      });
+      expect(mockSorobanService.prepareEscrow).toHaveBeenCalledWith(fakeContract.id, contractData.budget);
+    });
+  });
+
+  describe('updateContract', () => {
+    it('delegates to the repository updateWithVersion implementation', async () => {
+      const fakeUpdatedContract = {
+        id: 'abc',
+        title: 'updated',
+        clientId: 'client',
+        freelancerId: 'freelancer',
+        amount: 1000,
+        status: 'active',
+        version: 1,
+        createdAt: new Date().toISOString(),
+      };
+      const mockRepository = {
+        updateWithVersion: jest.fn().mockReturnValue(fakeUpdatedContract),
+      } as any;
+      const service = new ContractsService(mockRepository);
+
+      const result = await service.updateContract('abc', {
+        version: 0,
+        title: 'updated',
+      });
+
+      expect(result).toBe(fakeUpdatedContract);
+      expect(mockRepository.updateWithVersion).toHaveBeenCalledWith('abc', { title: 'updated' }, 0);
+    });
+  });
+
+  describe('deleteContract', () => {
+    it('delegates to the repository delete implementation and throws when missing', async () => {
+      const mockRepository = {
+        delete: jest.fn().mockReturnValue(false),
+      } as any;
+      const service = new ContractsService(mockRepository);
+
+      await expect(service.deleteContract('missing')).rejects.toThrow(/not found/);
+      expect(mockRepository.delete).toHaveBeenCalledWith('missing');
+    });
+  });
+
   describe('createContract', () => {
     it('creates a contract and calls SorobanService.prepareEscrow', async () => {
       const contractData: CreateContractDto = {

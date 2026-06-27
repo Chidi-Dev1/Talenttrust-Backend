@@ -1,209 +1,137 @@
 /**
  * Reputation Recompute Processor
- * 
+ *
  * Handles periodic recomputation of reputation scores with checkpointing.
- * Processes freelancers in batches and can resume safely after failures.
+ * Subject IDs are streamed in pages from the database so the job never loads
+ * the entire table into memory at once.
  */
 
 import { ReputationRecomputePayload, JobResult } from '../types';
-import { reputationStore } from '../../models/reputation.store';
 import { ReputationService } from '../../services/reputation.service';
+import { reputationStore } from '../../models/reputation.store';
 import { reputationCheckpointStore, RecomputeCheckpoint } from '../../models/reputation-checkpoint.store';
-import { logger } from '../../logger';
+import { ReputationRepository } from '../../repositories/reputationRepository';
+import { createLogger } from '../../logger';
 
 /**
- * Process reputation recompute job
- * 
- * @param payload - Reputation recompute configuration
- * @returns Job result with recompute statistics
- * @throws Error if validation fails
+ * Async generator that yields one page of distinct subject IDs at a time from
+ * the reputation_entries table, stopping when the store returns an empty page.
+ *
+ * @param repo      - Instantiated ReputationRepository.
+ * @param pageSize  - Rows per page (matches job batchSize).
+ */
+async function* freelancerIdPages(
+  repo: ReputationRepository,
+  pageSize: number
+): AsyncGenerator<string[]> {
+  let offset = 0;
+  while (true) {
+    const page = repo.getDistinctTargetIdPage(pageSize, offset);
+    if (page.length === 0) break;
+    yield page;
+    if (page.length < pageSize) break; // last page
+    offset += pageSize;
+  }
+}
+
+/**
+ * Process a reputation recompute job.
+ *
+ * Iterates all distinct subject IDs from the database in pages, delegates
+ * score aggregation to `ReputationService.getProfile`, and persists a
+ * checkpoint after every successfully processed subject. A single subject
+ * failure is logged and skipped — it does not abort the batch.
+ *
+ * @param payload - Recompute configuration (batchSize, forceRecompute, etc.)
+ * @param repo    - ReputationRepository instance; injected for testability.
+ * @returns JobResult with statistics for the completed run.
  */
 export async function processReputationRecompute(
-  payload: ReputationRecomputePayload
+  payload: ReputationRecomputePayload,
+  repo: ReputationRepository
 ): Promise<JobResult> {
   const jobId = `recompute-${Date.now()}`;
-  const batchSize = payload.batchSize || 100;
-  const forceRecompute = payload.forceRecompute || false;
-  const resumeFromCheckpoint = payload.resumeFromCheckpoint !== false;
+  const batchSize = payload.batchSize ?? 100;
+  const forceRecompute = payload.forceRecompute ?? false;
 
-  logger.info(`Starting reputation recompute job ${jobId}`);
+  const log = createLogger({
+    processor: 'reputation-recompute',
+    ...(payload.correlationId && { correlationId: payload.correlationId }),
+    ...(payload.requestId && { requestId: payload.requestId }),
+  });
 
-  try {
-    // Get all freelancer IDs from the reputation store
-    const allFreelancerIds = getAllFreelancerIds();
-    const totalFreelancers = allFreelancerIds.length;
+  log.info('Starting reputation recompute job', { jobId });
 
-    if (totalFreelancers === 0) {
-      logger.info('No freelancers found to recompute');
-      return {
-        success: true,
-        message: 'No freelancers found to recompute',
-        data: { totalProcessed: 0, totalFreelancers: 0 },
-      };
-    }
-
-    // Check for existing checkpoint if resume is enabled
-    let checkpoint: RecomputeCheckpoint | undefined;
-    let startIndex = 0;
-
-    if (resumeFromCheckpoint) {
-      const activeCheckpoints = reputationCheckpointStore.getActiveCheckpoints();
-      if (activeCheckpoints.length > 0) {
-        checkpoint = activeCheckpoints[0];
-        logger.info(`Resuming from checkpoint: ${checkpoint.jobId}`);
-        
-        // Find the index of the last processed freelancer
-        if (checkpoint.lastProcessedFreelancerId) {
-          startIndex = allFreelancerIds.indexOf(checkpoint.lastProcessedFreelancerId) + 1;
-        }
-      } else {
-        // Create new checkpoint
-        checkpoint = reputationCheckpointStore.createCheckpoint(jobId, totalFreelancers);
-      }
-    } else {
-      // Create new checkpoint
-      checkpoint = reputationCheckpointStore.createCheckpoint(jobId, totalFreelancers);
-    }
-
-    // Process freelancers in batches
-    let processedCount = checkpoint ? checkpoint.totalProcessed : 0;
-    let lastProcessedId: string | undefined;
-
-    for (let i = startIndex; i < allFreelancerIds.length; i += batchSize) {
-      const batch = allFreelancerIds.slice(i, i + batchSize);
-      
-      logger.info(`Processing batch ${Math.floor(i / batchSize) + 1}: ${batch.length} freelancers`);
-
-      // Process each freelancer in the batch
-      for (const freelancerId of batch) {
-        try {
-          await recomputeFreelancerReputation(freelancerId, forceRecompute);
-          lastProcessedId = freelancerId;
-          processedCount++;
-
-          // Update checkpoint progress
-          if (checkpoint) {
-            reputationCheckpointStore.updateProgress(checkpoint.jobId, freelancerId);
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`Failed to recompute reputation for ${freelancerId}:`, { error: errorMessage });
-          
-          // Mark checkpoint as failed
-          if (checkpoint) {
-            reputationCheckpointStore.markFailed(checkpoint.jobId, errorMessage);
-          }
-          
-          throw new Error(`Recompute failed for freelancer ${freelancerId}: ${errorMessage}`);
-        }
-      }
-
-      // Log progress
-      const progress = ((processedCount / totalFreelancers) * 100).toFixed(2);
-      logger.info(`Progress: ${processedCount}/${totalFreelancers} (${progress}%)`);
-    }
-
-    // Mark checkpoint as completed
-    if (checkpoint) {
-      reputationCheckpointStore.markCompleted(checkpoint.jobId);
-    }
-
-    const result = {
-      success: true,
-      message: `Successfully recomputed reputation for ${processedCount} freelancers`,
-      data: {
-        totalProcessed: processedCount,
-        totalFreelancers,
-        jobId,
-        checkpointId: checkpoint?.jobId,
-      },
-    };
-
-    logger.info(`Reputation recompute job ${jobId} completed successfully`);
-    return result;
-
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logger.error(`Reputation recompute job ${jobId} failed:`, { error: errorMessage });
-    
-    return {
-      success: false,
-      message: `Reputation recompute failed: ${errorMessage}`,
-      error: errorMessage,
-    };
-  }
-}
-
-/**
- * Recompute reputation for a single freelancer
- * 
- * @param freelancerId - The freelancer identifier
- * @param forceRecompute - Whether to force recompute even if up-to-date
- */
-async function recomputeFreelancerReputation(
-  freelancerId: string,
-  forceRecompute: boolean
-): Promise<void> {
-  const profile = reputationStore.get(freelancerId);
-  
-  if (!profile) {
-    logger.info(`No profile found for freelancer ${freelancerId}, skipping`);
-    return;
-  }
-
-  // Check if recompute is needed (unless forced)
-  if (!forceRecompute && isProfileUpToDate(profile)) {
-    logger.info(`Profile for ${freelancerId} is up to date, skipping`);
-    return;
-  }
-
-  // Recalculate the reputation score based on all reviews
-  if (profile.reviews.length === 0) {
-    profile.score = 0.0;
-    profile.totalRatings = 0;
+  // --- checkpoint wiring ---
+  let checkpoint: RecomputeCheckpoint | undefined;
+  if (payload.resumeFromCheckpoint !== false) {
+    const active = reputationCheckpointStore.getActiveCheckpoints();
+    checkpoint = active.length > 0
+      ? active[0]
+      : reputationCheckpointStore.createCheckpoint(jobId, 0);
   } else {
-    const totalScore = profile.reviews.reduce((acc, review) => acc + review.rating, 0);
-    profile.totalRatings = profile.reviews.length;
-    profile.score = parseFloat((totalScore / profile.totalRatings).toFixed(2));
+    checkpoint = reputationCheckpointStore.createCheckpoint(jobId, 0);
   }
 
-  profile.lastUpdated = new Date().toISOString();
-  
-  // Save the updated profile
-  reputationStore.set(profile);
-  
-  logger.info(`Recomputed reputation for ${freelancerId}: ${profile.score}`);
+  let totalProcessed = 0;
+  let hasAnyId = false;
+
+  for await (const page of freelancerIdPages(repo, batchSize)) {
+    hasAnyId = true;
+
+    for (const targetId of page) {
+      try {
+        const profile = ReputationService.getProfile(targetId);
+
+        if (!forceRecompute && isProfileUpToDate(profile.lastUpdated)) {
+          log.info('Profile up to date, skipping', { targetId });
+          continue;
+        }
+
+        // Persist the freshly computed profile back to the in-memory store
+        reputationStore.set(profile);
+        totalProcessed++;
+
+        reputationCheckpointStore.updateProgress(checkpoint.jobId, targetId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn('Failed to recompute reputation for subject; skipping', { msg });
+        // per-subject isolation — continue with next subject
+      }
+    }
+
+    log.info('Batch processed', { totalProcessed });
+  }
+
+  if (!hasAnyId) {
+    log.info('No subjects found to recompute');
+    reputationCheckpointStore.markCompleted(checkpoint.jobId);
+    return {
+      success: true,
+      message: 'No freelancers found to recompute',
+      data: { totalProcessed: 0, totalFreelancers: 0 },
+    };
+  }
+
+  reputationCheckpointStore.markCompleted(checkpoint.jobId);
+  log.info('Reputation recompute job completed', { jobId, totalProcessed });
+
+  return {
+    success: true,
+    message: `Successfully recomputed reputation for ${totalProcessed} freelancers`,
+    data: {
+      totalProcessed,
+      jobId,
+      checkpointId: checkpoint.jobId,
+    },
+  };
 }
 
 /**
- * Check if a profile is up to date
- * 
- * @param profile - The reputation profile to check
- * @returns True if profile is recent, false otherwise
+ * Returns true when a profile's `lastUpdated` timestamp is within the last 24 h,
+ * meaning a recompute can be skipped unless `forceRecompute` is set.
  */
-function isProfileUpToDate(profile: any): boolean {
-  const lastUpdated = new Date(profile.lastUpdated);
-  const now = new Date();
-  const hoursSinceUpdate = (now.getTime() - lastUpdated.getTime()) / (1000 * 60 * 60);
-  
-  // Consider profile up to date if updated within last 24 hours
-  return hoursSinceUpdate < 24;
-}
-
-/**
- * Get all freelancer IDs from the reputation store
- * 
- * @returns Array of freelancer IDs
- */
-function getAllFreelancerIds(): string[] {
-  // This is a mock implementation - in production, this would query the database
-  const freelancerIds: string[] = [];
-  
-  // For now, we'll simulate some freelancer IDs
-  // In a real implementation, this would query the database for all freelancer IDs
-  for (let i = 1; i <= 1000; i++) {
-    freelancerIds.push(`freelancer-${i}`);
-  }
-  
-  return freelancerIds;
+function isProfileUpToDate(lastUpdated: string): boolean {
+  const ageMs = Date.now() - new Date(lastUpdated).getTime();
+  return ageMs < 24 * 60 * 60 * 1000;
 }
