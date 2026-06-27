@@ -25,16 +25,47 @@ interface CacheEntry<T> {
   updatedAt: number;
 }
 
+/**
+ * Stale-While-Revalidate (SWR) cache implementation.
+ *
+ * Provides high-availability fallback by returning stale data with a degraded signal
+ * while transparently updating from upstream in the background. Supports coalesced
+ * concurrent requests to prevent upstream stampedes.
+ *
+ * @example
+ * ```typescript
+ * const cache = new SWRCache();
+ * const result = await cache.get('user:123', fetchUser, { ttlMs: 5000, swrMs: 30000 });
+ * if (result.degraded) {
+ *   // Data is stale but available immediately
+ * }
+ * ```
+ */
 export class SWRCache {
+  /**
+   * In-memory SWR cache store mapping keys to cached entries.
+   * Each entry stores the payload and the last update timestamp.
+   */
   private cache = new Map<string, CacheEntry<any>>();
+  /**
+   * Tracks in-flight fetches keyed by cache key.
+   * Used to coalesce concurrent requests for the same key
+   * so upstream is not hit redundantly.
+   */
   private activeFetches = new Map<string, Promise<any>>();
 
   /**
    * Retrieve data from cache or upstream fetcher using SWR strategy.
-   * 
+   *
+   * The SWR strategy follows these rules:
+   * - Fresh hit: Returns cached value without calling fetcher (age < ttlMs)
+   * - Stale hit: Returns stale value immediately, triggers background revalidation (ttlMs <= age < ttlMs + swrMs)
+   * - Miss/Expired: Blocks and waits for upstream fetch, coalescing concurrent requests
+   *
    * @param key - The cache key. Use scoped keys (e.g. `resource:userId`) to prevent access control violations.
    * @param fetcher - Async function to fetch fresh data from upstream.
    * @param options - TTL and SWR window configurations.
+   * @returns Promise resolving to the cached or fresh data with metadata.
    */
   async get<T>(
     key: string,
@@ -72,6 +103,15 @@ export class SWRCache {
     return { data, degraded: false, source: 'upstream' };
   }
 
+  /**
+   * Revalidates the cache entry by fetching fresh data from upstream.
+   * Manages active fetch tracking to coalesce concurrent requests.
+   * On error, logs to console and removes the pending fetch tracking.
+   *
+   * @param key - The cache key to revalidate.
+   * @param fetcher - Async function to fetch fresh data.
+   * @returns Promise resolving to the fetched data.
+   */
   private async revalidate<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
     const fetchPromise = fetcher()
       .then((newData) => {
@@ -81,7 +121,6 @@ export class SWRCache {
       })
       .catch((err) => {
         this.activeFetches.delete(key);
-        // Depending on error handling policy, we could log this explicitly
         console.error(`[SWR Cache] Background revalidation failed for key: ${key}`, err.message);
         throw err;
       });
