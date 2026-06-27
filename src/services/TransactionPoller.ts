@@ -1,4 +1,4 @@
-import { TransactionStatus, transactionsDb } from '../models/Transaction';
+import { TransactionStatus, TransactionsDbInterface, transactionsDb } from '../models/Transaction';
 import { calculateDelay } from '../utils/retry';
 
 /**
@@ -27,6 +27,7 @@ export class TransactionPoller {
   private readonly initialDelay: number;
   private readonly maxTotalDurationMs?: number;
   private readonly clock: IClock;
+  private readonly store: TransactionsDbInterface;
   private acceptingNewPolls = true;
   private readonly activePolls = new Map<string, Promise<void>>();
 
@@ -38,13 +39,16 @@ export class TransactionPoller {
    *                           If provided, acts as an additional guard alongside maxRetries;
    *                           whichever threshold is reached first will trigger a TIMEOUT.
    * @param clock Optional injectable clock for testing (default: SystemClock).
+   * @param store Optional transaction store (default: global transactionsDb).
+   *              Inject an InMemoryTransactionStore for test isolation.
    */
   constructor(
     provider: IBlockchainProvider,
     maxRetries: number = 5,
     initialDelay: number = 1000,
     maxTotalDurationMs?: number,
-    clock: IClock = SystemClock
+    clock: IClock = SystemClock,
+    store: TransactionsDbInterface = transactionsDb
   ) {
     if (maxTotalDurationMs !== undefined && (isNaN(maxTotalDurationMs) || maxTotalDurationMs <= 0 || maxTotalDurationMs === Infinity)) {
       throw new Error('maxTotalDurationMs must be a positive finite number to prevent silently disabling timeouts');
@@ -55,6 +59,7 @@ export class TransactionPoller {
     this.initialDelay = initialDelay;
     this.maxTotalDurationMs = maxTotalDurationMs;
     this.clock = clock;
+    this.store = store;
   }
 
   /**
@@ -72,7 +77,7 @@ export class TransactionPoller {
       return;
     }
 
-    let transaction = transactionsDb.get(txHash);
+    let transaction = this.store.get(txHash);
 
     if (!transaction) {
       transaction = {
@@ -81,10 +86,10 @@ export class TransactionPoller {
         retryCount: 0,
         startedAt: new Date(this.clock.now()),
       };
-      transactionsDb.set(txHash, transaction);
+      this.store.set(txHash, transaction);
     } else if (!transaction.startedAt) {
       transaction.startedAt = new Date(this.clock.now());
-      transactionsDb.set(txHash, transaction);
+      this.store.set(txHash, transaction);
     }
 
     const pollPromise = (async () => {
@@ -109,7 +114,7 @@ export class TransactionPoller {
    * (e.g., after an application restart).
    */
   public async recoverPendingTransactions(): Promise<void> {
-    const pendingTransactions = Array.from(transactionsDb.values()).filter(
+    const pendingTransactions = Array.from(this.store.values()).filter(
       tx => tx.status === TransactionStatus.PENDING
     );
 
@@ -143,9 +148,9 @@ export class TransactionPoller {
    * Persists any pending transactions so shutdown can checkpoint state.
    */
   public async checkpoint(): Promise<void> {
-    for (const transaction of transactionsDb.values()) {
+    for (const transaction of this.store.values()) {
       if (transaction.status === TransactionStatus.PENDING) {
-        transactionsDb.set(transaction.hash, transaction);
+        this.store.set(transaction.hash, transaction);
       }
     }
   }
@@ -162,7 +167,7 @@ export class TransactionPoller {
    * Balances the need for low-latency confirmation against API rate limits.
    */
   private async pollWithBackoff(txHash: string): Promise<void> {
-    const transaction = transactionsDb.get(txHash);
+    const transaction = this.store.get(txHash);
     
     // Stop early if transaction was completed externally or deleted
     if (!transaction || transaction.status !== TransactionStatus.PENDING) {
@@ -173,7 +178,7 @@ export class TransactionPoller {
     if (transaction.retryCount >= this.maxRetries) {
       transaction.status = TransactionStatus.TIMEOUT;
       transaction.lastCheckedAt = new Date(this.clock.now());
-      transactionsDb.set(txHash, transaction);
+      this.store.set(txHash, transaction);
       return;
     }
 
@@ -183,7 +188,7 @@ export class TransactionPoller {
       if (elapsedMs >= this.maxTotalDurationMs) {
         transaction.status = TransactionStatus.TIMEOUT;
         transaction.lastCheckedAt = new Date(this.clock.now());
-        transactionsDb.set(txHash, transaction);
+        this.store.set(txHash, transaction);
         return;
       }
     }
@@ -196,7 +201,7 @@ export class TransactionPoller {
         transaction.status = receipt.status === 1 ? TransactionStatus.SUCCESS : TransactionStatus.FAILED;
         transaction.receipt = receipt;
         transaction.lastCheckedAt = new Date(this.clock.now());
-        transactionsDb.set(txHash, transaction);
+        this.store.set(txHash, transaction);
         return;
       }
     } catch (error) {
@@ -206,7 +211,7 @@ export class TransactionPoller {
 
     transaction.retryCount++;
     transaction.lastCheckedAt = new Date(this.clock.now());
-    transactionsDb.set(txHash, transaction);
+    this.store.set(txHash, transaction);
 
     const delay = calculateDelay(transaction.retryCount - 1, this.initialDelay, Infinity, true);
     

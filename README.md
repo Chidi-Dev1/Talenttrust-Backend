@@ -598,6 +598,50 @@ The `TransactionPoller` service manages blockchain transaction confirmations usi
 - **Duration Ceiling**: An absolute wall-clock duration limit (`maxTotalDurationMs`) can be set as a circuit breaker. If the transaction takes longer than this ceiling, polling is halted and the transaction transitions to `TIMEOUT`. This acts as an absolute guard and takes precedence over `maxRetries` if reached first.
 - **Idempotent Polling**: Safely restarts after an app crash without duplicating tracking logic.
 
+### Transaction Persistence Model
+
+Transaction state is persisted in SQLite through the `transactions` table, keyed by transaction hash. The store is exposed via the `TransactionsDbInterface` with two implementations:
+
+| Implementation | Backing store | Feature flag |
+|---|---|---|
+| `SqliteTransactionStore` | SQLite `transactions` table via `better-sqlite3` | `USE_SQLITE_TRANSACTION_STORE=true` (default) |
+| `InMemoryTransactionStore` | In-memory `Map` | `USE_SQLITE_TRANSACTION_STORE=false` |
+
+The `TransactionPoller` accepts an optional `store` parameter in its constructor. When omitted, it uses the global `transactionsDb` instance, which is created by the factory function `createTransactionsDb()` based on the `USE_SQLITE_TRANSACTION_STORE` environment variable.
+
+#### Stored columns
+
+| Column | Type | Description |
+|---|---|---|
+| `hash` | `TEXT PRIMARY KEY` | Blockchain transaction hash |
+| `status` | `TEXT` | One of `PENDING`, `SUCCESS`, `FAILED`, `TIMEOUT` |
+| `receipt` | `TEXT` (JSON) | Full blockchain receipt, serialised as JSON |
+| `last_checked_at` | `TEXT` (ISO-8601) | Timestamp of the last poll attempt |
+| `retry_count` | `INTEGER` | Number of retries performed |
+| `started_at` | `TEXT` (ISO-8601) | When polling for this transaction began |
+
+#### SQLite storage behaviour
+
+- All queries use **parameterised prepared statements** — receipt JSON and other values are never interpolated into SQL strings.
+- Receipt data is serialised with `JSON.stringify` on write and parsed with a safe wrapper (`try/catch` around `JSON.parse`) on read. Malformed receipts are returned as `undefined` rather than crashing the caller.
+- The `INSERT ... ON CONFLICT(hash) DO UPDATE` pattern ensures that repeated calls to `set()` update the existing row without creating duplicates.
+- Schema migrations are handled by `src/db/migrations.ts` (versions 5 and 9 create the `transactions` table and add the `started_at` column).
+
+#### Restart recovery flow
+
+On application startup, call `recoverPendingTransactions()` to rehydrate in-flight polling:
+
+1. Load all rows from the `transactions` table where `status = 'PENDING'`.
+2. For each pending transaction, restore `retry_count` and `last_checked_at`.
+3. Resume the polling loop from the current retry index using `calculateDelay` from `src/utils/retry.ts`.
+4. Terminal transactions (`SUCCESS`, `FAILED`, `TIMEOUT`) are **not** reloaded — they remain in the database for audit but are excluded from recovery.
+
+### Security
+
+- **Parameterised SQL**: All queries use `?` placeholders. Receipt JSON is passed as a bound parameter, never concatenated.
+- **Corrupted receipts**: `safeParseReceipt` wraps `JSON.parse` in a try-catch. If a stored receipt is malformed, the field returns `undefined` and the transaction is handled safely.
+- **Fail closed**: A `get()` that throws (e.g., database I/O error) returns `undefined` rather than propagating the exception to the poller.
+
 ## Retry & Backoff Utilities
 
 Reusable retry policies for handling transient failures, located in `src/utils/retry.ts`.
