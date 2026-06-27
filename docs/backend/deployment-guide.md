@@ -227,9 +227,16 @@ All deployments create records with:
 ### Health Checks
 
 Post-deployment health checks verify:
-- Service availability
-- API responsiveness
-- Configuration correctness
+- Service availability by calling the /health/ready endpoint
+- API responsiveness with accurate response time measurements
+- Configuration correctness and SSRF protection for the target URL
+
+The `performHealthCheck` function in `src/deployment/validator.ts` implements a real HTTP probe that:
+1. Validates the base URL against SSRF attacks using `isSafeUrl` from `src/utils/ssrf.ts`
+2. Makes a GET request to the `/health/ready` endpoint with a 5-second timeout
+3. Reports healthy status only if the endpoint returns 200 OK
+4. Handles errors like connection refused, timeouts, and non-200 status codes
+5. Accepts an optional injectable HTTP client for testing purposes
 
 ## Troubleshooting
 

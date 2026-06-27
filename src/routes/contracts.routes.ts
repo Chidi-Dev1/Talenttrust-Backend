@@ -58,9 +58,6 @@ function createContractsRouter(): Router {
     controller.getContractById,
   );
 
-  router.get('/bounds', controller.getBounds);
-  router.get('/stats', controller.getContractStats);
-  router.get('/', controller.getContracts);
   router.get('/:id/history', async (req: Request, res: Response, next: NextFunction) => {
     try {
       const history = await eventIngestionService.getContractHistory(req.params.id);

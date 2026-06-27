@@ -12,7 +12,7 @@
  *  - UNIQUE constraint prevents duplicate ratings at DB level
  */
 
-import Database from '../db/betterSqlite3';
+import type BetterSqlite3 from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { ConflictError } from '../errors/appError';
 
@@ -66,9 +66,9 @@ function toReputationEntry(row: ReputationRow): ReputationEntry {
  * Instantiate with an open Database instance.
  */
 export class ReputationRepository {
-  private db: Database.Database;
+  private db: BetterSqlite3.Database;
 
-  constructor(db: Database.Database) {
+  constructor(db: BetterSqlite3.Database) {
     this.db = db;
   }
 
@@ -196,5 +196,27 @@ export class ReputationRepository {
       .get();
     
     return row?.count || 0;
+  }
+
+  /**
+   * Returns one page of distinct target_id values from reputation_entries,
+   * ordered deterministically so callers can paginate the full set without
+   * loading it all into memory.
+   *
+   * @param limit  - Maximum number of IDs to return per page.
+   * @param offset - Number of IDs to skip (0-based).
+   * @returns An array of distinct target IDs (may be shorter than `limit` on the last page).
+   */
+  getDistinctTargetIdPage(limit: number, offset: number): string[] {
+    const rows = this.db
+      .prepare<[number, number], { target_id: string }>(
+        `SELECT DISTINCT target_id
+         FROM reputation_entries
+         ORDER BY target_id
+         LIMIT ? OFFSET ?`
+      )
+      .all(limit, offset);
+
+    return rows.map(r => r.target_id);
   }
 }

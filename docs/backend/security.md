@@ -88,6 +88,58 @@ Security policies are verified via:
 1. **Unit Tests**: `src/config/security.test.ts` verifies configuration objects.
 2. **Integration Tests**: `src/middleware/security.test.ts` verifies that headers are correctly applied to Express responses.
 
+## SSRF Protection
+
+The application implements Server-Side Request Forgery (SSRF) protection to prevent unauthorized access to internal/private resources.
+
+### Protected Resources
+
+The following are blocked by default:
+- Private IPv4 ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+- Loopback addresses (127.0.0.0/8)
+- Link-local addresses (169.254.0.0/16)
+- IPv6 loopback (::1)
+- IPv6 Unique Local Addresses (fc00::/7)
+- IPv6 link-local addresses (fe80::/10)
+- IPv4-mapped IPv6 addresses
+- Decimal/octal/hex encoded IP addresses
+
+### Configuration
+
+#### `SSRF_ALLOW_PRIVATE_HOSTS`
+
+- **Default**: `false`
+- **Allowed values**: `true`/`false` (or `1`/`0`)
+- **Behavior**:
+  - **Production**: *always blocks* private hosts, this flag is **ignored**
+  - **Non-production**: If set to `true`, allows access to private hosts (for development/testing)
+
+### Examples
+
+**Production (strict)**:
+```bash
+NODE_ENV=production
+# SSRF_ALLOW_PRIVATE_HOSTS has no effect here
+```
+
+**Development with private hosts allowed**:
+```bash
+NODE_ENV=development
+SSRF_ALLOW_PRIVATE_HOSTS=true
+```
+
+**Testing with private hosts allowed**:
+```bash
+NODE_ENV=test
+SSRF_ALLOW_PRIVATE_HOSTS=true
+```
+
+### Security Notes
+
+- **Fail Closed**: Unparseable URLs or hosts are always considered unsafe
+- **Production Hardening**: The bypass flag is never respected in production, preventing accidental leaks
+- **Test Coverage**: Comprehensive tests verify all edge cases (encoded IPs, IPv6, etc.)
+
 Run tests using:
 ```bash
 npm test

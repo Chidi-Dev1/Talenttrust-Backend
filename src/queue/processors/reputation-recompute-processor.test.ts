@@ -1,275 +1,299 @@
 /**
  * Reputation Recompute Processor Tests
+ *
+ * Covers:
+ * - Empty store → zero work, no error
+ * - Single page (ids fit in one batch)
+ * - Multi-page (ids span several batches → pagination is exercised)
+ * - Per-subject error isolation (one failing subject does not abort the batch)
+ * - Checkpoint writes (createCheckpoint, updateProgress, markCompleted are called)
+ * - forceRecompute vs. skip-if-recent logic
  */
 
 import { processReputationRecompute } from './reputation-recompute-processor';
-import { reputationStore } from '../../models/reputation.store';
 import { reputationCheckpointStore } from '../../models/reputation-checkpoint.store';
-import { ReputationProfile } from '../../types/reputation';
+import { reputationStore } from '../../models/reputation.store';
+import { ReputationRepository } from '../../repositories/reputationRepository';
+import { ReputationService } from '../../services/reputation.service';
 
-// Mock the logger
+// ── logger mock ──────────────────────────────────────────────────────────────
 jest.mock('../../logger', () => ({
-  logger: {
+  createLogger: () => ({
     info: jest.fn(),
-    error: jest.fn(),
     warn: jest.fn(),
+    error: jest.fn(),
+  }),
+}));
+
+// ── ReputationService mock ───────────────────────────────────────────────────
+jest.mock('../../services/reputation.service', () => ({
+  ReputationService: {
+    getProfile: jest.fn(),
   },
 }));
 
-describe('processReputationRecompute', () => {
-  beforeEach(() => {
-    // Clear all data before each test
-    reputationStore.clear();
-    reputationCheckpointStore.clear();
-    jest.clearAllMocks();
+const mockGetProfile = ReputationService.getProfile as jest.Mock;
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Build a minimal mock ReputationRepository whose getDistinctTargetIdPage
+ * returns pages drawn from `ids` using the supplied limit/offset.
+ */
+function makeRepo(ids: string[]): jest.Mocked<Pick<ReputationRepository, 'getDistinctTargetIdPage'>> {
+  return {
+    getDistinctTargetIdPage: jest.fn((limit: number, offset: number) =>
+      ids.slice(offset, offset + limit)
+    ),
+  } as unknown as jest.Mocked<Pick<ReputationRepository, 'getDistinctTargetIdPage'>>;
+}
+
+/** Returns a fresh profile stamped "48 hours ago" (stale → eligible for recompute). */
+function staleProfile(id: string) {
+  return {
+    freelancerId: id,
+    score: 4.0,
+    jobsCompleted: 0,
+    totalRatings: 1,
+    reviews: [{ reviewerId: 'r1', rating: 4, createdAt: '2023-01-01T00:00:00.000Z' }],
+    lastUpdated: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    weightedScore: 4.0,
+    scoreAlgorithm: 'exp-decay-v1',
+  };
+}
+
+/** Returns a fresh profile stamped "just now" (recent → skipped unless force). */
+function freshProfile(id: string) {
+  return {
+    ...staleProfile(id),
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
+// ── setup ────────────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  reputationCheckpointStore.clear();
+  reputationStore.clear();
+  jest.clearAllMocks();
+});
+
+// ── empty store ──────────────────────────────────────────────────────────────
+
+describe('empty store', () => {
+  it('returns success with zero counts and writes no checkpoint progress', async () => {
+    const updateSpy = jest.spyOn(reputationCheckpointStore, 'updateProgress');
+    const repo = makeRepo([]);
+
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: false, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ totalProcessed: 0, totalFreelancers: 0 });
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── single-page scenario ─────────────────────────────────────────────────────
+
+describe('single page', () => {
+  it('processes all IDs when they fit in one batch', async () => {
+    const ids = ['u1', 'u2', 'u3'];
+    const repo = makeRepo(ids);
+    mockGetProfile.mockImplementation(staleProfile);
+
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown>).totalProcessed).toBe(3);
+    // 3 ids < pageSize=10 → generator exits after the first partial page (no extra sentinel call)
+    expect(repo.getDistinctTargetIdPage).toHaveBeenCalledTimes(1);
   });
 
-  describe('Basic functionality', () => {
-    it('should handle empty freelancer list', async () => {
-      const result = await processReputationRecompute({
-        batchSize: 10,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
+  it('calls getDistinctTargetIdPage with correct limit and offset', async () => {
+    const repo = makeRepo(['a', 'b']);
+    mockGetProfile.mockImplementation(staleProfile);
 
-      expect(result.success).toBe(true);
-      expect(result.message).toBe('No freelancers found to recompute');
-      expect(result.data).toEqual({
-        totalProcessed: 0,
-        totalFreelancers: 0,
-      });
+    await processReputationRecompute(
+      { batchSize: 50, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    // 2 ids < pageSize=50 → single call, no continuation needed
+    expect(repo.getDistinctTargetIdPage).toHaveBeenCalledTimes(1);
+    expect(repo.getDistinctTargetIdPage).toHaveBeenNthCalledWith(1, 50, 0);
+  });
+});
+
+// ── multi-page scenario ──────────────────────────────────────────────────────
+
+describe('multi-page pagination', () => {
+  it('iterates all pages and processes every subject exactly once', async () => {
+    const ids = Array.from({ length: 7 }, (_, i) => `subject-${i}`);
+    const repo = makeRepo(ids);
+    mockGetProfile.mockImplementation(staleProfile);
+
+    const result = await processReputationRecompute(
+      { batchSize: 3, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown>).totalProcessed).toBe(7);
+
+    // pages: [0-2]=full, [3-5]=full, [6]=partial → 3 calls (partial page exits loop)
+    expect(repo.getDistinctTargetIdPage).toHaveBeenCalledTimes(3);
+    expect(repo.getDistinctTargetIdPage).toHaveBeenNthCalledWith(1, 3, 0);
+    expect(repo.getDistinctTargetIdPage).toHaveBeenNthCalledWith(2, 3, 3);
+    expect(repo.getDistinctTargetIdPage).toHaveBeenNthCalledWith(3, 3, 6);
+  });
+});
+
+// ── per-subject error isolation ──────────────────────────────────────────────
+
+describe('per-subject error isolation', () => {
+  it('continues processing remaining subjects when one throws', async () => {
+    const ids = ['good-1', 'bad', 'good-2'];
+    const repo = makeRepo(ids);
+
+    mockGetProfile.mockImplementation((id: string) => {
+      if (id === 'bad') throw new Error('db error');
+      return staleProfile(id);
     });
 
-    it('should create a new checkpoint when no existing checkpoint', async () => {
-      // This test uses the mock data from getAllFreelancerIds()
-      const result = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: true,
-      });
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
 
-      expect(result.success).toBe(true);
-      expect(result.data?.totalProcessed).toBeGreaterThan(0);
-      expect(result.data?.checkpointId).toBeDefined();
-    });
-
-    it('should process with custom batch size', async () => {
-      const result = await processReputationRecompute({
-        batchSize: 50,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.data?.totalProcessed).toBeGreaterThan(0);
-    });
+    // job succeeds overall; two subjects processed, one skipped
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown>).totalProcessed).toBe(2);
   });
 
-  describe('Checkpoint functionality', () => {
-    it('should resume from existing checkpoint', async () => {
-      // Create an existing checkpoint
-      const jobId = 'existing-checkpoint';
-      reputationCheckpointStore.createCheckpoint(jobId, 1000);
-      reputationCheckpointStore.updateProgress(jobId, 'freelancer-100');
+  it('processes zero subjects gracefully when all throw', async () => {
+    const repo = makeRepo(['x', 'y']);
+    mockGetProfile.mockImplementation(() => { throw new Error('boom'); });
 
-      const result = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: true,
-      });
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
 
-      expect(result.success).toBe(true);
-      // Should resume from where it left off
-      expect(result.data?.totalProcessed).toBeGreaterThan(100);
-    });
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown>).totalProcessed).toBe(0);
+  });
+});
 
-    it('should not resume when resumeFromCheckpoint is false', async () => {
-      // Create an existing checkpoint
-      const jobId = 'existing-checkpoint-2';
-      reputationCheckpointStore.createCheckpoint(jobId, 1000);
-      reputationCheckpointStore.updateProgress(jobId, 'freelancer-100');
+// ── checkpoint writes ────────────────────────────────────────────────────────
 
-      const result = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
+describe('checkpoint writes', () => {
+  it('creates a checkpoint, updates progress per subject, and marks completed', async () => {
+    const ids = ['s1', 's2'];
+    const repo = makeRepo(ids);
+    mockGetProfile.mockImplementation(staleProfile);
 
-      expect(result.success).toBe(true);
-      // Should start fresh
-      expect(result.data?.checkpointId).not.toBe(jobId);
-    });
+    const createSpy = jest.spyOn(reputationCheckpointStore, 'createCheckpoint');
+    const updateSpy = jest.spyOn(reputationCheckpointStore, 'updateProgress');
+    const completeSpy = jest.spyOn(reputationCheckpointStore, 'markCompleted');
+
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenCalledTimes(2); // once per subject
+    expect(completeSpy).toHaveBeenCalledTimes(1);
+    expect(result.data).toHaveProperty('checkpointId');
   });
 
-  describe('Force recompute', () => {
-    beforeEach(() => {
-      // Create some test profiles
-      const profile1: ReputationProfile = {
-        freelancerId: 'freelancer-1',
-        score: 4.5,
-        jobsCompleted: 10,
-        totalRatings: 10,
-        reviews: [
-          { reviewerId: 'reviewer-1', rating: 5, createdAt: '2023-01-01T00:00:00.000Z' },
-          { reviewerId: 'reviewer-2', rating: 4, createdAt: '2023-01-02T00:00:00.000Z' },
-        ],
-        lastUpdated: new Date().toISOString(),
-      };
+  it('reuses the active checkpoint when resumeFromCheckpoint is true', async () => {
+    const existingCp = reputationCheckpointStore.createCheckpoint('existing-job', 100);
+    // leave it in 'running' state
 
-      const profile2: ReputationProfile = {
-        freelancerId: 'freelancer-2',
-        score: 3.0,
-        jobsCompleted: 5,
-        totalRatings: 5,
-        reviews: [
-          { reviewerId: 'reviewer-3', rating: 3, createdAt: '2023-01-01T00:00:00.000Z' },
-        ],
-        lastUpdated: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), // 48 hours ago
-      };
+    const createSpy = jest.spyOn(reputationCheckpointStore, 'createCheckpoint');
+    const repo = makeRepo(['id1']);
+    mockGetProfile.mockImplementation(staleProfile);
 
-      reputationStore.set(profile1);
-      reputationStore.set(profile2);
-    });
+    await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: true },
+      repo as unknown as ReputationRepository
+    );
 
-    it('should skip up-to-date profiles when not forcing', async () => {
-      const result = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
-
-      expect(result.success).toBe(true);
-      // Should process some profiles but skip others based on timestamp
-      expect(result.data?.totalProcessed).toBeGreaterThan(0);
-    });
-
-    it('should process all profiles when forcing', async () => {
-      const result = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: true,
-        resumeFromCheckpoint: false,
-      });
-
-      expect(result.success).toBe(true);
-      // Should process all profiles when forcing
-      expect(result.data?.totalProcessed).toBeGreaterThan(0);
-    });
+    // Should not have called createCheckpoint again (existing active checkpoint reused)
+    expect(createSpy).toHaveBeenCalledTimes(1); // the one we set up above
+    const resultCp = reputationCheckpointStore.getCheckpoint(existingCp.jobId);
+    expect(resultCp?.status).toBe('completed');
   });
 
-  describe('Error handling', () => {
-    it('should handle processing errors gracefully', async () => {
-      // Mock a scenario that might cause an error
-      // This is a simplified test - in practice, you'd mock the reputation store
-      // to throw an error for specific freelancer IDs
+  it('creates a fresh checkpoint when resumeFromCheckpoint is false even if active one exists', async () => {
+    reputationCheckpointStore.createCheckpoint('old-job', 50);
 
-      const result = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
+    const createSpy = jest.spyOn(reputationCheckpointStore, 'createCheckpoint');
+    const repo = makeRepo(['id1']);
+    mockGetProfile.mockImplementation(staleProfile);
 
-      // Should still succeed unless there's an actual error
-      expect(result.success).toBe(true);
-    });
+    await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    expect(createSpy).toHaveBeenCalledTimes(2); // old + new
+  });
+});
+
+// ── skip-if-recent logic ─────────────────────────────────────────────────────
+
+describe('forceRecompute flag', () => {
+  it('skips recently updated profiles when forceRecompute is false', async () => {
+    const ids = ['recent-1', 'recent-2'];
+    const repo = makeRepo(ids);
+    mockGetProfile.mockImplementation(freshProfile); // last updated = now
+
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: false, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
+
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown>).totalProcessed).toBe(0);
   });
 
-  describe('Idempotency', () => {
-    it('should be idempotent per freelancer ID', async () => {
-      // Run the recompute twice
-      const result1 = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
+  it('processes all profiles when forceRecompute is true regardless of recency', async () => {
+    const ids = ['recent-1', 'recent-2'];
+    const repo = makeRepo(ids);
+    mockGetProfile.mockImplementation(freshProfile);
 
-      const result2 = await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
+    const result = await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
 
-      expect(result1.success).toBe(true);
-      expect(result2.success).toBe(true);
-
-      // Results should be consistent
-      expect(result1.data?.totalProcessed).toBe(result2.data?.totalProcessed);
-    });
+    expect(result.success).toBe(true);
+    expect((result.data as Record<string, unknown>).totalProcessed).toBe(2);
   });
+});
 
-  describe('Performance considerations', () => {
-    it('should handle large batch sizes efficiently', async () => {
-      const startTime = Date.now();
+// ── persists profile to store ─────────────────────────────────────────────────
 
-      const result = await processReputationRecompute({
-        batchSize: 500, // Large batch size
-        forceRecompute: false,
-        resumeFromCheckpoint: false,
-      });
+describe('store persistence', () => {
+  it('writes the profile returned by ReputationService.getProfile into the reputation store', async () => {
+    const ids = ['target-x'];
+    const repo = makeRepo(ids);
+    const profile = staleProfile('target-x');
+    mockGetProfile.mockReturnValue(profile);
 
-      const endTime = Date.now();
-      const duration = endTime - startTime;
+    await processReputationRecompute(
+      { batchSize: 10, forceRecompute: true, resumeFromCheckpoint: false },
+      repo as unknown as ReputationRepository
+    );
 
-      expect(result.success).toBe(true);
-      expect(result.data?.totalProcessed).toBeGreaterThan(0);
-      
-      // Should complete in reasonable time (adjust threshold as needed)
-      expect(duration).toBeLessThan(10000); // 10 seconds
-    });
-  });
-
-  describe('Data integrity', () => {
-    beforeEach(() => {
-      // Create a test profile with known data
-      const testProfile: ReputationProfile = {
-        freelancerId: 'freelancer-1',
-        score: 4.0,
-        jobsCompleted: 5,
-        totalRatings: 5,
-        reviews: [
-          { reviewerId: 'reviewer-1', rating: 5, createdAt: '2023-01-01T00:00:00.000Z' },
-          { reviewerId: 'reviewer-2', rating: 3, createdAt: '2023-01-02T00:00:00.000Z' },
-          { reviewerId: 'reviewer-3', rating: 4, createdAt: '2023-01-03T00:00:00.000Z' },
-          { reviewerId: 'reviewer-4', rating: 4, createdAt: '2023-01-04T00:00:00.000Z' },
-          { reviewerId: 'reviewer-5', rating: 4, createdAt: '2023-01-05T00:00:00.000Z' },
-        ],
-        lastUpdated: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), // 48 hours ago
-      };
-
-      reputationStore.set(testProfile);
-    });
-
-    it('should correctly recalculate reputation scores', async () => {
-      await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: true,
-        resumeFromCheckpoint: false,
-      });
-
-      const updatedProfile = reputationStore.get('freelancer-1');
-      
-      if (updatedProfile) {
-        // Expected average: (5 + 3 + 4 + 4 + 4) / 5 = 4.0
-        expect(updatedProfile.score).toBe(4.0);
-        expect(updatedProfile.totalRatings).toBe(5);
-        expect(updatedProfile.reviews).toHaveLength(5);
-      }
-    });
-
-    it('should preserve review data during recompute', async () => {
-      const originalProfile = reputationStore.get('freelancer-1');
-      const originalReviews = originalProfile?.reviews || [];
-
-      await processReputationRecompute({
-        batchSize: 100,
-        forceRecompute: true,
-        resumeFromCheckpoint: false,
-      });
-
-      const updatedProfile = reputationStore.get('freelancer-1');
-      
-      if (updatedProfile) {
-        expect(updatedProfile.reviews).toEqual(originalReviews);
-      }
-    });
+    expect(reputationStore.get('target-x')).toEqual(profile);
   });
 });

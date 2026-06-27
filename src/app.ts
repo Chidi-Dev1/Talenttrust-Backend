@@ -33,7 +33,9 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { httpLoggerMiddleware } from './middleware/httpLogger';
 import { ReputationService } from './services/reputation.service';
 import { getDb } from './db/database';
-import { eventIngestionService } from './events/registry';
+// `eventIngestionService` is intentionally not imported here to avoid
+// unused-symbol lint warnings in the app factory. Individual routes
+// import the registry when they need to interact with event ingestion.
 
 interface AppFactoryOptions {
   includeTerminalHandlers?: boolean;

@@ -66,9 +66,35 @@ export function hashApiKey(apiKey: string): { salt: string; hash: string } {
  * @param hash - The stored hash to verify against.
  * @returns True if the key is valid, false otherwise.
  */
+
 export function verifyApiKey(apiKey: string, salt: string, hash: string): boolean {
-  const verifyHash = crypto.pbkdf2Sync(apiKey, salt, 10000, 64, 'sha256').toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(verifyHash));
+  try {
+    const verifyHash = crypto.pbkdf2Sync(apiKey, salt, 10000, 64, 'sha256').toString('hex');
+    const hashBuffer = Buffer.from(hash, 'hex');
+    const verifyBuffer = Buffer.from(verifyHash, 'hex');
+    if (hashBuffer.length !== verifyBuffer.length) return false;
+    return crypto.timingSafeEqual(hashBuffer, verifyBuffer);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Computes a deterministic key selector (SHA-256) for fast O(1) indexed lookup.
+ *
+ * The selector is a non-reversible hash distinct from the slow per-key salted
+ * PBKDF2 hash. It acts as an opaque lookup key so the server can find the
+ * candidate row without iterating over all stored keys.
+ *
+ * Security note: the selector alone cannot reveal the original API key because
+ * SHA-256 is preimage-resistant. A successful match must still be confirmed via
+ * `verifyApiKey` with the salted PBKDF2 hash.
+ *
+ * @param apiKey - The plain API key to compute the selector for.
+ * @returns A hex-encoded SHA-256 digest used as the lookup index.
+ */
+export function computeKeySelector(apiKey: string): string {
+  return crypto.createHash('sha256').update(apiKey).digest('hex');
 }
 
 /**
@@ -83,10 +109,12 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
   
   // Store salt and hash together in the key_hash field
   const keyHash = `${salt}:${hash}`;
+  const keySelector = computeKeySelector(apiKey);
   
   const dbKey = await database.createApiKey({
     name: request.name,
     key_hash: keyHash,
+    key_selector: keySelector,
     scope: request.scope,
     created_by: request.createdBy,
     expires_at: request.expiresAt,
@@ -108,45 +136,107 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
 }
 
 /**
+ * Validates that a stored credential is a well-formed salt:hash string.
+ *
+ * The stored format must be: `<salt>:<hash>`
+ * - Salt must be 32 hex characters (16 bytes)
+ * - Hash must be 128 hex characters (64 bytes)
+ *
+ * This validation runs BEFORE calling PBKDF2 to fail closed on malformed
+ * stored values (e.g., from botched migrations) rather than risk exceptions
+ * on the authentication hot path.
+ *
+ * @param storedCredential - The stored credential to validate.
+ * @returns True if the format is valid, false otherwise.
+ */
+
+function isValidSaltHashFormat(storedCredential: string): boolean {
+  if (typeof storedCredential !== 'string') return false;
+
+  const trimmed = storedCredential.trim();
+  if (!trimmed || trimmed.indexOf(':') === -1) return false;
+
+  const parts = trimmed.split(':');
+
+  // Must have exactly 2 parts (salt and hash, no extra colons)
+  if (parts.length !== 2) return false;
+
+  const [salt, hash] = parts;
+
+  // Both parts must be present and non-empty
+  if (!salt || !hash) return false;
+
+  // Salt: 16 bytes = 32 hex characters
+  // Hash: 64 bytes = 128 hex characters (PBKDF2 with sha256, 10000 iterations, 64 output)
+  const isValidSalt = /^[a-f0-9]{32}$/i.test(salt);
+  const isValidHash = /^[a-f0-9]{128}$/i.test(hash);
+
+  return isValidSalt && isValidHash;
+}
+
+/**
  * Validates an API key and returns the associated key info if valid.
  *
  * @param apiKey - The plain API key to validate.
  * @returns The API key info if valid, null otherwise.
  */
 export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null> {
-  // Hash the provided key to search for it
-  // Note: In a real implementation, you'd need to iterate through keys or use an index
-  // For this demo, we'll use a simple approach by checking all active keys
-  
-  const db = await (database as any).loadDatabase();
-  const activeKeys = db.api_keys.filter((key: ApiKey) => key.is_active);
-  
-  for (const dbKey of activeKeys) {
-    const [salt, hash] = dbKey.key_hash.split(':');
-    
-    if (verifyApiKey(apiKey, salt, hash)) {
-      // Update last used timestamp
-      await database.updateApiKey(dbKey.id, { last_used_at: new Date() });
-      
-      // Check if key has expired
-      if (dbKey.expires_at && new Date() > dbKey.expires_at) {
-        await database.deactivateApiKey(dbKey.id);
-        return null;
-      }
-      
-      return {
-        id: dbKey.id,
-        name: dbKey.name,
-        scope: dbKey.scope,
-        createdBy: dbKey.created_by,
-        createdAt: dbKey.created_at,
-        expiresAt: dbKey.expires_at,
-        isActive: dbKey.is_active
-      };
-    }
+  // Compute the deterministic selector for O(1) indexed lookup
+  const selector = computeKeySelector(apiKey);
+
+  // Try indexed lookup first (fast path, O(1) via key_selector)
+  let dbKey = await database.getApiKeyBySelector(selector);
+
+  // Fallback: scan legacy keys that predate the key_selector index
+  if (!dbKey) {
+    const db = await (database as any).loadDatabase();
+    dbKey = db.api_keys.find(
+      (k: ApiKey) => !k.key_selector && k.is_active
+    );
+  }
+
+  if (!dbKey) {
+    return null;
+  }
+
+  // Validate the stored credential format BEFORE splitting and calling PBKDF2
+  // This fails closed on malformed input (empty, missing separator, wrong hex length)
+  // rather than risking exceptions on the authentication hot path
+  if (!isValidSaltHashFormat(dbKey.key_hash)) {
+    return null;
+  }
+
+  // Split the validated format
+  const [salt, hash] = dbKey.key_hash.split(':');
+
+  // Verify with the slow salted hash (source of truth)
+  if (!verifyApiKey(apiKey, salt, hash)) {
+    return null;
   }
   
-  return null;
+  // Backfill the selector for legacy keys so future lookups hit the fast path
+  if (!dbKey.key_selector) {
+    await database.updateApiKey(dbKey.id, { key_selector: selector });
+  }
+  
+  // Update last used timestamp
+  await database.updateApiKey(dbKey.id, { last_used_at: new Date() });
+  
+  // Check if key has expired
+  if (dbKey.expires_at && new Date() > dbKey.expires_at) {
+    await database.deactivateApiKey(dbKey.id);
+    return null;
+  }
+  
+  return {
+    id: dbKey.id,
+    name: dbKey.name,
+    scope: dbKey.scope,
+    createdBy: dbKey.created_by,
+    createdAt: dbKey.created_at,
+    expiresAt: dbKey.expires_at,
+    isActive: dbKey.is_active
+  };
 }
 
 /**
@@ -164,8 +254,9 @@ export async function rotateApiKey(keyId: string): Promise<{ apiKey: string; inf
   const newApiKey = generateApiKey();
   const { salt, hash } = hashApiKey(newApiKey);
   const keyHash = `${salt}:${hash}`;
+  const keySelector = computeKeySelector(newApiKey);
   
-  const updatedKey = await database.rotateApiKey(keyId, keyHash);
+  const updatedKey = await database.rotateApiKey(keyId, keyHash, keySelector);
   
   if (!updatedKey) {
     return null;

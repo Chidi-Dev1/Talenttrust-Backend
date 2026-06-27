@@ -1,9 +1,9 @@
 /**
  * Data Retention Control Manager
- * 
+ *
  * Main orchestrator for all data retention, archival, and compliance operations.
  * Coordinates policies, storage, archival, and audit logging.
- * 
+ *
  * @module retention/index
  */
 
@@ -19,17 +19,60 @@ import {
   RetentionAction,
   RetentionConfig,
 } from './types';
-import { StorageManager, IStorageProvider, InMemoryStorageProvider } from './storage';
+import {
+  StorageManager,
+  IStorageProvider,
+  InMemoryStorageProvider,
+  SqliteStorageProvider,
+} from './storage';
 import { RetentionPolicyEngine } from './policies';
 import { DataArchivalService } from './archival';
 import { ComplianceAuditLogger, AuditLogFilter } from './audit';
 
 /**
+ * Source the `DataRetentionManager` should use when neither caller-supplied
+ * providers nor an explicit `options.storageBackend` value are provided.
+ *
+ * - `auto`  – SQLite outside Jest, in-memory inside Jest. This is the
+ *             default and matches the issue requirement that prod restarts
+ *             (or blue-green switches) must not wipe the archival inventory.
+ * - `sqlite`– Always SQLite. Useful for production-going integration tests
+ *             that still want durability but want to assert against a
+ *             controlled database path.
+ * - `memory`– Always in-memory. Mirrors the legacy default and is the safest
+ *             fallback for ad-hoc scripts and one-off pipelines.
+ */
+export type RetentionStorageBackend = 'auto' | 'sqlite' | 'memory';
+
+/**
+ * Options accepted by {@link DataRetentionManager} for storage-backend selection.
+ *
+ * @interface DataRetentionManagerOptions
+ * @property {RetentionStorageBackend} [storageBackend] - Choose how the manager
+ *   picks its default providers when no caller-supplied providers are passed.
+ */
+export interface DataRetentionManagerOptions {
+  storageBackend?: RetentionStorageBackend;
+}
+
+/**
+ * Returns true when Jest is the current test runner. We deliberately key off
+ * `JEST_WORKER_ID` (set on every Jest process) rather than `NODE_ENV` so a
+ * production deployment that runs with `NODE_ENV=test` cannot silently demote
+ * its retention store to in-memory.
+ *
+ * @returns {boolean}
+ */
+function isJestRuntime(): boolean {
+  return typeof process !== 'undefined' && Boolean(process.env && process.env.JEST_WORKER_ID);
+}
+
+/**
  * Primary data retention control manager
- * 
+ *
  * Provides high-level API for managing data retention, archival,
  * and compliance requirements across the application.
- * 
+ *
  * @class DataRetentionManager
  */
 export class DataRetentionManager {
@@ -42,21 +85,44 @@ export class DataRetentionManager {
   private checkInterval?: NodeJS.Timeout;
 
   /**
-   * Initialize the data retention manager
+   * Initialize the data retention manager.
+   *
+   * Provider selection precedence:
+   * 1. Explicit `customLocalProvider` / `customArchiveProvider` arguments.
+   * 2. `options.storageBackend` (`auto` chooses SQLite outside Jest and
+   *    in-memory inside Jest; `sqlite` / `memory` force the corresponding
+   *    default provider).
+   * 3. The legacy default of two in-memory providers, preserved for
+   *    backwards compatibility with callers that don't pass options.
+   *
    * @param {RetentionConfig} config - Configuration settings
    * @param {IStorageProvider} [customLocalProvider] - Optional custom storage provider
    * @param {IStorageProvider} [customArchiveProvider] - Optional custom archive provider
+   * @param {DataRetentionManagerOptions} [options] - Backend selection options
    */
   constructor(
     config: RetentionConfig,
     customLocalProvider?: IStorageProvider,
     customArchiveProvider?: IStorageProvider,
+    options: DataRetentionManagerOptions = {},
   ) {
     this.config = config;
     this.policyEngine = new RetentionPolicyEngine();
+
+    const backend = options.storageBackend ?? 'auto';
+    const useSqliteDefaults =
+      backend === 'sqlite' || (backend === 'auto' && !isJestRuntime());
+
+    const defaultLocal = useSqliteDefaults
+      ? new SqliteStorageProvider({ tableName: 'retention_local' })
+      : new InMemoryStorageProvider();
+    const defaultArchive = useSqliteDefaults
+      ? new SqliteStorageProvider({ tableName: 'retention_archive' })
+      : new InMemoryStorageProvider();
+
     this.storageManager = new StorageManager(
-      customLocalProvider || new InMemoryStorageProvider(),
-      customArchiveProvider || new InMemoryStorageProvider(),
+      customLocalProvider || defaultLocal,
+      customArchiveProvider || defaultArchive,
     );
     this.archivalService = new DataArchivalService(
       this.storageManager,
@@ -469,7 +535,14 @@ export class DataRetentionManager {
   }
 }
 
-// Export all types and utilities
+// Export all types and utilities. `RetentionStorageBackend` and
+// `DataRetentionManagerOptions` are declared above as `export type` /
+// `export interface` so re-listing them here would surface as a duplicate
+// exported declaration (TS2484); keep them out of this list.
+// `SqliteStorageProviderOptions` and `RETENTION_PAGE_MAX_LIMIT` are re-exports
+// from `./storage` and consumers should import them from there directly; they
+// were intentionally omitted here to keep `index.ts` from carrying even
+// no-op re-exports of types it doesn't internally consume.
 export {
   RetentionPolicy,
   RetainedData,
@@ -484,6 +557,7 @@ export {
   StorageManager,
   IStorageProvider,
   InMemoryStorageProvider,
+  SqliteStorageProvider,
   RetentionPolicyEngine,
   DataArchivalService,
   ComplianceAuditLogger,

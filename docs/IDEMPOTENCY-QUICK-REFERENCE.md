@@ -110,8 +110,12 @@ curl -X POST \
 # Run idempotency tests
 npm test -- idempotency.test.ts
 
+# Run HTTP middleware idempotency tests
+npm test -- src/middleware/idempotency.test.ts
+
 # Run with coverage
 npm run test:ci -- idempotency.test.ts
+npm run test:ci -- src/middleware/idempotency.test.ts
 ```
 
 **Key Tests:**
@@ -120,6 +124,8 @@ npm run test:ci -- idempotency.test.ts
 - ✅ TTL expiration race → handled correctly
 - ✅ Purge interleaving → no lock errors
 - ✅ No `SQLITE_BUSY` errors leak
+- ✅ HTTP middleware: first request caches, identical retry replays, conflicting payload → 409
+- ✅ HTTP middleware: missing `Idempotency-Key` passes through unchanged
 
 ---
 
@@ -159,6 +165,13 @@ src/events/
 ├── idempotencyStore.ts   # SQLite store + concurrency handling
 ├── idempotency.ts        # Event processor
 └── idempotency.test.ts   # Integration tests
+
+src/middleware/
+├── idempotency.ts        # HTTP Idempotency-Key middleware
+└── idempotency.test.ts   # Middleware unit tests (mock req/res/next)
+
+src/db/
+└── idempotencyStore.ts   # In-memory store interface used by middleware tests
 
 docs/
 ├── EVENT_INGESTION_IDEMPOTENCY.md  # Full documentation

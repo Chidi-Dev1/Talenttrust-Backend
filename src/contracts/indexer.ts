@@ -83,6 +83,11 @@ export class ContractEventIndexer {
    * Duplicate events (same contractId:eventId:sequence) are silently skipped.
    * Cursor is updated to the highest sequence number successfully indexed.
    *
+   * Replay Invariants:
+   * 1. Re-indexing an identical batch yields 0 new processed events and increments duplicateCount by the batch size.
+   * 2. Indexing a partially-overlapping batch processes only new events, tracking overlaps as duplicates.
+   * 3. Malformed events are surfaced in the errors array without aborting the batch.
+   *
    * @param sourceId - Identifier for this indexing source (enables multiple concurrent sources)
    * @param events - Events to index (may include duplicates or out-of-order submissions)
    * @returns Result with counts and updated cursor

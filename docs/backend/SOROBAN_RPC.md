@@ -34,6 +34,10 @@ if (status.status === 'SUCCESS') {
 }
 ```
 
+## Circuit Breaker Protection
+
+All Soroban RPC calls are routed through a `CircuitBreaker` instance (`stellar-rpc`) that prevents cascading failures when the Stellar network degrades. See [Circuit Breaker documentation](./circuit-breaker.md) for the state machine, configuration, and admin operations.
+
 ## Testing
 
 The service has comprehensive unit tests mocking the `@stellar/stellar-sdk` RPC interactions. Run the tests using:

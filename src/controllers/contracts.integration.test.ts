@@ -67,8 +67,9 @@ beforeAll(() => {
   ).run(FREELANCER_ID, 'testfreelancer', 'testfreelancer@test.com', 'freelancer', now);
 });
 
-afterAll(() => {
-  closeDb();
+beforeEach(() => {
+  const db = getDb();
+  db.exec('DELETE FROM contracts');
 });
 
 // ─── Helper: create a contract as admin ─────────────────────────────────────
@@ -135,6 +136,36 @@ describe('GET /api/v1/contracts', () => {
     expect(body).not.toContain('secret-id');
     expect(body).not.toContain(forged);
   });
+
+  it('returns paginated list with pagination metadata', async () => {
+    await createContractAsAdmin();
+    await createContractAsAdmin();
+    const res = await request(app)
+      .get('/api/v1/contracts?page=1&limit=1')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.meta).toMatchObject({
+      page: 1,
+      limit: 1,
+      total: 2,
+      totalPages: 2,
+    });
+  });
+
+  it('returns 400 for invalid page parameter', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?page=-1')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for invalid limit parameter', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?limit=abc')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+  });
 });
 
 // ─── POST /api/v1/contracts ───────────────────────────────────────────────────
@@ -187,6 +218,45 @@ describe('POST /api/v1/contracts', () => {
       .set(auth(adminToken()))
       .send({ ...validPayload, budget: -100 });
     expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for budget exceeding maximum contract amount (validation)', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set(auth(adminToken()))
+      .send({ ...validPayload, budget: 999_000_000_000_000_000 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+
+  it('returns 422 for milestone count exceeding maximum limit', async () => {
+    const excessiveMilestones = Array.from({ length: 25 }, (_, i) => ({
+      title: `Milestone ${i}`,
+      description: `Description ${i}`,
+      amount: 100,
+    }));
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set(auth(adminToken()))
+      .send({ ...validPayload, milestones: excessiveMilestones });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatchObject({ code: 'contract_bounds_error' });
+  });
+
+  it('returns 422 for total milestone amount exceeding bounds', async () => {
+    const excessiveAmountMilestones = [
+      {
+        title: 'Milestone 1',
+        description: 'Valid description',
+        amount: 999_000_000_000_000_000,
+      },
+    ];
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set(auth(adminToken()))
+      .send({ ...validPayload, milestones: excessiveAmountMilestones });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatchObject({ code: 'contract_bounds_error' });
   });
 });
 
@@ -244,7 +314,7 @@ describe('POST /api/v1/contracts idempotency', () => {
 describe('GET /api/v1/contracts/:id', () => {
   let contractId: string;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     contractId = await createContractAsAdmin();
   });
 
@@ -301,7 +371,7 @@ describe('PATCH /api/v1/contracts/:id', () => {
   let contractId: string;
   let contractVersion: number;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     contractId = await createContractAsAdmin();
     const fetched = await request(app)
       .get(`/api/v1/contracts/${contractId}`)
@@ -364,6 +434,24 @@ describe('PATCH /api/v1/contracts/:id', () => {
       .set(auth(adminToken()))
       .send({ title: 'No version field' });
     expect(res.status).toBe(400);
+  });
+
+  it('returns 409 for version conflict (stale version)', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({ version: contractVersion + 999, title: 'Stale Update' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({ code: 'ERR_CONFLICT' });
+  });
+
+  it('returns 400 for budget update exceeding bounds (validation)', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({ version: contractVersion, budget: 999_000_000_000_000_000 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
 });
 
@@ -459,4 +547,8 @@ describe('Error envelope', () => {
     expect(res.body.error).toHaveProperty('message');
     expect(res.body.error).toHaveProperty('requestId');
   });
+});
+
+afterAll(() => {
+  closeDb();
 });

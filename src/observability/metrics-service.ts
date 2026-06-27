@@ -18,6 +18,8 @@ export interface MetricsServiceLike {
   recordHealthStatus: (status: ServiceStatus) => void;
   recordWebhookDelivery: (outcome: WebhookOutcome) => void;
   setWebhookDlqDepth: (depth: number) => void;
+  startRateLimitMetricsSampling?: (limiter: any, intervalMs?: number) => void;
+  stopRateLimitMetricsSampling?: () => void;
 }
 
 const HEALTH_STATUS_VALUE: Record<ServiceStatus, number> = {
@@ -43,6 +45,12 @@ export class MetricsService implements MetricsServiceLike {
   private readonly webhookDeliveriesTotal: Counter;
 
   private readonly webhookDlqDepth: Gauge;
+
+  private readonly webhookRateLimitTokens: Gauge;
+
+  private readonly webhookRateLimitQueueDepth: Gauge;
+
+  private rateLimitStopSampling: (() => void) | null = null;
 
   constructor(private readonly serviceName: string, register?: Registry) {
     this.register = register ?? new Registry();
@@ -88,6 +96,20 @@ export class MetricsService implements MetricsServiceLike {
       help: 'Current number of entries in the webhook dead-letter queue.',
       registers: [this.register],
     });
+
+    this.webhookRateLimitTokens = new Gauge({
+      name: 'webhook_rate_limit_tokens',
+      help: 'Current token count per provider in the rate-limiter bucket.',
+      labelNames: ['provider_id'],
+      registers: [this.register],
+    });
+
+    this.webhookRateLimitQueueDepth = new Gauge({
+      name: 'webhook_rate_limit_queue_depth',
+      help: 'Current queue depth (number of waiting deliveries) per provider in the rate-limiter.',
+      labelNames: ['provider_id'],
+      registers: [this.register],
+    });
   }
 
   trackHttpRequest(req: Request, res: Response, next: NextFunction): void {
@@ -122,6 +144,26 @@ export class MetricsService implements MetricsServiceLike {
 
   setWebhookDlqDepth(depth: number): void {
     this.webhookDlqDepth.set(depth);
+  }
+
+  startRateLimitMetricsSampling(limiter: any, intervalMs: number = 10000): void {
+    if (this.rateLimitStopSampling !== null) {
+      console.warn('[MetricsService] Rate limit metrics sampling already active.');
+      return;
+    }
+
+    this.rateLimitStopSampling = limiter.startMetricsSampling(
+      this.webhookRateLimitTokens,
+      this.webhookRateLimitQueueDepth,
+      intervalMs,
+    );
+  }
+
+  stopRateLimitMetricsSampling(): void {
+    if (this.rateLimitStopSampling !== null) {
+      this.rateLimitStopSampling();
+      this.rateLimitStopSampling = null;
+    }
   }
 
   getMetrics(): Promise<string> {

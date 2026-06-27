@@ -18,22 +18,22 @@ export const envSchema = z.object({
     .default('3001')
     .transform((val) => val === '' ? 3001 : parseInt(val, 10))
     .pipe(z.number().int().min(1).max(65535)),
-  
+
   NODE_ENV: z.enum(['development', 'staging', 'production', 'test'])
     .default('development'),
-  
+
   // API Configuration
   API_BASE_URL: z.string().url().refine(val => isSafeUrl(val), {
     message: "API_BASE_URL must be a public URL and cannot point to internal resources (SSRF protection)"
   }).optional(),
 
-  
+
   DEBUG: z.string()
     .optional()
     .transform((val) => val === 'true'),
-  
+
   MAX_REQUEST_SIZE: z.string().default('10mb'),
-  
+
   CORS_ORIGINS: z.string()
     .optional()
     .transform((val) => val ? val.split(',') : ['http://localhost:3000']),
@@ -42,7 +42,7 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
 
   // Secrets
-  JWT_SECRET: z.string().min(8, "JWT_SECRET must be at least 8 characters").optional(),
+  JWT_SECRET: z.string().optional(), // Required in non-test environments, validated by superRefine
   // Compliance audit HMAC secret – required for proof generation.
   COMPLIANCE_AUDIT_SECRET: z.string()
     .min(32, "COMPLIANCE_AUDIT_SECRET must be at least 32 characters")
@@ -61,19 +61,19 @@ export const envSchema = z.object({
     })
     .default('https://horizon-testnet.stellar.org'),
 
-  
+
   STELLAR_NETWORK_PASSPHRASE: z.string()
     .default('Test SDF Network ; September 2015'),
-  
+
   SOROBAN_RPC_URL: z.string().url()
     .refine(val => isSafeUrl(val), {
       message: "SOROBAN_RPC_URL must be a public URL and cannot point to internal resources (SSRF protection)"
     })
     .default('https://soroban-testnet.stellar.org'),
 
-  
+
   SOROBAN_CONTRACT_ID: z.string().optional(),
-  
+
   STELLAR_RPC_URL: z.string().url()
     .refine(val => isSafeUrl(val), {
       message: "STELLAR_RPC_URL must be a public URL and cannot point to internal resources (SSRF protection)"
@@ -91,7 +91,7 @@ export const envSchema = z.object({
     .optional()
     .transform((val) => val === undefined ? undefined : parseInt(val, 10))
     .pipe(z.number().int().nonnegative().optional()),
-  
+
   ENFORCE_JSON_CONTENT_TYPE: z.string()
     .optional()
     .transform((val) => val === undefined ? undefined : val !== 'false')
@@ -106,6 +106,11 @@ export const envSchema = z.object({
     .optional()
     .transform((val) => val ? val.split(',').map(p => p.trim()) : undefined)
     .pipe(z.array(z.string()).optional()),
+
+  IDEMPOTENCY_TTL_MS: z.string()
+    .optional()
+    .transform((val) => val === undefined ? undefined : parseInt(val, 10))
+    .pipe(z.number().int().positive().optional()),
 
   ROUTE_BODY_LIMITS: z.string()
     .optional()
@@ -146,7 +151,23 @@ export const envSchema = z.object({
 
   REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
     .default('exp-decay-v1'),
-});
+}).superRefine((obj, ctx) => {
+  if (obj.NODE_ENV !== 'test') {
+    if (!obj.JWT_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message: 'JWT_SECRET is required in non-test environments',
+      });
+    } else if (obj.JWT_SECRET.length < 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message: 'JWT_SECRET must be at least 32 characters in non-test environments',
+      });
+    }
+  }  // ← closes the if block
+});  // ← closes superRefine callback and the whole chain
 
 
 export type EnvConfig = z.infer<typeof envSchema>;
@@ -170,7 +191,7 @@ export function validateEnv(env: NodeJS.ProcessEnv = process.env): EnvConfig {
 
     const errorMsg = `Configuration validation failed:\n${errors.join('\n')}`;
     console.error(`[FATAL] ${errorMsg}`);
-    
+
     // Fail fast with clear error code
     const isTest = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID;
     if (!isTest) {

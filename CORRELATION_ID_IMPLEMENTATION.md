@@ -309,6 +309,61 @@ X-Timestamp: 1748345417000
 ✅ **Idempotency** maintained in event deduplication  
 ✅ **Comprehensive tests** 37 new tests, all passing  
 
+## Blue-Green Router Logging
+
+**File:** [src/router.ts](src/router.ts)
+
+All proxy log calls previously made with raw `console.log` / `console.error` have been replaced with the structured Pino logger, with redaction and correlation ID support.
+
+### What changed
+
+| Before | After |
+| ------ | ----- |
+| `console.log(\`Routing ${req.method} ${req.url}...\`)` | `log.info('Routing request', { method, url: redactUrl(req.url), target, headers: redactHeaders(...) })` |
+| `console.error('Proxy request error:', err)` | `log.error('Proxy request error', { err })` |
+| `console.error('Proxy response error:', err)` | `log.error('Proxy response error', { err })` |
+| `console.error('Client request error:', err)` | `log.error('Client request error', { err })` |
+
+### Log record shape
+
+Every record emitted by the router carries:
+
+```json
+{
+  "timestamp": "2026-06-26T14:00:00.000Z",
+  "level": "info",
+  "message": "Routing request",
+  "service": "talenttrust-backend",
+  "component": "blue-green-router",
+  "requestId": "550e8400-e29b-41d4-a716-446655440000",
+  "correlationId": "trace-abc-123",
+  "method": "GET",
+  "url": "/api/v1/contracts?page=1",
+  "target": "http://localhost:3001",
+  "headers": { "content-type": "application/json" }
+}
+```
+
+### Redaction guarantees
+
+- `Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `X-Api-Secret`, `X-Auth-Token`, `Proxy-Authorization` are stripped from logged headers by `redactHeaders()`.
+- Query-parameter values for `token`, `access_token`, `api_key`, `secret`, `password`, `email`, `phone`, `ssn`, `credit_card`, and `refresh_token` are replaced with `[REDACTED]` in logged URLs by `redactUrl()`.
+
+### Correlation ID extraction
+
+`buildRouterLogger(req)` (internal helper) reads `x-request-id` and `x-correlation-id` request headers via `validateExternalId()` before constructing the child logger.  Both IDs are validated against the strict allow-list pattern `^[a-zA-Z0-9\-_]{1,128}$`; invalid values are silently ignored and a fresh UUID is generated for `requestId`.
+
+### Test coverage
+
+Covered in [src/router.test.ts](src/router.test.ts) — 16 tests in four suites:
+
+| Suite | Tests |
+| ----- | ----- |
+| Proxy behaviour | 3 (502 fallback, health route, color switch) |
+| Structured log shape | 5 (required fields, error record, requestId, client ID, invalid ID) |
+| Correlation ID | 3 (propagation, absent header, invalid header) |
+| Redaction | 5 (Authorization, Cookie, X-Api-Key, sensitive query param, safe header preserved) |
+
 ## Recommendations
 
 ### Phase 2 (Optional Future Enhancements)

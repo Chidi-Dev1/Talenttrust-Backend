@@ -1,4 +1,4 @@
-import Database from '../db/betterSqlite3';
+import type BetterSqlite3 from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 
 interface NotificationRow {
@@ -10,9 +10,9 @@ interface NotificationRow {
 }
 
 export class NotificationRepository {
-  private db: Database;
+  private db: ReturnType<typeof Database>;
 
-  constructor(db: typeof Database) {
+  constructor(db: ReturnType<typeof Database>) {
     this.db = db;
   }
 
@@ -21,7 +21,7 @@ export class NotificationRepository {
     const createdAt = new Date().toISOString();
 
     this.db
-      .prepare<[string, string, string, string]>(
+      .prepare<[string, string, string, string, string]>(
         `INSERT INTO notifications (id, user_id, title, message, created_at)
          VALUES (?, ?, ?, ?, ?)`
       )

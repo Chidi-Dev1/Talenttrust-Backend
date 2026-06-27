@@ -272,6 +272,34 @@ describe('Environment Configuration', () => {
       process.env.ROUTE_BODY_LIMITS = '/api/upload=1024';
       expect(() => validateEnv(process.env)).toThrow(/ROUTE_BODY_LIMITS must be a comma-separated list of path:limit pairs/);
     });
+    // JWT_SECRET validation tests
+    describe('JWT_SECRET validation', () => {
+      it('should reject missing JWT_SECRET in production', () => {
+        process.env.NODE_ENV = 'production';
+        delete process.env.JWT_SECRET;
+        expect(() => validateEnv(process.env)).toThrow();
+      });
+
+      it('should reject short JWT_SECRET in production', () => {
+        process.env.NODE_ENV = 'production';
+        process.env.JWT_SECRET = 'shortsecret'; // less than 32 chars
+        expect(() => validateEnv(process.env)).toThrow();
+      });
+
+      it('should accept valid JWT_SECRET in production', () => {
+        process.env.NODE_ENV = 'production';
+        process.env.JWT_SECRET = 'abcdefghijklmnopqrstuvwxyz123456'; // 32 chars
+        const config = validateEnv(process.env);
+        expect(config.JWT_SECRET).toBe('abcdefghijklmnopqrstuvwxyz123456');
+      });
+
+      it('should allow missing JWT_SECRET in test environment', () => {
+        process.env.NODE_ENV = 'test';
+        delete process.env.JWT_SECRET;
+        const config = validateEnv(process.env);
+        expect(config.JWT_SECRET).toBeUndefined();
+      });
+    });
 
     it('should throw under NODE_ENV=test and not exit process', () => {
       process.env.PORT = 'invalid';

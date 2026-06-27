@@ -43,19 +43,35 @@ export class ReputationController {
   /**
    * POST /api/v1/reputation/:id/rate
    * Create a new reputation rating for a freelancer.
+   *
+   * Rating validation is enforced at two layers:
+   *  1. Zod DTO via validateSchema middleware (primary — rejects before this method runs)
+   *  2. Guard below (defense-in-depth — catches bypassed middleware or direct controller calls)
+   *
+   * Rating must be a finite integer in [1, 5]. Anything outside that range or any
+   * non-integer (including NaN/Infinity/decimals) is rejected with a 400.
    */
   public static async createRating(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
       const payload: any = req.body;
+      const requestId =
+        typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
 
-      if (!payload || !payload.reviewerId || typeof payload.rating !== 'number') {
-        const requestId =
-          typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      // Defense-in-depth: validate rating range and integrality even if middleware was bypassed
+      const rating = payload?.rating;
+      const isValidRating =
+        typeof rating === 'number' &&
+        Number.isFinite(rating) &&
+        Number.isInteger(rating) &&
+        rating >= 1 &&
+        rating <= 5;
+
+      if (!payload || !payload.reviewerId || !isValidRating) {
         res.status(400).json({
           error: {
             code: 'bad_request',
-            message: 'Invalid payload: reviewerId and rating are required',
+            message: 'Invalid payload: reviewerId and a valid integer rating (1–5) are required',
             requestId,
           },
         });

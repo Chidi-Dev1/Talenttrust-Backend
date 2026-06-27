@@ -17,7 +17,7 @@
 import { Router, Request, Response, type RequestHandler } from 'express';
 import { pipeline } from 'stream/promises';
 import { auditService, AuditService } from './service';
-import { auditExportService, AuditExportService } from './exportService';
+import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
 import type { AuditAction, AuditQuery, AuditSeverity } from './types';
 
 export interface AuditRouterOptions {
@@ -151,7 +151,18 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
       const actor = (req as Request & { user?: { id?: string } }).user?.id ?? 'anonymous';
       const { query } = parseAuditQuery(req, { maxLimit: 50_000 });
 
-      exportResult = await exportService.createNdjsonExport(query);
+      // Extract only the filter fields — limit/offset are not meaningful for a full export.
+      const filters: AuditExportFilters = {
+        ...(query.action && { action: query.action }),
+        ...(query.severity && { severity: query.severity }),
+        ...(query.actor && { actor: query.actor }),
+        ...(query.resource && { resource: query.resource }),
+        ...(query.resourceId && { resourceId: query.resourceId }),
+        ...(query.from && { from: query.from }),
+        ...(query.to && { to: query.to }),
+      };
+
+      exportResult = await exportService.createNdjsonExport(filters);
 
       service.log({
         action: 'ADMIN_ACTION',
@@ -163,15 +174,13 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
           operation: 'export',
           format: 'ndjson',
           filters: {
-            action: query.action ?? null,
-            severity: query.severity ?? null,
-            actor: query.actor ?? null,
-            resource: query.resource ?? null,
-            resourceId: query.resourceId ?? null,
-            from: query.from ?? null,
-            to: query.to ?? null,
-            limit: query.limit ?? null,
-            offset: query.offset ?? 0,
+            action: filters.action ?? null,
+            severity: filters.severity ?? null,
+            actor: filters.actor ?? null,
+            resource: filters.resource ?? null,
+            resourceId: filters.resourceId ?? null,
+            from: filters.from ?? null,
+            to: filters.to ?? null,
           },
           recordCount: exportResult.recordCount,
           bytesWritten: exportResult.bytesWritten,

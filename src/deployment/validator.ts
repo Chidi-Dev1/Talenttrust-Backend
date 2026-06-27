@@ -8,6 +8,9 @@
  */
 
 import { EnvironmentConfig } from '../config/environment';
+import { isSafeUrl } from '../utils/ssrf';
+import { createHttpClient } from '../httpClient';
+import { AxiosInstance, AxiosError } from 'axios';
 
 export interface ValidationResult {
   /** Whether validation passed */
@@ -94,33 +97,74 @@ function isValidUrl(url: string): boolean {
 /**
  * Performs health check on the service
  * @param {string} baseUrl - Base URL of the service
+ * @param {AxiosInstance} [httpClient] - Optional injectable HTTP client for testing
  * @returns {Promise<HealthCheckResult>} Health check result
  */
-export async function performHealthCheck(baseUrl: string): Promise<HealthCheckResult> {
+export async function performHealthCheck(
+  baseUrl: string,
+  httpClient?: AxiosInstance
+): Promise<HealthCheckResult> {
   const startTime = Date.now();
   
   try {
-    // In a real implementation, this would make an HTTP request
-    // For now, we'll simulate a successful health check
+    // Validate URL with SSRF guard
+    if (!isSafeUrl(baseUrl)) {
+      return {
+        service: 'talenttrust-backend',
+        status: 'unhealthy',
+        timestamp: new Date(),
+        details: {
+          error: 'URL not safe for SSRF',
+          baseUrl,
+        },
+      };
+    }
+
+    // Build health check URL
+    const healthUrl = new URL('/health/ready', baseUrl);
+    const client = httpClient ?? createHttpClient('health-check', { timeout: 5000 });
+
+    // Perform health check
+    const response = await client.get(healthUrl.toString());
     const responseTime = Date.now() - startTime;
-    
+
+    const status = response.status === 200 ? 'healthy' : 'unhealthy';
     return {
       service: 'talenttrust-backend',
-      status: 'healthy',
+      status,
       timestamp: new Date(),
       details: {
         responseTime,
         baseUrl,
+        statusCode: response.status,
       },
     };
   } catch (error) {
+    const responseTime = Date.now() - startTime;
+    const axiosError = error as AxiosError;
+    let errorMessage = 'Unknown error';
+    let statusCode: number | undefined;
+
+    if (axiosError.response) {
+      statusCode = axiosError.response.status;
+      errorMessage = `HTTP ${statusCode}`;
+    } else if (axiosError.code === 'ECONNREFUSED') {
+      errorMessage = 'Connection refused';
+    } else if (axiosError.code === 'ECONNABORTED') {
+      errorMessage = 'Request timeout';
+    } else if (error instanceof Error) {
+      errorMessage = error.message;
+    }
+
     return {
       service: 'talenttrust-backend',
       status: 'unhealthy',
       timestamp: new Date(),
       details: {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
         baseUrl,
+        responseTime,
+        ...(statusCode !== undefined ? { statusCode } : {}),
       },
     };
   }

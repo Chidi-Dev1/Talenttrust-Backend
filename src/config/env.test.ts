@@ -18,6 +18,7 @@ describe('Environment validation', () => {
   });
 
   it('should pass when COMPLIANCE_AUDIT_SECRET is provided', () => {
+    process.env.NODE_ENV = 'test';
     process.env.COMPLIANCE_AUDIT_SECRET = 'a'.repeat(32);
     expect(() => validateEnv()).not.toThrow();
   });

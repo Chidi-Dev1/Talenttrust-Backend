@@ -6,6 +6,7 @@
  */
 
 import { JobType } from './types';
+import { queueConfig } from './config';
 
 /**
  * Retry policy configuration interface
@@ -98,15 +99,15 @@ export const DEFAULT_RETRY_POLICIES: Record<JobType, RetryPolicy> = {
  * Fallback retry policy for unknown job types
  */
 export const FALLBACK_RETRY_POLICY: RetryPolicy = {
-  attempts: 3,
+  attempts: queueConfig.defaultJobOptions.attempts,
   backoff: {
     type: 'exponential',
-    delay: 2000,
+    delay: queueConfig.defaultJobOptions.backoff.delay,
     multiplier: 2,
     jitter: 0.1,
   },
-  removeOnComplete: 100,
-  removeOnFail: 1000,
+  removeOnComplete: queueConfig.defaultJobOptions.removeOnComplete,
+  removeOnFail: queueConfig.defaultJobOptions.removeOnFail,
 };
 
 /**

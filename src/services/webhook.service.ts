@@ -6,6 +6,7 @@ import { getWebhookDLQStorage, WebhookDLQEntry } from '../queue/webhook-dlq';
 import { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from '../queue/webhook-retry-policy';
 import { isSafeUrl } from '../utils/ssrf';
 import { RateLimitStore } from '../lib/rateLimitStore';
+import { MetricsServiceLike } from '../observability';
 
 /** Max deliveries per destination host per window. Default: 60. */
 const HOST_RATE_LIMIT_MAX = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_MAX ?? 60);

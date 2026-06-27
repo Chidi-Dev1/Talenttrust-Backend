@@ -1,6 +1,15 @@
-import { TransactionPoller, IBlockchainProvider } from './TransactionPoller';
-import { Transaction, TransactionStatus, transactionsDb } from '../models/Transaction';
-import { closeDb } from '../db/database';
+import { TransactionPoller, IBlockchainProvider, SystemClock } from './TransactionPoller';
+import {
+  Transaction,
+  TransactionStatus,
+  transactionsDb,
+  InMemoryTransactionStore,
+  SqliteTransactionStore,
+} from '../models/Transaction';
+import { closeDb, getDb } from '../db/database';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
 
 // Run against in-memory DB for tests
 process.env.DB_PATH = ':memory:';
@@ -420,6 +429,278 @@ describe('TransactionPoller', () => {
 
       (poller as unknown as { pollWithBackoff: typeof originalMethod }).pollWithBackoff = originalMethod;
       errorSpy.mockRestore();
+    });
+  });
+
+  describe('duration ceiling (maxTotalDurationMs)', () => {
+    it('throws an error if ceiling is set to an invalid value (<= 0, NaN, Infinity)', () => {
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, 0)).toThrow('maxTotalDurationMs must be a positive finite number');
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, -50)).toThrow('maxTotalDurationMs must be a positive finite number');
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, NaN)).toThrow('maxTotalDurationMs must be a positive finite number');
+      expect(() => new TransactionPoller(mockProvider, maxRetries, initialDelay, Infinity)).toThrow('maxTotalDurationMs must be a positive finite number');
+    });
+
+    it('transitions to TIMEOUT immediately if ceiling is reached before max retries', async () => {
+      const txHash = '0xceiling-timeout';
+      // Poller with a strict 200ms ceiling.
+      const ceilingPoller = new TransactionPoller(mockProvider, maxRetries, initialDelay, 200);
+      mockProvider.getTransactionReceipt.mockResolvedValue(null);
+
+      const pollPromise = ceilingPoller.poll(txHash);
+      
+      await flushMicrotasks();
+      expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
+
+      // Advance by 200ms, which hits the ceiling exactly
+      await advanceTimersAndFlush(200);
+
+      const stored = transactionsDb.get(txHash);
+      // Even though retryCount is 1 (maxRetries is 3), we hit the ceiling
+      expect(stored?.status).toBe(TransactionStatus.TIMEOUT);
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
+
+      await pollPromise;
+    });
+
+    it('transitions to TIMEOUT before the first retry if the initial delay itself exceeds the ceiling', async () => {
+      const txHash = '0xceiling-before-first-retry';
+      // Poller with a ceiling of 50ms, while initialDelay is 100ms.
+      const ceilingPoller = new TransactionPoller(mockProvider, maxRetries, 100, 50);
+      mockProvider.getTransactionReceipt.mockResolvedValue(null);
+
+      const pollPromise = ceilingPoller.poll(txHash);
+      
+      await flushMicrotasks();
+      // Initially, retryCount is 1 because of the first inline attempt.
+      expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
+
+      // The first delay scheduled will be 100 * 0.75 = 75ms.
+      // So let's advance time by 75ms to wake it up.
+      await advanceTimersAndFlush(75);
+
+      const stored = transactionsDb.get(txHash);
+      // On waking up at 75ms, elapsed time is 75 >= 50, so it immediately times out
+      // without incrementing retryCount or calling the provider again.
+      expect(stored?.status).toBe(TransactionStatus.TIMEOUT);
+      expect(stored?.retryCount).toBe(1);
+      expect(mockProvider.getTransactionReceipt).toHaveBeenCalledTimes(1);
+
+      await pollPromise;
+    });
+
+    it('does not transition to TIMEOUT if transaction completes before ceiling', async () => {
+      const txHash = '0xceiling-success';
+      const ceilingPoller = new TransactionPoller(mockProvider, maxRetries, initialDelay, 200);
+      
+      mockProvider.getTransactionReceipt
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ status: 1, transactionHash: txHash });
+
+      const pollPromise = ceilingPoller.poll(txHash);
+      
+      await flushMicrotasks();
+      expect(transactionsDb.get(txHash)?.retryCount).toBe(1);
+
+      // Advance by less than the ceiling (e.g., 100ms)
+      await advanceTimersAndFlush(100);
+
+      const stored = transactionsDb.get(txHash);
+      expect(stored?.status).toBe(TransactionStatus.SUCCESS);
+      
+      await pollPromise;
+    });
+  });
+
+  describe('SQLite persistence', () => {
+    const testDbDir = os.tmpdir();
+
+    /** Returns an isolated file path so tests never share state. */
+    function uniqueDbPath(): string {
+      return path.join(testDbDir, `tt-transactions-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
+    }
+
+    /** Cleans up a test DB file if it exists. */
+    function cleanupDbPath(p: string): void {
+      try { fs.unlinkSync(p); } catch { /* ignore */ }
+    }
+
+    beforeAll(() => {
+      process.env.USE_SQLITE_TRANSACTION_STORE = 'true';
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    });
+
+    it('state survives restart simulation', async () => {
+      const dbPath = uniqueDbPath();
+      const oldPath = process.env.DB_PATH;
+      process.env.DB_PATH = dbPath;
+      closeDb();
+
+      try {
+        const store = new SqliteTransactionStore();
+        store.set('0xrestart-sim', {
+          hash: '0xrestart-sim',
+          status: TransactionStatus.PENDING,
+          retryCount: 2,
+        });
+
+        closeDb();
+
+        const freshStore = new SqliteTransactionStore();
+        const tx = freshStore.get('0xrestart-sim');
+        expect(tx).toBeDefined();
+        expect(tx!.hash).toBe('0xrestart-sim');
+        expect(tx!.status).toBe(TransactionStatus.PENDING);
+        expect(tx!.retryCount).toBe(2);
+      } finally {
+        closeDb();
+        process.env.DB_PATH = oldPath;
+        cleanupDbPath(dbPath);
+      }
+    });
+
+    it('restarts polling during backoff and continues schedule', async () => {
+      const store = new InMemoryTransactionStore();
+      const backoffMockProvider = createMockProvider();
+      backoffMockProvider.getTransactionReceipt.mockResolvedValue(null);
+
+      store.set('0xbackoff-restart', {
+        hash: '0xbackoff-restart',
+        status: TransactionStatus.PENDING,
+        retryCount: 1,
+      });
+
+      jest.useFakeTimers();
+      jest.spyOn(Math, 'random').mockReturnValue(0.5);
+
+      const restartedPoller = new TransactionPoller(
+        backoffMockProvider, maxRetries, initialDelay, undefined, SystemClock, store
+      );
+
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+
+      await restartedPoller.recoverPendingTransactions();
+      await flushMicrotasks();
+
+      const firstDelay = setTimeoutSpy.mock.calls.at(-1)?.[1];
+      expect(firstDelay).toBe(expectedBackoffDelay(initialDelay, 2));
+
+      await runNextBackoffTick();
+      expect(backoffMockProvider.getTransactionReceipt).toHaveBeenCalledTimes(2);
+
+      const tx = store.get('0xbackoff-restart');
+      if (tx) {
+        tx.status = TransactionStatus.SUCCESS;
+        store.set('0xbackoff-restart', tx);
+      }
+      jest.runAllTimers();
+    });
+
+    it('loads only PENDING transactions on recovery, ignoring terminal states', async () => {
+      jest.useFakeTimers();
+      jest.spyOn(Math, 'random').mockReturnValue(0.5);
+
+      const store = new InMemoryTransactionStore();
+      store.set('0xterm-success', { hash: '0xterm-success', status: TransactionStatus.SUCCESS, retryCount: 0 });
+      store.set('0xterm-failed', { hash: '0xterm-failed', status: TransactionStatus.FAILED, retryCount: 0 });
+      store.set('0xterm-timeout', { hash: '0xterm-timeout', status: TransactionStatus.TIMEOUT, retryCount: 0 });
+
+      const mockProv = createMockProvider();
+      mockProv.getTransactionReceipt.mockResolvedValue({ status: 1, transactionHash: 'hash' });
+
+      const termPoller = new TransactionPoller(
+        mockProv, maxRetries, initialDelay, undefined, SystemClock, store
+      );
+
+      await termPoller.recoverPendingTransactions();
+      await flushMicrotasks();
+
+      expect(mockProv.getTransactionReceipt).not.toHaveBeenCalled();
+    });
+
+    it('handles empty pending state on startup', async () => {
+      const store = new InMemoryTransactionStore();
+      const mockProv = createMockProvider();
+      mockProv.getTransactionReceipt.mockResolvedValue({ status: 1 });
+
+      const emptyPoller = new TransactionPoller(
+        mockProv, maxRetries, initialDelay, undefined, SystemClock, store
+      );
+
+      await emptyPoller.recoverPendingTransactions();
+      await flushMicrotasks();
+
+      expect(mockProv.getTransactionReceipt).not.toHaveBeenCalled();
+    });
+
+    it('handles corrupted receipt JSON without crashing', () => {
+      const dbPath = uniqueDbPath();
+      const oldPath = process.env.DB_PATH;
+      process.env.DB_PATH = dbPath;
+      closeDb();
+
+      try {
+        const db = getDb();
+        db.prepare(`
+          INSERT INTO transactions (hash, status, receipt, retry_count)
+          VALUES (?, ?, ?, ?)
+        `).run('0xcorrupted', 'PENDING', '{invalid_json}', 0);
+
+        const store = new SqliteTransactionStore();
+        const tx = store.get('0xcorrupted');
+        expect(tx).toBeDefined();
+        expect(tx!.receipt).toBeUndefined();
+        expect(tx!.status).toBe(TransactionStatus.PENDING);
+      } finally {
+        closeDb();
+        process.env.DB_PATH = oldPath;
+        cleanupDbPath(dbPath);
+      }
+    });
+
+    it('does not re-poll terminal transactions after restart', async () => {
+      const dbPath = uniqueDbPath();
+      const oldPath = process.env.DB_PATH;
+      process.env.DB_PATH = dbPath;
+      closeDb();
+
+      try {
+        const db = getDb();
+
+        db.prepare(`
+          INSERT INTO transactions (hash, status, receipt, retry_count)
+          VALUES (?, ?, ?, ?)
+        `).run('0xdone-success', 'SUCCESS', '{}', 0);
+
+        db.prepare(`
+          INSERT INTO transactions (hash, status, receipt, retry_count)
+          VALUES (?, ?, ?, ?)
+        `).run('0xdone-failed', 'FAILED', '{}', 3);
+
+        db.prepare(`
+          INSERT INTO transactions (hash, status, receipt, retry_count)
+          VALUES (?, ?, ?, ?)
+        `).run('0xdone-timeout', 'TIMEOUT', '{}', 5);
+
+        const store = new SqliteTransactionStore();
+        const mockProv = createMockProvider();
+        mockProv.getTransactionReceipt.mockResolvedValue({ status: 1, transactionHash: 'hash' });
+
+        const termPoller = new TransactionPoller(
+          mockProv, maxRetries, initialDelay, undefined, SystemClock, store
+        );
+
+        await termPoller.recoverPendingTransactions();
+
+        expect(mockProv.getTransactionReceipt).not.toHaveBeenCalled();
+      } finally {
+        closeDb();
+        process.env.DB_PATH = oldPath;
+        cleanupDbPath(dbPath);
+      }
     });
   });
 });

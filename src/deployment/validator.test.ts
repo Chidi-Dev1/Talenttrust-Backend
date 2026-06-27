@@ -11,6 +11,7 @@ import {
   validateDeploymentReadiness,
 } from './validator';
 import { EnvironmentConfig } from '../config/environment';
+import { AxiosInstance } from 'axios';
 
 describe('Deployment Validator', () => {
   const createMockConfig = (overrides?: Partial<EnvironmentConfig>): EnvironmentConfig => ({
@@ -175,25 +176,108 @@ describe('Deployment Validator', () => {
   });
 
   describe('performHealthCheck', () => {
-    it('should return healthy status for valid service', async () => {
-      const result = await performHealthCheck('http://localhost:3001');
+    let mockHttpClient: jest.Mocked<Pick<AxiosInstance, 'get'>>;
+
+    beforeEach(() => {
+      mockHttpClient = {
+        get: jest.fn(),
+      };
+    });
+
+    afterEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('should return healthy status for 200 OK response', async () => {
+      mockHttpClient.get.mockResolvedValue({ status: 200 });
+
+      const result = await performHealthCheck(
+        'http://localhost:3001',
+        mockHttpClient as unknown as AxiosInstance
+      );
 
       expect(result.service).toBe('talenttrust-backend');
       expect(result.status).toBe('healthy');
       expect(result.timestamp).toBeInstanceOf(Date);
       expect(result.details).toBeDefined();
       expect(result.details?.baseUrl).toBe('http://localhost:3001');
+      expect(result.details?.statusCode).toBe(200);
+      expect(result.details?.responseTime).toBeDefined();
+    });
+
+    it('should return unhealthy status for 503 response', async () => {
+      mockHttpClient.get.mockRejectedValue({
+        response: { status: 503 },
+        code: undefined,
+      });
+
+      const result = await performHealthCheck(
+        'http://localhost:3001',
+        mockHttpClient as unknown as AxiosInstance
+      );
+
+      expect(result.status).toBe('unhealthy');
+      expect(result.details?.error).toBe('HTTP 503');
+      expect(result.details?.statusCode).toBe(503);
+    });
+
+    it('should return unhealthy status for connection refused', async () => {
+      mockHttpClient.get.mockRejectedValue({
+        code: 'ECONNREFUSED',
+      });
+
+      const result = await performHealthCheck(
+        'http://localhost:3001',
+        mockHttpClient as unknown as AxiosInstance
+      );
+
+      expect(result.status).toBe('unhealthy');
+      expect(result.details?.error).toBe('Connection refused');
+    });
+
+    it('should return unhealthy status for request timeout', async () => {
+      mockHttpClient.get.mockRejectedValue({
+        code: 'ECONNABORTED',
+      });
+
+      const result = await performHealthCheck(
+        'http://localhost:3001',
+        mockHttpClient as unknown as AxiosInstance
+      );
+
+      expect(result.status).toBe('unhealthy');
+      expect(result.details?.error).toBe('Request timeout');
+    });
+
+    it('should return unhealthy status for SSRF-unprotected URL in production', async () => {
+      process.env.NODE_ENV = 'production';
+      const result = await performHealthCheck('http://127.0.0.1:3001', mockHttpClient as unknown as AxiosInstance);
+
+      expect(result.status).toBe('unhealthy');
+      expect(result.details?.error).toBe('URL not safe for SSRF');
+
+      process.env.NODE_ENV = 'test';
     });
 
     it('should include response time in details', async () => {
-      const result = await performHealthCheck('http://localhost:3001');
+      mockHttpClient.get.mockResolvedValue({ status: 200 });
+
+      const result = await performHealthCheck(
+        'http://localhost:3001',
+        mockHttpClient as unknown as AxiosInstance
+      );
 
       expect(result.details?.responseTime).toBeDefined();
       expect(typeof result.details?.responseTime).toBe('number');
     });
 
     it('should handle different base URLs', async () => {
-      const result = await performHealthCheck('https://api.example.com');
+      mockHttpClient.get.mockResolvedValue({ status: 200 });
+
+      const result = await performHealthCheck(
+        'https://api.example.com',
+        mockHttpClient as unknown as AxiosInstance
+      );
 
       expect(result.details?.baseUrl).toBe('https://api.example.com');
     });

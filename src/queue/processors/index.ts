@@ -15,7 +15,14 @@ import { processBlockchainSync } from './blockchain-processor';
 /**
  * Type-safe processor function signature
  */
-export type JobProcessor = (payload: JobPayload) => Promise<JobResult>;
+export interface JobProcessorContext {
+  signal: AbortSignal;
+}
+
+export type JobProcessor = (
+  payload: JobPayload,
+  context?: JobProcessorContext,
+) => Promise<JobResult>;
 
 /**
  * Map of job types to their processor functions

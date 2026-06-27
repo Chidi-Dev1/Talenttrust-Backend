@@ -9,7 +9,11 @@
  * Rejects with 401 for missing/invalid credentials and 403 for non-admin callers.
  *
  * @security
- *  - JWT verification uses `jsonwebtoken.verify()` with HS256 and JWT_SECRET.
+ *  - JWT verification uses `jsonwebtoken.verify()` with HS256 and JWT_SECRET,
+ *    pinned to the allowlist exported from `../auth/jwtConfig` so tokens
+ *    whose header advertises any algorithm other than HS256 — including
+ *    `alg: none` and HS/RS confusion attempts — are rejected before the
+ *    signature is even checked.
  *  - API key comparison uses `crypto.timingSafeEqual` to prevent timing attacks.
  *  - Error responses contain no sensitive diagnostic information.
  *  - Credentials are redacted from log output via `redactSecret`.
@@ -19,6 +23,7 @@ import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { verifyApiKey, validateApiKey, ApiKeyInfo } from '../auth/apiKeys';
 import { redactSecret } from '../utils/redact';
+import { JWT_VERIFY_OPTIONS } from '../auth/jwtConfig';
 
 /** Shape of the decoded JWT payload. */
 interface AdminJwtPayload {
@@ -89,7 +94,10 @@ function validateAdminJwt(token: string): { sub: string; email: string; role: st
   const secret = process.env.JWT_SECRET ?? '';
 
   try {
-    const decoded = jwt.verify(token, secret) as AdminJwtPayload;
+    // JWT_VERIFY_OPTIONS pins the accepted signature algorithms to HS256.
+    // This rejects alg: none and HS/RS confusion attempts before any signature
+    // check, even if the rest of the payload is structurally valid.
+    const decoded = jwt.verify(token, secret, JWT_VERIFY_OPTIONS) as AdminJwtPayload;
 
     if (!decoded.sub || !decoded.email) {
       return null;

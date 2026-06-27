@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { ContractsService } from '../services/contracts.service';
-import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
+import type { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
+
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
 import { NotFoundError } from '../errors/appError';
 import { parsePaginationQuery, applyPagination } from '../utils/pagination';
@@ -19,6 +20,56 @@ interface ContractIdParams {
  * module-level DB side effects and enable clean unit testing.
  */
 export class ContractsController {
+
+  /**
+   * GET /api/v1/contracts
+   *
+   * Supports two pagination modes — both are optional and backward-compatible:
+   *
+   * **Cursor mode** (preferred, O(log n)):
+   *   - `?limit=<n>`  — page size, 1–100 (default 20)
+   *   - `?cursor=<s>` — opaque cursor from the previous page's `nextCursor`
+   *
+   * **Legacy offset mode** (still accepted for backward compatibility):
+   *   - `?page=<n>&limit=<n>` — the previous in-memory slice behaviour
+   *
+   * When `cursor` is present the cursor path is used; otherwise the legacy
+   * path is used so existing callers are unaffected.
+   *
+   * @param req - Express request.  Query params: `limit`, `cursor`.
+   * @param res - Express response.
+   * @param next - Express next-error handler.
+   */
+
+  public async getContractsCursor(req: Request, res: Response, next: NextFunction) {
+    try {
+      const limit = parseLimit(req.query['limit']);
+      const rawCursor = req.query['cursor'];
+      if (rawCursor !== undefined && typeof rawCursor === 'string') {
+        // Validate cursor shape eagerly so we return 400 for garbage values
+        try {
+          decodeCursor(rawCursor);
+        } catch (err) {
+          res.status(400).json({
+            status: 'error',
+            message: (err as Error).message,
+          });
+          return;
+        }
+      }
+
+      const cursor =
+        typeof rawCursor === 'string' && rawCursor.length > 0
+          ? rawCursor
+          : undefined;
+
+      const page = await this.service.getContractsPage({ limit, cursor });
+      res.status(200).json({ status: 'success', data: page });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /**
    * @param service - Injected ContractsService instance
    */
@@ -30,6 +81,42 @@ export class ContractsController {
    */
   public async getContracts(req: Request, res: Response, next: NextFunction) {
     try {
+      if (req.query.cursor !== undefined || (req.query.limit !== undefined && req.query.page === undefined)) {
+        const rawCursor = req.query['cursor'];
+        if (rawCursor !== undefined && typeof rawCursor === 'string') {
+          // Validate cursor shape eagerly so we return 400 for garbage values
+          try {
+            decodeCursor(rawCursor);
+          } catch (err) {
+            res.status(400).json({
+              status: 'error',
+              message: (err as Error).message,
+            });
+            return;
+          }
+        }
+
+        const cursor =
+          typeof rawCursor === 'string' && rawCursor.length > 0
+            ? rawCursor
+            : undefined;
+
+        let limit;
+        try {
+          limit = req.query.limit !== undefined ? parseLimit(req.query.limit) : CURSOR_DEFAULT_LIMIT;
+        } catch (err) {
+          res.status(400).json({
+            status: 'error',
+            message: (err as Error).message,
+          });
+          return;
+        }
+
+        const page = await this.service.getContractsPage({ limit, cursor });
+        res.status(200).json({ status: 'success', data: page });
+        return;
+      }
+
       const pagination = parsePaginationQuery((req.query ?? {}) as Record<string, unknown>);
       if (!pagination.ok) {
         fail(res, 'bad_request', pagination.error, 400);
@@ -139,6 +226,13 @@ export class ContractsController {
   /**
    * GET /api/v1/contracts/bounds
    * Returns the enforced per-contract limits for client discovery.
+   */
+  public static getBounds(_req: Request, res: Response) {
+    ok(res, CONTRACT_BOUNDS);
+  }
+
+  /**
+   * Instance version of getBounds.
    */
   public getBounds(_req: Request, res: Response) {
     ok(res, CONTRACT_BOUNDS);

@@ -176,6 +176,7 @@ Authorization: Bearer <jwt-token>
 - API keys are hashed using PBKDF2 with 10,000 iterations
 - Each key has a unique 16-byte salt
 - Hashes are stored in the format `salt:hash`
+- A deterministic `key_selector` (SHA-256 of the plain key) is stored alongside the hash for O(1) indexed lookup; the selector alone cannot reveal the original key due to SHA-256 preimage resistance
 
 ### Key Rotation
 - Rotation generates a new key while keeping the same ID
@@ -268,12 +269,62 @@ Authorization: Bearer <jwt-token>
 - **Key Length**: 64 bytes (128 hex chars)
 - **Hash Format**: `salt:hash`
 
+### Stored Credential Validation
+
+The stored `key_hash` field must be a well-formed `salt:hash` string before PBKDF2 verification. This validation runs **before** calling the crypto functions to fail closed on malformed input (e.g., from botched migrations) rather than risking exceptions on the authentication hot path.
+
+**Validation rules:**
+| Check | Requirement |
+|-------|-------------|
+| Non-empty | The stored value must not be empty |
+| Separator | Must contain exactly one colon (`:`) |
+| Parts | Must split into exactly 2 parts (no extra colons) |
+| Salt length | Must be exactly 32 hex characters (16 bytes) |
+| Hash length | Must be exactly 128 hex characters (64 bytes) |
+
+**On invalid format:**
+- Returns `null` (rejects the key)
+- Does NOT throw exceptions
+- Does NOT log the stored hash or salt (surfaces generic "invalid key" result)
+- Preserves existing expiry and `last_used_at` behavior
+
+**Security notes:**
+- Timing-safe comparison (`timingSafeEqual`) is preserved for valid keys
+- The validation runs before PBKDF2 to prevent potential denial-of-service from malformed input
+- No information about the stored format is leaked in error responses
+
+### Indexed Key Lookup (O(1))
+
+Every API key has an additional indexed field `key_selector` — a SHA-256 digest of the plain key that acts as a deterministic, non-reversible lookup key:
+
+```
+key_selector = SHA-256(plain_api_key)
+```
+
+**Validation flow:**
+
+1. **Selector computation** — On each request, compute `SHA-256(api_key)` to derive the selector.
+2. **Indexed lookup** — Query the storage layer by `key_selector` to find the candidate row in O(1) instead of scanning all stored keys.
+3. **Salted verification** — The candidate's stored `salt:hash` is verified with PBKDF2 (the same slow salted hash as before). This ensures the selector alone is insufficient to authenticate; an attacker who compromises the selector column still cannot derive the original key or bypass the salted hash.
+4. **Post-validation** — `last_used_at` is updated, expiry is checked (and the key deactivated if expired), and the `ApiKeyInfo` shape is returned.
+
+**Security properties:**
+| Property | Mechanism |
+|----------|-----------|
+| Selector preimage resistance | SHA-256 is one-way; `key_selector` cannot be reversed to the original key |
+| Authenticator binding | PBKDF2 salted hash is still required — both selector match AND hash verification must pass |
+| Timing safety | `timingSafeEqual` on the PBKDF2 comparison; selector lookups use the same constant-time index query |
+| No downgrade | Existing O(n) fallback for legacy keys (those without `key_selector`) applies at most 1 PBKDF2 call per request, and the selector is backfilled automatically on first use |
+
+**Legacy migration:** Keys created before this feature lack the `key_selector` field. On first successful validation they receive a backfilled selector, so subsequent requests hit the O(1) path.
+
 ### Database Schema
 ```typescript
 interface ApiKey {
   id: string;
   name: string;
   key_hash: string;        // salt:hash format
+  key_selector?: string;   // SHA-256 of the plain key (O(1) lookup index)
   scope: string[];
   created_by: string;
   created_at: Date;
@@ -327,7 +378,7 @@ app.get('/api/mixed',
 ### Common Issues
 - **Key not working** – Verify the key is copied correctly (no extra spaces), check expiration, ensure the key is still active, and verify required scope matches.
 - **Scope errors** – Check exact scope format, ensure wildcards are used correctly, and verify the key has necessary permissions.
-- **Performance issues** – Monitor key validation time, consider database indexing for key lookups, and implement caching for frequently validated keys.
+- **Performance issues** – Key validation is O(1) via the indexed `key_selector` field; the slow PBKDF2 hash runs at most once per request. If you still see latency, check that all active keys have a `key_selector` (legacy keys fall back to an O(n) scan). Run the backfill or let lazy backfilling complete.
 
 ### Debug Information
 Enable debug logging to trace authentication flow:

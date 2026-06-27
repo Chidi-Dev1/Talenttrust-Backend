@@ -116,13 +116,6 @@ export function createWebhookMetrics(registry: Registry) {
     registers: [registry],
   });
 
-  const deliveryRetriesTotal = new Counter({
-    name: 'webhook_delivery_retries_total',
-    help: 'Total number of webhook delivery retries due to transient failures',
-    labelNames: ['provider', 'reason'] as const,
-    registers: [registry],
-  });
-
   return {
     deliveryAttemptsTotal,
     deliveryLatencySeconds,
@@ -138,7 +131,7 @@ export type WebhookMetrics = ReturnType<typeof createWebhookMetrics>;
  * Record a throttled webhook delivery (rate limit triggered).
  * @param providerId - The provider ID that was throttled.
  */
-export function recordThrottled(providerId: string): void {
+export function recordThrottled(_providerId: string): void {
   // Placeholder implementation - can be connected to metrics system
   // For now, this is a no-op function to satisfy the import requirement
 }

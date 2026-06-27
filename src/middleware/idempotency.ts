@@ -1,84 +1,150 @@
 import { Request, Response, NextFunction } from 'express';
+import { createHash, timingSafeEqual } from 'crypto';
+import {
+  defaultIdempotencyStore,
+  IdempotencyStore,
+} from '../db/idempotencyStore';
+import { JsonValue } from '../events/types';
 
-// Simple in-memory cache for idempotency keys. In a real application, 
-// this should be moved to a persistent store like Redis or a database.
-const idempotencyStore = new Map<string, {
-  status: 'processing' | 'completed';
-  timestamp: number;
-  result?: any;
-}>();
+const IDEMPOTENCY_PAYLOAD_CONFLICT = 'idempotency_payload_conflict';
 
-const CACHE_TTL = 3600 * 1000; // 1 hour TTL for idempotency keys
+interface IdempotencyMiddlewareOptions {
+  store?: IdempotencyStore;
+  inFlight?: Map<string, string>;
+}
+
+function requestIdFrom(res: Response): string {
+  return typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+}
+
+function hashRequestPayload(body: unknown): string {
+  return hashJsonValue(normalizeRequestBody(body));
+}
+
+function normalizeRequestBody(body: unknown): JsonValue {
+  if (body === undefined || body === null) {
+    return {};
+  }
+
+  return body as JsonValue;
+}
+
+function hashJsonValue(value: JsonValue): string {
+  return createHash('sha256').update(canonicalize(value)).digest('hex');
+}
+
+function canonicalize(value: JsonValue): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalize(item)).join(',')}]`;
+  }
+
+  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalize(entry)}`).join(',')}}`;
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'hex');
+  const rightBuffer = Buffer.from(right, 'hex');
+
+  if (leftBuffer.length !== rightBuffer.length) {
+    timingSafeEqual(leftBuffer, leftBuffer);
+    return false;
+  }
+
+  return timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function conflictResponse(res: Response, message: string, code = 'conflict') {
+  return res.status(409).json({
+    error: {
+      code,
+      message,
+      requestId: requestIdFrom(res),
+    },
+  });
+}
 
 /**
- * Middleware to enforce idempotency keys for protected operations
+ * Creates middleware that deduplicates state-changing HTTP requests via Idempotency-Key.
+ *
+ * Requests without the header pass through unchanged. When the header is present,
+ * identical retries replay the cached response; conflicting payloads receive HTTP 409.
  */
-export const idempotencyMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  const idempotencyKey = req.headers['idempotency-key'] as string;
+export function createIdempotencyMiddleware(options: IdempotencyMiddlewareOptions = {}) {
+  const store = options.store ?? defaultIdempotencyStore;
+  const inFlight = options.inFlight ?? defaultInFlight;
 
-  if (!idempotencyKey) {
-    const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
-    return res.status(400).json({
-      error: {
-        code: 'bad_request',
-        message: 'Idempotency-Key header is required',
-        requestId,
-      },
-    });
-  }
+  return (req: Request, res: Response, next: NextFunction) => {
+    const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
 
-  // Basic cleanup of old keys (can be optimized or moved to a separate job)
-  const now = Date.now();
-  for (const [key, value] of idempotencyStore.entries()) {
-    if (now - value.timestamp > CACHE_TTL) {
-      idempotencyStore.delete(key);
+    if (!idempotencyKey) {
+      return next();
     }
-  }
 
-  const existingEntry = idempotencyStore.get(idempotencyKey);
+    const payloadHash = hashRequestPayload(req.body);
+    const existing = store.get(idempotencyKey);
 
-  if (existingEntry) {
-    if (existingEntry.status === 'processing') {
-      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
-      return res.status(409).json({
-        error: {
-          code: 'conflict',
-          message: 'Request is already being processed',
-          requestId,
-        },
+    if (existing) {
+      if (!constantTimeEqual(existing.payloadHash, payloadHash)) {
+        return conflictResponse(
+          res,
+          'Idempotency key was already used with a different request payload.',
+          IDEMPOTENCY_PAYLOAD_CONFLICT,
+        );
+      }
+
+      return res.status(200).json({
+        ...(existing.result as Record<string, unknown>),
+        idempotencyHeader: 'replay-detected',
       });
     }
-    
-    // If it's already completed, return its cached result
-    return res.status(existingEntry.status === 'completed' ? 200 : 409).json({
-      ...existingEntry.result,
-      idempotencyHeader: 'replay-detected'
-    });
-  }
 
-  // Pre-register the key to prevent race conditions (basic version)
-  idempotencyStore.set(idempotencyKey, {
-    status: 'processing',
-    timestamp: Date.now()
-  });
+    const inFlightHash = inFlight.get(idempotencyKey);
+    if (inFlightHash !== undefined) {
+      if (!constantTimeEqual(inFlightHash, payloadHash)) {
+        return conflictResponse(
+          res,
+          'Idempotency key was already used with a different request payload.',
+          IDEMPOTENCY_PAYLOAD_CONFLICT,
+        );
+      }
 
-  // Proxy the original send method to capture the result
-  const originalSend = res.send;
-  res.send = function (body: any): Response {
-    idempotencyStore.set(idempotencyKey, {
-      status: 'completed',
-      timestamp: Date.now(),
-      result: typeof body === 'string' ? JSON.parse(body) : body
-    });
-    return originalSend.apply(res, arguments as any);
+      return conflictResponse(res, 'Request is already being processed');
+    }
+
+    inFlight.set(idempotencyKey, payloadHash);
+
+    const originalSend = res.send.bind(res);
+    res.send = function sendWithIdempotencyCache(body: unknown): Response {
+      const result = typeof body === 'string' ? JSON.parse(body) : body;
+
+      store.set({
+        key: idempotencyKey,
+        payloadHash,
+        result,
+        createdAt: new Date(),
+      });
+      inFlight.delete(idempotencyKey);
+
+      return originalSend(body);
+    };
+
+    next();
   };
+}
 
-  next();
-};
+const defaultInFlight = new Map<string, string>();
+
+export const idempotencyMiddleware = createIdempotencyMiddleware();
 
 /**
- * Clean up the idempotency store manually (for testing or maintenance)
+ * Clears cached idempotency records and in-flight markers (for tests or maintenance).
  */
-export const clearIdempotencyStore = () => {
-  idempotencyStore.clear();
-};
+export function clearIdempotencyStore(store: IdempotencyStore = defaultIdempotencyStore) {
+  store.clear();
+  defaultInFlight.clear();
+}
