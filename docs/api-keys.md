@@ -269,6 +269,30 @@ Authorization: Bearer <jwt-token>
 - **Key Length**: 64 bytes (128 hex chars)
 - **Hash Format**: `salt:hash`
 
+### Stored Credential Validation
+
+The stored `key_hash` field must be a well-formed `salt:hash` string before PBKDF2 verification. This validation runs **before** calling the crypto functions to fail closed on malformed input (e.g., from botched migrations) rather than risking exceptions on the authentication hot path.
+
+**Validation rules:**
+| Check | Requirement |
+|-------|-------------|
+| Non-empty | The stored value must not be empty |
+| Separator | Must contain exactly one colon (`:`) |
+| Parts | Must split into exactly 2 parts (no extra colons) |
+| Salt length | Must be exactly 32 hex characters (16 bytes) |
+| Hash length | Must be exactly 128 hex characters (64 bytes) |
+
+**On invalid format:**
+- Returns `null` (rejects the key)
+- Does NOT throw exceptions
+- Does NOT log the stored hash or salt (surfaces generic "invalid key" result)
+- Preserves existing expiry and `last_used_at` behavior
+
+**Security notes:**
+- Timing-safe comparison (`timingSafeEqual`) is preserved for valid keys
+- The validation runs before PBKDF2 to prevent potential denial-of-service from malformed input
+- No information about the stored format is leaked in error responses
+
 ### Indexed Key Lookup (O(1))
 
 Every API key has an additional indexed field `key_selector` — a SHA-256 digest of the plain key that acts as a deterministic, non-reversible lookup key:
