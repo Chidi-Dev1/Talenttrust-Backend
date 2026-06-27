@@ -34,9 +34,12 @@ export const envSchema = z.object({
 
   MAX_REQUEST_SIZE: z.string().default('10mb'),
 
-  CORS_ORIGINS: z.string()
+  CORS_ALLOWED_ORIGINS: z.string()
     .optional()
-    .transform((val) => val ? val.split(',') : ['http://localhost:3000']),
+    .transform((val) => {
+      if (val === undefined) return undefined;
+      return val.split(',').map(o => o.trim()).filter(Boolean);
+    }),
 
   // Database
   DATABASE_URL: z.string().optional(),

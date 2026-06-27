@@ -73,8 +73,7 @@ Two separate CORS variables exist — one used by the security middleware and on
 
 | Variable          | Required | Default                                        | Description                                                                                                                                                           |
 | ----------------- | -------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ALLOWED_ORIGINS` | No       | `http://localhost:3000, http://localhost:3001` | Comma-separated list of origins allowed by the CORS middleware (`src/config/security.ts`). Wildcards (`*`) and `localhost` origins are rejected in `production` mode. |
-| `CORS_ORIGINS`    | No       | `http://localhost:3000`                        | Comma-separated origins used by the Zod-validated config (`src/config/env.schema.ts`). Automatically parsed into an array.                                            |
+| `CORS_ALLOWED_ORIGINS` | No       | *(environment-dependent)*                     | Comma-separated list of allowed CORS origins. In production defaults to deny-by-default (empty); in development defaults to `http://localhost:3000`. Wildcards (`*`) and `localhost` origins are rejected in `production` mode. This is the single source of truth for CORS configuration, validated via Zod and consumed by the CORS middleware. |
 
 **Production rules enforced at startup:**
 
@@ -344,8 +343,7 @@ NODE_ENV=staging
 PORT=3002
 DEBUG=false
 API_BASE_URL=https://staging-api.talenttrust.example.com
-CORS_ORIGINS=https://staging.talenttrust.example.com
-ALLOWED_ORIGINS=https://staging.talenttrust.example.com
+CORS_ALLOWED_ORIGINS=https://staging.talenttrust.example.com
 DATABASE_URL=postgresql://user:pass@staging-db.example.com:5432/talenttrust
 JWT_SECRET=<strong-random-secret>
 REDIS_HOST=<redis-host>
@@ -364,8 +362,7 @@ NODE_ENV=production
 PORT=3000
 DEBUG=false
 API_BASE_URL=https://api.talenttrust.example.com
-CORS_ORIGINS=https://app.talenttrust.example.com
-ALLOWED_ORIGINS=https://app.talenttrust.example.com
+CORS_ALLOWED_ORIGINS=https://app.talenttrust.example.com
 DATABASE_URL=postgresql://user:pass@prod-db.example.com:5432/talenttrust
 JWT_SECRET=<strong-random-secret>          # ⚠️ Required
 REDIS_HOST=<redis-host>
@@ -386,7 +383,7 @@ TRUST_PROXY=true                           # if behind a load balancer
 
 | Issue                                                                                | Recommendation                                                          |
 | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `ALLOWED_ORIGINS` and `CORS_ORIGINS` serve the same purpose in two different modules | Consolidate to a single variable in a future refactor                   |
+| N/A (consolidated)                                                                  | `CORS_ALLOWED_ORIGINS` is now the single validated variable for CORS    |
 | `SOROBAN_RPC_URL` has different defaults in `env.schema.ts` vs `sorobanEnv.ts`       | Set `SOROBAN_RPC_URL` explicitly in all environments to avoid ambiguity |
 | `METRICS_AUTH_TOKEN` is optional but the `/metrics` endpoint is open without it      | Enforce this variable via `REQUIRED_ENV_VARS` in staging and production |
 | Redis password is not registered in `SecretsManager`                                 | Register it for centralised rotation support                            |

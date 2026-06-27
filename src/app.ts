@@ -56,11 +56,11 @@ export function attachTerminalHandlers(app: express.Application): void {
  */
 export function createApp(options?: AppFactoryOptions): express.Application {
   const includeTerminalHandlers = options?.includeTerminalHandlers ?? true;
-  validateEnv();
+  const env = validateEnv();
   const app = express();
 
   // ── Security Middleware ───────────────────────────────────────────────────
-  applySecurityMiddleware(app);
+  applySecurityMiddleware(app, env.CORS_ALLOWED_ORIGINS);
 
   const metricsService = new MetricsService(
     process.env['SERVICE_NAME'] ?? 'talenttrust-backend',

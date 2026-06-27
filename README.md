@@ -281,7 +281,39 @@ decisions and planned integrations.
 The TalentTrust Backend implements hardened HTTP response policies and origin controls.
 
 - **Security Headers**: Managed via [Helmet](https://helmetjs.github.io/) (CSP, HSTS, etc.).
-- **CORS Policy**: Configurable origin controls.
+- **CORS Policy**: Strict allowlist controlled by environment configuration.
+
+### CORS Configuration
+
+The CORS policy is driven by the `CORS_ALLOWED_ORIGINS` environment variable, a comma-separated list of allowed origins.
+
+```bash
+# Allow specific origins
+CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
+```
+
+#### Behavior by environment
+
+| Environment | Default | Behavior |
+|---|---|---|
+| `production` | Deny-by-default (empty allowlist) | Only origins in `CORS_ALLOWED_ORIGINS` are accepted. Wildcard (`*`) and localhost origins are rejected at startup. |
+| `development` / `staging` / `test` | `http://localhost:3000,http://localhost:3001` | Localhost origins are pre-configured for convenience. Explicitly setting the variable overrides the default. |
+
+#### Security guarantees
+
+- The request `Origin` header is reflected in `Access-Control-Allow-Origin` **only** when it exists in the allowlist.
+- Arbitrary origins are never echoed back.
+- Wildcard (`*`) is never used as `Access-Control-Allow-Origin` because credentials are always enabled.
+- `Access-Control-Allow-Credentials: true` is set for all allowlisted requests.
+- Requests without an `Origin` header (server-to-server, curl, health checks) are allowed.
+
+#### Allowed methods
+
+`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`
+
+#### Allowed headers
+
+`Content-Type`, `Authorization`
 
 For detailed information, see [Security Documentation](docs/backend/security.md).
 
@@ -355,11 +387,12 @@ This prevents polls and queue jobs from being interrupted mid-flight while prese
 All configuration is managed through `src/config/` and validated at startup using **Zod**. This ensures a fail-fast behavior with clear error messages. Copy `.env.example` to `.env` to get started. See [docs/backend/config.md](docs/backend/config.md) for full details.
 
 | Variable | Default | Description |
-|---|---|---|
+|---|---|---|---|
 | `PORT` | `3001` | HTTP port for the Express server |
 | `NODE_ENV` | `development` | Runtime environment (`development`, `staging`, `production`, `test`) |
 | `API_BASE_URL` | `http://localhost:${PORT}` | Base URL for the API |
 | `DEBUG` | `false` | Enable/disable debug logging |
+| `CORS_ALLOWED_ORIGINS` | *(see CORS Configuration)* | Comma-separated list of allowed CORS origins. In production defaults to deny-by-default; in development defaults to `http://localhost:3000`. |
 | `DATABASE_URL` | *(optional)* | Database connection string |
 | `JWT_SECRET` | *(optional)* | Secret used for JWT signing (min 8 chars) |
 | `IDEMPOTENCY_TTL_MS` | `3600000` | Idempotency key TTL in ms (default 1 hour); after expiry keys are eligible for eviction and re-submission is processed fresh |

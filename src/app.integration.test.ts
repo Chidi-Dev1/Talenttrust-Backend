@@ -213,3 +213,103 @@ describe('Correlation ID propagation integration', () => {
     }
   });
 });
+
+/**
+ * @module app.integration.test
+ * @description Integration tests for CORS allowlist enforcement.
+ *
+ * Verifies that:
+ * 1. Allowlisted origins succeed with matching ACAO header.
+ * 2. Disallowed origins get 403 without origin reflection.
+ * 3. Missing Origin header behaves normally.
+ * 4. OPTIONS preflight respects the allowlist.
+ */
+describe('CORS Policy', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, NODE_ENV: 'test' };
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  async function withApp(
+    origins: string,
+    testFn: (port: number) => Promise<void>,
+  ): Promise<void> {
+    process.env.CORS_ALLOWED_ORIGINS = origins;
+    const app = createApp();
+    const server = app.listen(0);
+    const { port } = server.address() as AddressInfo;
+    try {
+      await testFn(port);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err?: Error) => (err ? reject(err) : resolve()));
+      });
+    }
+  }
+
+  it('should allow requests from allowlisted origin and echo it in ACAO', async () => {
+    await withApp('http://localhost:3000', async (port) => {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
+        headers: { Origin: 'http://localhost:3000' },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+    });
+  });
+
+  it('should reject requests from disallowed origin without reflection', async () => {
+    await withApp('https://allowed.example.com', async (port) => {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
+        headers: { Origin: 'https://evil.example.com' },
+      });
+      expect(response.status).toBe(403);
+      expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    });
+  });
+
+  it('should allow requests with no Origin header', async () => {
+    await withApp('http://localhost:3000', async (port) => {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`);
+      expect(response.status).toBe(200);
+    });
+  });
+
+  it('should allow OPTIONS preflight from allowlisted origin', async () => {
+    await withApp('http://localhost:3000', async (port) => {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/v1/contracts`,
+        {
+          method: 'OPTIONS',
+          headers: {
+            Origin: 'http://localhost:3000',
+            'Access-Control-Request-Method': 'GET',
+          },
+        },
+      );
+      expect(response.status).toBe(204);
+      expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+    });
+  });
+
+  it('should reject OPTIONS preflight from disallowed origin', async () => {
+    await withApp('https://allowed.example.com', async (port) => {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/v1/contracts`,
+        {
+          method: 'OPTIONS',
+          headers: {
+            Origin: 'https://evil.example.com',
+            'Access-Control-Request-Method': 'GET',
+          },
+        },
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    });
+  });
+});

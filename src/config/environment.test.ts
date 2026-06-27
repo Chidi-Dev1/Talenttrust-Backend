@@ -114,7 +114,7 @@ describe('Environment Configuration', () => {
 
     it('should parse CORS origins from comma-separated list', () => {
       process.env.NODE_ENV = 'development';
-      process.env.CORS_ORIGINS = 'https://app1.com,https://app2.com';
+      process.env.CORS_ALLOWED_ORIGINS = 'https://app1.com,https://app2.com';
       const config = loadEnvironmentConfig();
 
       expect(config.corsOrigins).toEqual(['https://app1.com', 'https://app2.com']);
@@ -173,12 +173,12 @@ describe('Environment Configuration', () => {
       expect(() => loadEnvironmentConfig()).toThrow();
     });
 
-    it('should handle empty CORS_ORIGINS using default', () => {
+    it('should use empty array when CORS_ALLOWED_ORIGINS is set to empty string', () => {
       process.env.NODE_ENV = 'development';
-      process.env.CORS_ORIGINS = '';
+      process.env.CORS_ALLOWED_ORIGINS = '';
       const config = loadEnvironmentConfig();
 
-      expect(config.corsOrigins).toEqual(['http://localhost:3000']);
+      expect(config.corsOrigins).toEqual([]);
     });
 
     it('should handle DEBUG=false', () => {

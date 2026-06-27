@@ -241,7 +241,7 @@ export async function promoteDeployment(request: PromotionRequest): Promise<Prom
 
   // Load environment config for target environment transiently to pass validation
   const originalNodeEnv = process.env.NODE_ENV;
-  const originalCorsOrigins = process.env.CORS_ORIGINS;
+  const originalCorsOrigins = process.env.CORS_ALLOWED_ORIGINS;
   const originalApiBaseUrl = process.env.API_BASE_URL;
   const originalStellarNetwork = process.env.STELLAR_NETWORK;
   
@@ -251,15 +251,15 @@ export async function promoteDeployment(request: PromotionRequest): Promise<Prom
     
     // Set realistic defaults for target environment to pass validation during promotion/tests
     if (request.to === 'production') {
-      process.env.CORS_ORIGINS = 'https://app.example.com';
+      process.env.CORS_ALLOWED_ORIGINS = 'https://app.example.com';
       process.env.API_BASE_URL = 'https://api.example.com';
       process.env.STELLAR_NETWORK = 'mainnet';
     } else if (request.to === 'staging') {
-      process.env.CORS_ORIGINS = 'https://staging.example.com';
+      process.env.CORS_ALLOWED_ORIGINS = 'https://staging.example.com';
       process.env.API_BASE_URL = 'https://staging-api.example.com';
       process.env.STELLAR_NETWORK = 'testnet';
     } else {
-      process.env.CORS_ORIGINS = 'https://dev.example.com';
+      process.env.CORS_ALLOWED_ORIGINS = 'https://dev.example.com';
       process.env.API_BASE_URL = 'https://dev-api.example.com';
       process.env.STELLAR_NETWORK = 'testnet';
     }
@@ -268,9 +268,9 @@ export async function promoteDeployment(request: PromotionRequest): Promise<Prom
   } finally {
     process.env.NODE_ENV = originalNodeEnv;
     if (originalCorsOrigins !== undefined) {
-      process.env.CORS_ORIGINS = originalCorsOrigins;
+      process.env.CORS_ALLOWED_ORIGINS = originalCorsOrigins;
     } else {
-      delete process.env.CORS_ORIGINS;
+      delete process.env.CORS_ALLOWED_ORIGINS;
     }
     if (originalApiBaseUrl !== undefined) {
       process.env.API_BASE_URL = originalApiBaseUrl;
