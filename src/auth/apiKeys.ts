@@ -66,9 +66,17 @@ export function hashApiKey(apiKey: string): { salt: string; hash: string } {
  * @param hash - The stored hash to verify against.
  * @returns True if the key is valid, false otherwise.
  */
+
 export function verifyApiKey(apiKey: string, salt: string, hash: string): boolean {
-  const verifyHash = crypto.pbkdf2Sync(apiKey, salt, 10000, 64, 'sha256').toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(verifyHash));
+  try {
+    const verifyHash = crypto.pbkdf2Sync(apiKey, salt, 10000, 64, 'sha256').toString('hex');
+    const hashBuffer = Buffer.from(hash, 'hex');
+    const verifyBuffer = Buffer.from(verifyHash, 'hex');
+    if (hashBuffer.length !== verifyBuffer.length) return false;
+    return crypto.timingSafeEqual(hashBuffer, verifyBuffer);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -141,25 +149,22 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
  * @param storedCredential - The stored credential to validate.
  * @returns True if the format is valid, false otherwise.
  */
-function isValidSaltHashFormat(storedCredential: string): boolean {
-  // Must not be empty and must contain exactly one colon separator
-  if (!storedCredential || storedCredential.indexOf(':') === -1) {
-    return false;
-  }
 
-  const parts = storedCredential.split(':');
+function isValidSaltHashFormat(storedCredential: string): boolean {
+  if (typeof storedCredential !== 'string') return false;
+
+  const trimmed = storedCredential.trim();
+  if (!trimmed || trimmed.indexOf(':') === -1) return false;
+
+  const parts = trimmed.split(':');
 
   // Must have exactly 2 parts (salt and hash, no extra colons)
-  if (parts.length !== 2) {
-    return false;
-  }
+  if (parts.length !== 2) return false;
 
   const [salt, hash] = parts;
 
   // Both parts must be present and non-empty
-  if (!salt || !hash) {
-    return false;
-  }
+  if (!salt || !hash) return false;
 
   // Salt: 16 bytes = 32 hex characters
   // Hash: 64 bytes = 128 hex characters (PBKDF2 with sha256, 10000 iterations, 64 output)
