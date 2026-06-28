@@ -6,7 +6,7 @@ import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.type
 
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
-import { NotFoundError, MissingVersionError, InvalidVersionError } from '../errors/appError';
+import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
