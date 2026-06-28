@@ -6,7 +6,7 @@ import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.type
 
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
-import { NotFoundError } from '../errors/appError';
+import { NotFoundError, MissingVersionError, InvalidVersionError } from '../errors/appError';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -83,7 +83,12 @@ export class ContractsService {
   }
 
   /**
-   * Updates a contract using Optimistic Concurrency Control.
+   * Updates a contract using Optimistic Concurrency Control (OCC).
+   *
+   * Requires the caller to supply the `version` they last observed. The update
+   * succeeds only when the stored version matches the supplied value; the version
+   * is then atomically incremented by 1. If the stored version differs (another
+   * writer got there first), a {@link VersionConflictError} is thrown.
    *
    * Maps every updatable field from {@link UpdateContractDto} into the update
    * payload and re-runs {@link validateContractBounds} whenever `budget` or
@@ -91,18 +96,34 @@ export class ContractsService {
    * validation error so callers receive a clear signal rather than a misleading
    * 200 that changed nothing.
    *
-   * @param id  - UUID of the contract to update.
+   * @param id - UUID of the contract to update.
    * @param dto - Partial update payload including the OCC `version`.
-   * @throws ContractBoundsError  when amount or milestone bounds are violated.
-   * @throws ValidationError      when the patch is empty.
-   * @throws VersionConflictError when the version is stale.
+   * @returns The updated Contract with an incremented version.
+   * @throws {MissingVersionError} When `version` is not provided.
+   * @throws {InvalidVersionError} When `version` is not a non-negative integer.
+   * @throws {ContractBoundsError} When amount or milestone bounds are violated.
+   * @throws {VersionConflictError} When the version is stale (another update won).
+   * @throws {NotFoundError} When the contract ID does not exist.
+   *
+   * @security The version check is enforced at the database level via a single
+   * atomic `UPDATE ... WHERE version = ?` statement. It cannot be bypassed by
+   * omitting the version field because this method validates it before calling
+   * the repository.
    */
   public async updateContract(id: string, dto: UpdateContractDto): Promise<Contract> {
     const { version, ...fields } = dto;
 
+    // Defense-in-depth: validate version even though middleware already checked
+    if (version === undefined || version === null) {
+      throw new MissingVersionError();
+    }
+    if (!Number.isInteger(version) || version < 0) {
+      throw new InvalidVersionError();
+    }
+
     // Reject no-op updates
     const hasFields = Object.keys(fields).some(
-      (k) => (fields as Record<string, unknown>)[k] !== undefined
+      (k) => (fields as Record<string, unknown>)[k] !== undefined,
     );
     if (!hasFields) {
       throw new Error('At least one field must be provided for an update.');

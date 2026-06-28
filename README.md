@@ -780,3 +780,70 @@ const data = await withRetry(() => fetchFromApi(), {
 | `maxDelayMs` | number | 5000 | Max delay cap in ms |
 | `jitter` | boolean | true | Adds randomness to delay |
 | `isRetryable` | function | `() => true` | Controls which errors retry |
+
+
+## Optimistic Concurrency Control (OCC)
+
+Contract updates enforce optimistic concurrency via a monotonically increasing
+version column on the contracts table. This prevents lost-update anomalies
+when two clients edit the same contract concurrently.
+
+
+# How it works
+Read: GET /api/v1/contracts/:id returns the current version (starts at 0).
+Update: PATCH /api/v1/contracts/:id must include the version you last read.
+Atomic check: The database updates the row only if version matches;
+otherwise a 409 ERR_CONFLICT is returned.
+Version bump: On success the stored version is incremented by 1 atomically.
+
+## Request / response examples
+Successful update:
+curl -X PATCH http://localhost:3001/api/v1/contracts/abc-123 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer demo-user-token" \
+  -d '{"version": 0, "title": "Updated Title"}'
+  {
+  "status": "success",
+  "data": {
+    "id": "abc-123",
+    "title": "Updated Title",
+    "version": 1,
+    ...
+  }
+}
+
+Stale version (another client updated first):
+curl -X PATCH http://localhost:3001/api/v1/contracts/abc-123 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer demo-user-token" \
+  -d '{"version": 0, "title": "Late Update"}'
+  {
+  "error": {
+    "code": "ERR_CONFLICT",
+    "message": "Version conflict",
+    "requestId": "..."
+  }
+}
+Missing version:
+{
+  "error": {
+    "code": "ERR_MISSING_VERSION",
+    "message": "version field is required for updates",
+    "requestId": "..."
+  }
+}
+Invalid version:
+{
+  "error": {
+    "code": "ERR_INVALID_VERSION",
+    "message": "version must be a non-negative integer",
+    "requestId": "..."
+  }
+}
+
+## Security guarantees
+The version check is enforced at the database level via a single atomic
+UPDATE ... WHERE version = ? statement. It cannot be bypassed by omitting
+the version field — the API layer rejects such requests with 400 ERR_MISSING_VERSION.
+The version counter is a non-negative integer that starts at 0 and increments
+by exactly 1 on every successful update.
