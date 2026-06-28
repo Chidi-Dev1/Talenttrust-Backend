@@ -70,11 +70,47 @@ export class NotificationService {
     this.repo = options?.repo ?? new NotificationRepository(getDb(process.env['DB_PATH'] ?? ':memory:'));
   }
 
+  /**
+   * Validates a single recipient email address before it is handed to an email
+   * transport.
+   *
+   * The check is intentionally strict because validated addresses flow into the
+   * (soon real) SMTP/SES/SendGrid transports, where permissive input enables
+   * header- and recipient-injection attacks. The rules are:
+   *
+   *  - Reject empty input and any CR/LF (header-injection) characters.
+   *  - Reject control characters and whitespace anywhere in the address.
+   *  - Reject comma/semicolon-separated multi-recipient strings
+   *    (e.g. `a@b.com,c@d.com`).
+   *  - Reject quoting/backslash forms (`"x"@y.com`, `a\b@c.com`) that SMTP can
+   *    misinterpret.
+   *  - Accept normal RFC-shaped single addresses with exactly one `@` and a
+   *    dotted domain with a TLD.
+   *
+   * The method keeps its boolean contract and signature unchanged so callers and
+   * the email transport can rely on deterministic behaviour.
+   *
+   * @param address The candidate recipient address.
+   * @returns `true` if the address is a safe, single, RFC-shaped recipient.
+   */
   private isValidEmail(address: string): boolean {
     if (!address) return false;
-    // Basic sanity check + header injection protection (no CR/LF)
-    if (/[\r\n]/.test(address)) return false;
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    // Header-injection protection: reject CR/LF and other control characters.
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f\x7f]/.test(address)) return false;
+    // Reject multi-recipient separators that could smuggle extra recipients.
+    if (/[,;]/.test(address)) return false;
+    // Reject quoting/backslash forms that SMTP can misinterpret.
+    if (/["\\]/.test(address)) return false;
+    // Reject angle brackets / display-name forms.
+    if (/[<>()[\]]/.test(address)) return false;
+    // Exactly one '@' separating local part and domain.
+    const parts = address.split('@');
+    if (parts.length !== 2) return false;
+    const [local, domain] = parts;
+    if (!local || !domain) return false;
+    // Strict, single-address shape with a dotted domain and a TLD.
+    const re = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
     return re.test(address);
   }
 
