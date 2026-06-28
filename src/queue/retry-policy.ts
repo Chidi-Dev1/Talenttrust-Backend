@@ -7,6 +7,7 @@
 
 import { JobType } from './types';
 import { queueConfig } from './config';
+import { logger } from '../logger';
 
 /**
  * Retry policy configuration interface
@@ -121,6 +122,47 @@ export const MAX_RETRY_ATTEMPTS = 10;
 export const MAX_BACKOFF_DELAY = 300000; // 5 minutes
 
 /**
+ * Minimum allowed backoff delay (in ms) for overrides.
+ */
+export const MIN_BACKOFF_DELAY = 1; // 1 ms
+
+/**
+ * Minimum allowed backoff multiplier for exponential overrides.
+ */
+export const MIN_BACKOFF_MULTIPLIER = 1;
+
+/**
+ * Maximum allowed backoff multiplier for exponential overrides.
+ * Combined with MAX_BACKOFF_DELAY this keeps backoff growth bounded and
+ * prevents a hostile/misconfigured `RETRY_POLICY_*_MULTIPLIER` from causing an
+ * exponential-backoff explosion that effectively stalls a job type.
+ */
+export const MAX_BACKOFF_MULTIPLIER = 10;
+
+/**
+ * Clamp a numeric value into the inclusive [min, max] range, logging a warning
+ * when the original value had to be adjusted.
+ */
+function clampWithWarning(
+  value: number,
+  min: number,
+  max: number,
+  context: { jobType: string; field: string }
+): number {
+  const clamped = Math.min(Math.max(value, min), max);
+  if (clamped !== value) {
+    logger.warn('Retry policy override clamped to safe bounds', {
+      ...context,
+      provided: value,
+      clamped,
+      min,
+      max,
+    });
+  }
+  return clamped;
+}
+
+/**
  * Environment variable overrides for retry policies
  */
 export interface RetryPolicyOverrides {
@@ -128,8 +170,25 @@ export interface RetryPolicyOverrides {
 }
 
 /**
- * Load retry policy overrides from environment variables
- * Format: RETRY_POLICY_{JOB_TYPE}_{PROPERTY}=value
+ * Load retry policy overrides from environment variables.
+ *
+ * Format: `RETRY_POLICY_{JOB_TYPE}_{PROPERTY}=value`
+ * (e.g. `RETRY_POLICY_EMAIL_NOTIFICATION_MULTIPLIER=2`).
+ *
+ * All numeric overrides are validated and clamped to safe bounds so that no
+ * environment value can produce an unbounded backoff explosion:
+ *  - `ATTEMPTS`   → `(0, MAX_RETRY_ATTEMPTS]`
+ *  - `DELAY`      → `[MIN_BACKOFF_DELAY, MAX_BACKOFF_DELAY]`
+ *  - `MULTIPLIER` → `[MIN_BACKOFF_MULTIPLIER, MAX_BACKOFF_MULTIPLIER]`
+ *  - `JITTER`     → `[0, 1]`
+ *
+ * Incoherent combinations are rejected: a `multiplier` is only meaningful for
+ * `exponential` backoff, so it is dropped (with a warning) when the resolved
+ * backoff type is `fixed`. Out-of-range values are clamped and a warning is
+ * emitted via the structured logger rather than throwing in the hot path.
+ *
+ * @returns Partial retry policies keyed by job type, to be merged over the
+ *          built-in {@link DEFAULT_RETRY_POLICIES} defaults.
  */
 export function loadRetryPolicyOverrides(): RetryPolicyOverrides {
   const overrides: RetryPolicyOverrides = {};
@@ -157,31 +216,41 @@ export function loadRetryPolicyOverrides(): RetryPolicyOverrides {
       if (delay) {
         const parsedDelay = parseInt(delay, 10);
         if (!isNaN(parsedDelay) && parsedDelay > 0) {
+          const clampedDelay = clampWithWarning(parsedDelay, MIN_BACKOFF_DELAY, MAX_BACKOFF_DELAY, {
+            jobType,
+            field: 'delay',
+          });
           if (!overrides[jobType].backoff) {
-            overrides[jobType].backoff = { type: 'exponential', delay: Math.min(parsedDelay, MAX_BACKOFF_DELAY) };
+            overrides[jobType].backoff = { type: 'exponential', delay: clampedDelay };
           } else {
             overrides[jobType].backoff = {
               ...overrides[jobType].backoff,
-              delay: Math.min(parsedDelay, MAX_BACKOFF_DELAY),
+              delay: clampedDelay,
             };
           }
         }
       }
-      
+
       if (multiplier) {
         const parsedMultiplier = parseFloat(multiplier);
         if (!isNaN(parsedMultiplier) && parsedMultiplier > 0) {
+          const clampedMultiplier = clampWithWarning(
+            parsedMultiplier,
+            MIN_BACKOFF_MULTIPLIER,
+            MAX_BACKOFF_MULTIPLIER,
+            { jobType, field: 'multiplier' }
+          );
           if (!overrides[jobType].backoff) {
-            overrides[jobType].backoff = { type: 'exponential', delay: 2000, multiplier: parsedMultiplier };
+            overrides[jobType].backoff = { type: 'exponential', delay: 2000, multiplier: clampedMultiplier };
           } else {
             overrides[jobType].backoff = {
               ...overrides[jobType].backoff,
-              multiplier: parsedMultiplier,
+              multiplier: clampedMultiplier,
             };
           }
         }
       }
-      
+
       if (jitter) {
         const parsedJitter = parseFloat(jitter);
         if (!isNaN(parsedJitter) && parsedJitter >= 0 && parsedJitter <= 1) {
@@ -196,7 +265,20 @@ export function loadRetryPolicyOverrides(): RetryPolicyOverrides {
         }
       }
     }
+
+    // Coherence guard: a `multiplier` only makes sense for exponential backoff.
+    // If the resolved override declares a `fixed` backoff that still carries a
+    // multiplier, drop it so the resulting policy is internally consistent.
+    const backoff = overrides[jobType]?.backoff;
+    if (backoff && backoff.type === 'fixed' && backoff.multiplier !== undefined) {
+      logger.warn('Dropping multiplier from incoherent fixed-backoff override', {
+        jobType,
+        multiplier: backoff.multiplier,
+      });
+      const { multiplier: _dropped, ...rest } = backoff;
+      overrides[jobType].backoff = rest;
+    }
   });
-  
+
   return overrides;
 }
