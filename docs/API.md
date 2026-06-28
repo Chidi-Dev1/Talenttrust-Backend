@@ -47,6 +47,27 @@ The TalentTrust Backend API provides RESTful endpoints for managing escrow contr
 http://localhost:3001/api/v1
 ```
 
+## Request Sanitization
+
+Incoming request data is sanitized by the `sanitize` middleware
+(`src/middleware/sanitize.ts`) before it reaches route handlers. The
+sanitization contract is:
+
+- **Scope:** `req.body`, `req.query`, and `req.params` are sanitized recursively
+  (nested objects and arrays included).
+- **Strings:** every string value is trimmed and passed through a strict XSS
+  filter that strips all HTML tags (and the body of `<script>`/`<style>`).
+- **Type preservation:** the sanitizer is generic and returns the same shape as
+  its input, so `req.query`/`req.params` retain their expected string/array
+  structures (e.g. `?tag=a&tag=b` stays an array of strings).
+- **Prototype-pollution safe:** the keys `__proto__`, `constructor`, and
+  `prototype` are dropped during recursion and the result uses a `null`
+  prototype, so a crafted payload cannot reach `Object.prototype`.
+- **Idempotent and non-mutating:** running the middleware twice yields the same
+  result, and the original input objects are copied rather than mutated.
+- **Pass-through values:** `Date` and `Buffer` instances are returned unchanged;
+  non-string primitives (numbers, booleans, `null`) are preserved as-is.
+
 ## Request Headers
 
 ### Standard Request Headers
