@@ -87,7 +87,6 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
-  },
   {
     version: 4,
     name: "create_reputation_entries",
