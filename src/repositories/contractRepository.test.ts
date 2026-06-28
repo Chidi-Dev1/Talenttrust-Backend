@@ -2,7 +2,7 @@
  * Integration tests for ContractRepository.
  *
  * Each test suite starts with a clean in-memory database so tests are
- * fully isolated and do not write to disk.  We pre-create two user rows to
+ * fully isolated and do not write to disk. We pre-create two user rows to
  * satisfy the foreign-key constraints on `contracts.client_id` and
  * `contracts.freelancer_id`.
  */
@@ -73,6 +73,7 @@ describe("ContractRepository.create", () => {
     expect(contract.amount).toBe(5_000_000);
     expect(contract.status).toBe("draft");
     expect(contract.createdAt).toBeDefined();
+    expect(contract.version).toBe(0); // OCC: new contracts start at version 0
   });
 
   it("uses the provided status when given", () => {
@@ -100,6 +101,7 @@ describe("ContractRepository.findById", () => {
     const found = contractRepo.findById(created.id);
     expect(found).toBeDefined();
     expect(found?.id).toBe(created.id);
+    expect(found?.version).toBe(0); // OCC: verify version field is present
   });
 
   it("returns undefined for a non-existent id", () => {
@@ -166,6 +168,78 @@ describe("ContractRepository.delete", () => {
 });
 
 // ---------------------------------------------------------------------------
+// OCC (Optimistic Concurrency Control) tests
+// ---------------------------------------------------------------------------
+
+describe("ContractRepository.updateWithVersion (OCC)", () => {
+  it("updates contract and increments version when version matches", () => {
+    const created = contractRepo.create(baseData());
+    expect(created.version).toBe(0);
+
+    const updated = contractRepo.updateWithVersion(
+      created.id,
+      { title: "Updated via OCC" },
+      0, // matching version
+    );
+
+    expect(updated).toBeDefined();
+    expect(updated.title).toBe("Updated via OCC");
+    expect(updated.version).toBe(1); // version incremented atomically
+  });
+
+  it("throws VersionConflictError when version does not match", () => {
+    const created = contractRepo.create(baseData());
+    expect(created.version).toBe(0);
+
+    // First update succeeds, bumps version to 1
+    contractRepo.updateWithVersion(created.id, { title: "First Update" }, 0);
+
+    // Second update with stale version (0) should fail
+    expect(() => {
+      contractRepo.updateWithVersion(created.id, { title: "Second Update" }, 0);
+    }).toThrow(/Version conflict/);
+  });
+
+  it("throws NotFoundError for non-existent contract", () => {
+    const { NotFoundError } = require("../errors/appError");
+    expect(() => {
+      contractRepo.updateWithVersion("non-existent-id", { title: "Test" }, 0);
+    }).toThrow(NotFoundError);
+  });
+
+  it("allows multiple sequential updates with correct versions", () => {
+    const created = contractRepo.create(baseData());
+    let currentVersion = created.version; // 0
+
+    // Update 1
+    let updated = contractRepo.updateWithVersion(
+      created.id,
+      { title: "Update 1" },
+      currentVersion,
+    );
+    expect(updated.version).toBe(1);
+    currentVersion = updated.version;
+
+    // Update 2
+    updated = contractRepo.updateWithVersion(
+      created.id,
+      { title: "Update 2" },
+      currentVersion,
+    );
+    expect(updated.version).toBe(2);
+    currentVersion = updated.version;
+
+    // Update 3
+    updated = contractRepo.updateWithVersion(
+      created.id,
+      { title: "Update 3" },
+      currentVersion,
+    );
+    expect(updated.version).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cursor-paginated findPage tests
 // ---------------------------------------------------------------------------
 
@@ -186,10 +260,19 @@ function seedContracts(count: number) {
     // Space each row 1 second apart: 2024-01-01T00:00:00Z, T00:00:01Z, …
     const ts = new Date(Date.UTC(2024, 0, 1, 0, 0, i)).toISOString();
     db.prepare(
-      `INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'draft', ?)`,
+      `INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, created_at, version)
+       VALUES (?, ?, ?, ?, ?, 'draft', ?, 0)`,
     ).run(id, `Contract ${i + 1}`, clientId, freelancerId, 1_000_000, ts);
-    results.push({ id, title: `Contract ${i + 1}`, clientId, freelancerId, amount: 1_000_000, status: "draft", createdAt: ts });
+    results.push({
+      id,
+      title: `Contract ${i + 1}`,
+      clientId,
+      freelancerId,
+      amount: 1_000_000,
+      status: "draft",
+      createdAt: ts,
+      version: 0, // OCC: include version field
+    });
   }
   return results;
 }
@@ -403,8 +486,8 @@ describe("ContractRepository.findPage — timestamp collision tie-breaking", () 
     for (let i = 0; i < 5; i++) {
       const id = require("crypto").randomUUID() as string;
       db.prepare(
-        `INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'draft', ?)`,
+        `INSERT INTO contracts (id, title, client_id, freelancer_id, amount, status, created_at, version)
+         VALUES (?, ?, ?, ?, ?, 'draft', ?, 0)`,
       ).run(
         id,
         `Collision Contract ${i + 1}`,
