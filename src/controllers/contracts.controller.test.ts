@@ -76,6 +76,7 @@ describe('ContractsController', () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
       mockGetContractsPage.mockResolvedValue(fakePage);
     });
+  });
 
   describe('getContracts', () => {
     it('returns 200 with contracts list', async () => {

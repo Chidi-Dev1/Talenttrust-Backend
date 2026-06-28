@@ -31,7 +31,6 @@ module.exports = {
     'src/rateLimit.integration.test.ts',
     'src/repositories/contracts.repository.test.ts',
     // 'src/repositories/reputationRepository.test.ts', — re-enabled: getDistinctTargetIdPage coverage
-    'src/routes/admin.routes.test.ts',
     'src/routes/reputation.api.test.ts',
     'src/services/contracts.service.test.ts',
     // 'src/services/reputation.service.test.ts', — re-enabled: anti-abuse guard tests

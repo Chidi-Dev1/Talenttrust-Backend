@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ContractsService } from '../services/contracts.service';
-import { parseLimit, decodeCursor } from '../contracts/cursor.repository';
-import { CURSOR_DEFAULT_LIMIT } from '../contracts/cursor.types';
+import type { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
 
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
 import { NotFoundError } from '../errors/appError';
@@ -42,6 +41,9 @@ export class ContractsController {
    * @param next - Express next-error handler.
    */
 
+  public async getContractsCursor(req: Request, res: Response, next: NextFunction) {
+    try {
+      const limit = parseLimit(req.query['limit']);
       const rawCursor = req.query['cursor'];
       if (rawCursor !== undefined && typeof rawCursor === 'string') {
         // Validate cursor shape eagerly so we return 400 for garbage values
@@ -61,7 +63,7 @@ export class ContractsController {
           ? rawCursor
           : undefined;
 
-      const page = await contractsService.getContractsPage({ limit, cursor });
+      const page = await this.service.getContractsPage({ limit, cursor });
       res.status(200).json({ status: 'success', data: page });
     } catch (error) {
       next(error);
@@ -79,6 +81,42 @@ export class ContractsController {
    */
   public async getContracts(req: Request, res: Response, next: NextFunction) {
     try {
+      if (req.query.cursor !== undefined || (req.query.limit !== undefined && req.query.page === undefined)) {
+        const rawCursor = req.query['cursor'];
+        if (rawCursor !== undefined && typeof rawCursor === 'string') {
+          // Validate cursor shape eagerly so we return 400 for garbage values
+          try {
+            decodeCursor(rawCursor);
+          } catch (err) {
+            res.status(400).json({
+              status: 'error',
+              message: (err as Error).message,
+            });
+            return;
+          }
+        }
+
+        const cursor =
+          typeof rawCursor === 'string' && rawCursor.length > 0
+            ? rawCursor
+            : undefined;
+
+        let limit;
+        try {
+          limit = req.query.limit !== undefined ? parseLimit(req.query.limit) : CURSOR_DEFAULT_LIMIT;
+        } catch (err) {
+          res.status(400).json({
+            status: 'error',
+            message: (err as Error).message,
+          });
+          return;
+        }
+
+        const page = await this.service.getContractsPage({ limit, cursor });
+        res.status(200).json({ status: 'success', data: page });
+        return;
+      }
+
       const pagination = parsePaginationQuery((req.query ?? {}) as Record<string, unknown>);
       if (!pagination.ok) {
         fail(res, 'bad_request', pagination.error, 400);
@@ -104,23 +142,6 @@ export class ContractsController {
   /**
    * GET /api/v1/contracts/:id
    * Fetch a single contract by ID.
-   */
-  public static async getContractById(req: Request, res: Response, next: NextFunction) {
-    const { ContractRepository } = require('../repositories/contractRepository');
-    const service = new ContractsService(new ContractRepository());
-    try {
-      const contract = await service.getContractById(req.params.id!);
-      if (!contract) {
-        throw new NotFoundError('The requested resource was not found');
-      }
-      ok(res, contract);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /**
-   * Instance version of getContractById that uses the injected service.
    */
   public async getContractById(req: Request, res: Response, next: NextFunction) {
     try {
@@ -218,8 +239,6 @@ export class ContractsController {
   }
 }
 
-// Re-export for convenience in tests
-export { CURSOR_DEFAULT_LIMIT };
 /**
  * Factory function that creates a ContractsController with injected service.
  * Use this in route registration to avoid module-level DB side effects.

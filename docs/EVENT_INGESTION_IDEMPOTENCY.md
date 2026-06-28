@@ -47,6 +47,19 @@ deduplication key and hash metadata; payload bodies are replaced by the redactio
 marker from `src/events/redact.ts`, and secret-like fields are redacted before
 logging.
 
+### Time-To-Live (TTL) Eviction and Re-ingestion
+
+Idempotency keys have a predefined Time-To-Live (TTL), which defaults to 24 hours. If an event is received with an idempotency key that is found in the store but its TTL has expired:
+- The system treats the event as a brand-new ingestion.
+- The expired idempotency key is evicted and overwritten.
+- This mechanism prevents infinite caching and allows legitimate event replay after the TTL has safely elapsed.
+
+### Telemetry and Metrics
+
+The ingestion pipeline emits structural metrics to a Prometheus-compatible `prom-client` registry:
+- **`event_idempotency_active_keys` (Gauge)**: Tracks the number of unexpired idempotency keys currently residing in the store.
+- **`event_idempotency_evictions_total` (Counter)**: Increments when an expired key is encountered and successfully evicted to allow re-ingestion.
+
 ## Event Schemas
 
 ### Base Event Structure

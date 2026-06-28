@@ -253,9 +253,9 @@ MIGRATIONS.push({
   },
 });
 
-// Version 8: add started_at to transactions table
+// Version 9: add started_at to transactions table
 MIGRATIONS.push({
-  version: 8,
+  version: 9,
   name: "add_started_at_to_transactions",
   up: (db) => {
     // Check if the column already exists to prevent errors during repeated migrations

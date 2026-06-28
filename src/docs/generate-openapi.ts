@@ -12,7 +12,7 @@ import '../routes/contracts.routes';
 import '../routes/reputation.routes';
 import '../routes/health';
 
-export function generateOpenApiSpec() {
+export function generateOpenApiSpec(): any {
   const generator = new OpenApiGeneratorV3(registry.definitions);
 
   const spec = generator.generateDocument({
@@ -32,11 +32,11 @@ if (require.main === module) {
   const spec = generateOpenApiSpec();
   const yamlSpec = yaml.stringify(spec);
   const outputPath = path.join(__dirname, '../../docs/openapi.yaml');
-  
+
   if (!fs.existsSync(path.dirname(outputPath))) {
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   }
-  
+
   fs.writeFileSync(outputPath, yamlSpec);
   console.log(`OpenAPI spec generated at ${outputPath}`);
 }

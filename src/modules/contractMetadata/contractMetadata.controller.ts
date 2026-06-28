@@ -29,7 +29,8 @@ export class ContractMetadataController {
       const result = await contractMetadataService.create(
         contractId,
         data,
-        req.user.id
+        req.user.id,
+        req.user
       );
 
       res.status(201).json(result);

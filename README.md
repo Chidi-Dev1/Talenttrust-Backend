@@ -39,6 +39,25 @@ The backend includes dependency-level chaos testing to simulate upstream outages
 Detailed architecture and security notes are in `docs/backend/chaos-testing.md`.
 
 Developer onboarding and blue-green local setup are documented in [docs/backend/developer-onboarding-blue-green.md](docs/backend/developer-onboarding-blue-green.md).
+Detailed authentication design, lifecycle, and refresh-token rotation semantics are documented in [AUTH.md](AUTH.md).
+
+## Soroban RPC Outbound Retries
+
+Outbound RPC queries to the Stellar/Soroban network are wrapped in an automatic retry-with-backoff mechanism to protect against transient network failures.
+
+* **Idempotent Reads**: Queries like `getLedgerEntries`, `getLatestLedger`, `getEvents`, `simulateTransaction`, and the polling check `getTransaction` are wrapped with a jittered exponential back-off helper.
+* **Mutating Transactions**: Submitting signed transactions via `sendTransaction` is **never** retried automatically to prevent accidental double-submission or transaction collisions.
+
+### Configuration
+
+You can configure retry behavior using the following environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SOROBAN_RPC_RETRY_ATTEMPTS` | `5` | Maximum number of retry attempts for read calls. |
+| `SOROBAN_RPC_RETRY_BASE_DELAY_MS` | `200` | The initial base delay in milliseconds, scaled exponentially with jitter. |
+
+Detailed authentication design, lifecycle, and refresh-token rotation semantics are documented in [AUTH.md](AUTH.md).
 
 ## Error Handling and Testing
 
@@ -159,6 +178,21 @@ EVENT_TIMEOUT_MS=5000
 IDEMPOTENCY_TTL_MS=3600000
 ```
 
+### Queue Job Timeouts
+
+Queue workers enforce a wall-clock timeout for every job attempt. When a job exceeds its timeout, the queue manager aborts the processor `AbortSignal`, fails the attempt, and lets the existing retry/DLQ policy decide whether to retry or retain the job as failed.
+
+| Variable | Default | Description |
+|---|---:|---|
+| `QUEUE_JOB_TIMEOUT_MS` | `30000` | Default per-job attempt timeout in milliseconds. |
+| `QUEUE_JOB_TIMEOUT_EMAIL_NOTIFICATION_MS` | `QUEUE_JOB_TIMEOUT_MS` | Timeout override for email notification jobs. |
+| `QUEUE_JOB_TIMEOUT_CONTRACT_PROCESSING_MS` | `QUEUE_JOB_TIMEOUT_MS` | Timeout override for contract processing jobs. |
+| `QUEUE_JOB_TIMEOUT_REPUTATION_UPDATE_MS` | `QUEUE_JOB_TIMEOUT_MS` | Timeout override for reputation update jobs. |
+| `QUEUE_JOB_TIMEOUT_REPUTATION_RECOMPUTE_MS` | `QUEUE_JOB_TIMEOUT_MS` | Timeout override for reputation recompute jobs. |
+| `QUEUE_JOB_TIMEOUT_BLOCKCHAIN_SYNC_MS` | `QUEUE_JOB_TIMEOUT_MS` | Timeout override for blockchain sync jobs. |
+
+Processors receive an `AbortSignal` as optional context and should stop outbound work when it is aborted. The manager still fails the attempt on timeout when a processor ignores the signal, and it prevents the same job from being executed again while the timed-out processor is still active.
+
 For full configuration details, see [docs/backend/config.md](docs/backend/config.md).
 
 ## Audit Log Export
@@ -209,6 +243,7 @@ All sensitive metadata fields (`password`, `token`, `secret`, `credential`, `api
 - [Redis Testing Guide](docs/backend/redis-testing-guide.md)
 - [Escrow Contract Lifecycle & Bounds](docs/contracts-lifecycle.md)
 - [Contract Event Indexer Cursor Model & Replay Protection](INDEXER.md)
+- [Data Retention, Archival, and Purge Lifecycle](docs/DATA_RETENTION.md)
 
 ## CI/CD
 
@@ -297,6 +332,17 @@ export async function processMyJob(payload: MyPayload): Promise<JobResult> {
   return { success: true };
 }
 ```
+
+## Graceful shutdown and drain order
+
+The service now uses a single shutdown registry for SIGTERM/SIGINT handling. On shutdown it performs the following steps in order:
+
+1. Close the HTTP listener so new requests stop arriving.
+2. Stop accepting new webhook deliveries and wait for in-flight deliveries, with a bounded grace period before fallback checkpointing.
+3. Stop accepting new transaction polls and queue jobs, wait for in-flight work to finish, and checkpoint any remaining pending state if the grace period expires.
+4. Close BullMQ workers and downstream connections before exiting.
+
+This prevents polls and queue jobs from being interrupted mid-flight while preserving a checkpointable state for pending work.
 
 ## Security Notes
 
@@ -598,6 +644,12 @@ A pipeline for indexing escrow and dispute lifecycle updates from smart contract
 - **Endpoint**: `POST /api/v1/events`
 - **Supported Events**: `escrow:created`, `escrow:completed`, `dispute:initiated`, `dispute:resolved`.
 
+### 4. Request Context Propagation via AsyncLocalStorage
+A request-scoped storage utility backed by Node.js `AsyncLocalStorage` to automatically propagate `requestId` and `correlationId` context fields down the async execution tree.
+- **Middleware**: The `requestContext` middleware seeds the store with `requestId` and optional `correlationId` parsed from HTTP headers (`X-Request-Id` and `X-Correlation-Id`).
+- **Observability**: The global `Logger` automatically reads from this store when logging, ensuring logs emitted by downstream services, repository queries, and operations carry the correct correlation context without manual parameter passing.
+- **Safety**: Safe defaults (no IDs) are provided when running outside of a request context (e.g. background tasks or scheduled jobs), and request contexts are concurrently isolated to prevent cross-request context leakage.
+
 ## Testing
 
 Run unit and integration tests to verify these features:
@@ -625,6 +677,50 @@ The `TransactionPoller` service manages blockchain transaction confirmations usi
 - **Configurable Retries**: Set `maxRetries` to limit the number of backoff polling attempts.
 - **Duration Ceiling**: An absolute wall-clock duration limit (`maxTotalDurationMs`) can be set as a circuit breaker. If the transaction takes longer than this ceiling, polling is halted and the transaction transitions to `TIMEOUT`. This acts as an absolute guard and takes precedence over `maxRetries` if reached first.
 - **Idempotent Polling**: Safely restarts after an app crash without duplicating tracking logic.
+
+### Transaction Persistence Model
+
+Transaction state is persisted in SQLite through the `transactions` table, keyed by transaction hash. The store is exposed via the `TransactionsDbInterface` with two implementations:
+
+| Implementation | Backing store | Feature flag |
+|---|---|---|
+| `SqliteTransactionStore` | SQLite `transactions` table via `better-sqlite3` | `USE_SQLITE_TRANSACTION_STORE=true` (default) |
+| `InMemoryTransactionStore` | In-memory `Map` | `USE_SQLITE_TRANSACTION_STORE=false` |
+
+The `TransactionPoller` accepts an optional `store` parameter in its constructor. When omitted, it uses the global `transactionsDb` instance, which is created by the factory function `createTransactionsDb()` based on the `USE_SQLITE_TRANSACTION_STORE` environment variable.
+
+#### Stored columns
+
+| Column | Type | Description |
+|---|---|---|
+| `hash` | `TEXT PRIMARY KEY` | Blockchain transaction hash |
+| `status` | `TEXT` | One of `PENDING`, `SUCCESS`, `FAILED`, `TIMEOUT` |
+| `receipt` | `TEXT` (JSON) | Full blockchain receipt, serialised as JSON |
+| `last_checked_at` | `TEXT` (ISO-8601) | Timestamp of the last poll attempt |
+| `retry_count` | `INTEGER` | Number of retries performed |
+| `started_at` | `TEXT` (ISO-8601) | When polling for this transaction began |
+
+#### SQLite storage behaviour
+
+- All queries use **parameterised prepared statements** — receipt JSON and other values are never interpolated into SQL strings.
+- Receipt data is serialised with `JSON.stringify` on write and parsed with a safe wrapper (`try/catch` around `JSON.parse`) on read. Malformed receipts are returned as `undefined` rather than crashing the caller.
+- The `INSERT ... ON CONFLICT(hash) DO UPDATE` pattern ensures that repeated calls to `set()` update the existing row without creating duplicates.
+- Schema migrations are handled by `src/db/migrations.ts` (versions 5 and 9 create the `transactions` table and add the `started_at` column).
+
+#### Restart recovery flow
+
+On application startup, call `recoverPendingTransactions()` to rehydrate in-flight polling:
+
+1. Load all rows from the `transactions` table where `status = 'PENDING'`.
+2. For each pending transaction, restore `retry_count` and `last_checked_at`.
+3. Resume the polling loop from the current retry index using `calculateDelay` from `src/utils/retry.ts`.
+4. Terminal transactions (`SUCCESS`, `FAILED`, `TIMEOUT`) are **not** reloaded — they remain in the database for audit but are excluded from recovery.
+
+### Security
+
+- **Parameterised SQL**: All queries use `?` placeholders. Receipt JSON is passed as a bound parameter, never concatenated.
+- **Corrupted receipts**: `safeParseReceipt` wraps `JSON.parse` in a try-catch. If a stored receipt is malformed, the field returns `undefined` and the transaction is handled safely.
+- **Fail closed**: A `get()` that throws (e.g., database I/O error) returns `undefined` rather than propagating the exception to the poller.
 
 ## Retry & Backoff Utilities
 
