@@ -417,7 +417,87 @@ See [docs/backend/reputation-api.md](docs/backend/reputation-api.md) for detaile
 ## API Endpoints
 
 ### Health Check
-- `GET /health` - Service health status
+
+The service exposes a comprehensive health check endpoint at `GET /health` that aggregates dependency probes.
+
+**Request:**
+```bash
+curl http://localhost:3000/health
+```
+
+**Response (200 OK - healthy):**
+```json
+{
+  "status": "ok",
+  "service": "talenttrust-backend",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "uptimeSeconds": 1234,
+  "probes": [
+    {
+      "name": "db",
+      "ok": true,
+      "status": "up",
+      "latencyMs": 45
+    },
+    {
+      "name": "redis",
+      "ok": true,
+      "status": "up",
+      "latencyMs": 12
+    }
+  ]
+}
+```
+
+**Response (503 Service Unavailable - degraded):**
+```json
+{
+  "status": "degraded",
+  "service": "talenttrust-backend",
+  "timestamp": "2024-01-15T10:30:00.000Z",
+  "uptimeSeconds": 1234,
+  "probes": [
+    {
+      "name": "db",
+      "ok": false,
+      "status": "down",
+      "detail": "disk I/O error",
+      "latencyMs": 5000
+    }
+  ]
+}
+```
+
+**Probe Status Mapping:**
+
+Each probe reports one of three statuses:
+
+| Status | Meaning | HTTP |
+|--------|---------|------|
+| `up` | Dependency is healthy and responsive | 200 |
+| `degraded` | Dependency is slow or warning | 503 |
+| `down` | Dependency is unreachable or failed | 503 |
+
+**Database Probe (`db`):**
+- Verifies SQLite connectivity with lightweight `SELECT 1` query
+- Thresholds: up (<1000ms), degraded (1000-3000ms), down (≥3000ms or error)
+- Security: Query is hardcoded with no user input
+- Configuration: `DB_BUSY_TIMEOUT` (default 5000ms)
+
+**Redis Probe (`redis`):**
+- Tests Redis with PING command
+- Timeout: 3000ms
+- Configuration: `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`
+
+**Other Probes:**
+- `stellar-rpc`: Stellar/Soroban RPC reachability (5s timeout)
+- `queue`: BullMQ job queue health (degraded if failed jobs exceed threshold)
+- `circuit-breaker`: Reports open circuit breakers
+- `env`: Verifies required environment variables
+
+**Production Security:**
+
+In production (NODE_ENV=production), probe details are stripped to prevent topology leakage to unauthenticated callers.
 
 ### Contracts
 - `GET /api/v1/contracts` - List contracts (placeholder)

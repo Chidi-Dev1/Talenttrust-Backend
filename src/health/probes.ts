@@ -31,6 +31,7 @@ export async function envProbe(): Promise<ProbeResult> {
   return {
     name: "env",
     ok,
+    status: ok ? "up" : "down",
     detail: ok ? undefined : `Missing vars: ${missing.join(", ")}`,
     latencyMs: Date.now() - start,
   };
@@ -49,6 +50,7 @@ export async function stellarRpcProbe(): Promise<ProbeResult> {
     return {
       name: "stellar-rpc",
       ok: false,
+      status: "down",
       detail: "STELLAR_RPC_URL not set",
       latencyMs: 0,
     };
@@ -66,6 +68,7 @@ export async function stellarRpcProbe(): Promise<ProbeResult> {
     return {
       name: "stellar-rpc",
       ok,
+      status: ok ? "up" : "down",
       detail: ok ? undefined : `HTTP ${res.status}`,
       latencyMs,
     };
@@ -73,6 +76,7 @@ export async function stellarRpcProbe(): Promise<ProbeResult> {
     return {
       name: "stellar-rpc",
       ok: false,
+      status: "down",
       detail: err instanceof Error ? err.message : "unknown error",
       latencyMs: Date.now() - start,
     };
@@ -81,19 +85,54 @@ export async function stellarRpcProbe(): Promise<ProbeResult> {
   }
 }
 
+const DB_PROBE_TIMEOUT_MS = 3_000;
+const DB_PROBE_DEGRADED_THRESHOLD_MS = 1_000;
+
 /**
  * Probe: verify the SQLite database is reachable with a lightweight SELECT 1.
+ * Maps response time to status:
+ * - < 1000ms: up (healthy)
+ * - 1000ms-3000ms: degraded (slow but responding)
+ * - >= 3000ms or error: down (failed or timeout)
+ *
  * Uses the shared singleton returned by {@link getDb}.
+ * Security: Query is hardcoded—no user input.
  */
 export async function dbProbe(): Promise<ProbeResult> {
   const start = Date.now();
   try {
-    getDb().prepare("SELECT 1").run();
-    return { name: "db", ok: true, latencyMs: Date.now() - start };
+    await Promise.race([
+      Promise.resolve(getDb().prepare("SELECT 1").run()),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("db probe timeout")), DB_PROBE_TIMEOUT_MS)
+      ),
+    ]);
+
+    const latencyMs = Date.now() - start;
+    
+    if (latencyMs >= DB_PROBE_TIMEOUT_MS) {
+      return {
+        name: "db",
+        ok: false,
+        status: "down",
+        detail: "db probe timeout",
+        latencyMs,
+      };
+    }
+
+    const status = latencyMs > DB_PROBE_DEGRADED_THRESHOLD_MS ? "degraded" : "up";
+    return {
+      name: "db",
+      ok: status === "up",
+      status,
+      detail: status === "degraded" ? `slow response: ${latencyMs}ms` : undefined,
+      latencyMs,
+    };
   } catch (err: unknown) {
     return {
       name: "db",
       ok: false,
+      status: "down",
       detail: err instanceof Error ? err.message : "unknown error",
       latencyMs: Date.now() - start,
     };
@@ -128,11 +167,12 @@ export async function redisProbe(): Promise<ProbeResult> {
   try {
     await client.connect();
     await client.ping();
-    return { name: "redis", ok: true, latencyMs: Date.now() - start };
+    return { name: "redis", ok: true, status: "up", latencyMs: Date.now() - start };
   } catch (err: unknown) {
     return {
       name: "redis",
       ok: false,
+      status: "down",
       detail: err instanceof Error ? err.message : "unknown error",
       latencyMs: Date.now() - start,
     };
@@ -186,6 +226,7 @@ export async function queueProbe(): Promise<ProbeResult> {
     return {
       name: "queue",
       ok,
+      status: ok ? "up" : "degraded",
       detail: ok ? undefined : violations.join("; "),
       latencyMs: Date.now() - start,
     };
@@ -193,6 +234,7 @@ export async function queueProbe(): Promise<ProbeResult> {
     return {
       name: "queue",
       ok: false,
+      status: "down",
       detail: err instanceof Error ? err.message : "unknown error",
       latencyMs: Date.now() - start,
     };
@@ -215,6 +257,7 @@ export async function circuitBreakerProbe(): Promise<ProbeResult> {
     return {
       name: "circuit-breaker",
       ok,
+      status: ok ? "up" : "degraded",
       detail: ok ? undefined : `${openCount} breaker(s) open`,
       latencyMs: Date.now() - start,
     };
@@ -222,6 +265,7 @@ export async function circuitBreakerProbe(): Promise<ProbeResult> {
     return {
       name: "circuit-breaker",
       ok: false,
+      status: "down",
       detail: err instanceof Error ? err.message : "unknown error",
       latencyMs: Date.now() - start,
     };
