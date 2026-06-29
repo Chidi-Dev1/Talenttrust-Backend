@@ -283,6 +283,27 @@ The TalentTrust Backend implements hardened HTTP response policies and origin co
 - **Security Headers**: Managed via [Helmet](https://helmetjs.github.io/) (CSP, HSTS, etc.).
 - **CORS Policy**: Strict allowlist controlled by environment configuration.
 
+### HTTP request logging redaction
+
+Structured HTTP logs preserve operational metadata needed for debugging and tracing while masking credential-bearing headers before any request or response log line is emitted.
+
+**Logged fields retained in cleartext**
+- HTTP method
+- Request path / URL
+- Response status code
+- Latency / duration
+- Request ID and correlation ID
+- Client IP and truncated User-Agent
+- Non-sensitive request/response headers
+
+**Headers redacted in logs**
+- `Authorization`
+- `Cookie`
+- `Set-Cookie`
+- Known API-key and token-bearing headers such as `X-API-Key` and `X-Auth-Token`
+
+Header matching is case-insensitive. Request and response bodies are not logged by the default HTTP logger middleware.
+
 ### CORS Configuration
 
 The CORS policy is driven by the `CORS_ALLOWED_ORIGINS` environment variable, a comma-separated list of allowed origins.

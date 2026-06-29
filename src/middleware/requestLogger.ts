@@ -13,6 +13,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger, createRequestLogger } from '../logger';
+import { redactHeaders } from '../utils/redact';
 
 // Extend Express Request interface to include our logger
 declare global {
@@ -78,7 +79,7 @@ export function requestLoggerMiddleware(
     url: req.url,
     userAgent: req.header('user-agent'),
     ip: req.ip || req.connection.remoteAddress,
-    headers: sanitizeHeaders(req.headers)
+    headers: redactHeaders(req.headers)
   });
 
   // Override res.end to log request completion
@@ -91,45 +92,13 @@ export function requestLoggerMiddleware(
       url: req.url,
       statusCode: res.statusCode,
       duration: `${duration}ms`,
-      headers: sanitizeHeaders(res.getHeaders())
+      headers: redactHeaders(res.getHeaders())
     });
 
     return originalEnd(chunk, encoding, cb);
   };
 
   next();
-}
-
-/**
- * Sanitize headers to remove sensitive information before logging.
- */
-function sanitizeHeaders(headers: Record<string, any> | undefined): Record<string, any> {
-  const sanitized: Record<string, any> = {};
-  const sensitiveHeaders = [
-    'authorization',
-    'cookie',
-    'x-api-key',
-    'x-auth-token',
-    'x-forwarded-for',
-    'x-real-ip'
-  ];
-
-  if (!headers) {
-    return sanitized;
-  }
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (sensitiveHeaders.includes(key.toLowerCase())) {
-      sanitized[key] = '[REDACTED]';
-    } else if (typeof value === 'string' && value.length > 200) {
-      // Truncate very long header values
-      sanitized[key] = value.substring(0, 200) + '...';
-    } else {
-      sanitized[key] = value;
-    }
-  }
-
-  return sanitized;
 }
 
 /**
@@ -192,7 +161,7 @@ export function createRequestLoggerMiddleware(options: RequestLoggerOptions = {}
       url: req.url,
       userAgent: req.header('user-agent'),
       ip: req.ip || req.connection.remoteAddress,
-      headers: sanitizeHeaders(req.headers)
+      headers: redactHeaders(req.headers)
     };
 
     // Add body if enabled (be careful with sensitive data)
@@ -213,7 +182,7 @@ export function createRequestLoggerMiddleware(options: RequestLoggerOptions = {}
         url: req.url,
         statusCode: res.statusCode,
         duration: `${duration}ms`,
-        headers: sanitizeHeaders(res.getHeaders())
+        headers: redactHeaders(res.getHeaders())
       };
 
       // Add response body if enabled
@@ -221,7 +190,7 @@ export function createRequestLoggerMiddleware(options: RequestLoggerOptions = {}
         try {
           completionLogData.responseBody = 
             typeof chunk === 'string' ? chunk.substring(0, 500) : chunk;
-        } catch (e) {
+        } catch {
           completionLogData.responseBody = '[Unable to serialize]';
         }
       }
