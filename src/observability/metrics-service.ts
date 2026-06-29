@@ -28,6 +28,14 @@ const HEALTH_STATUS_VALUE: Record<ServiceStatus, number> = {
   down: 0,
 };
 
+const DEFAULT_HTTP_ROUTE_LABEL_LIMIT = 100;
+const OTHER_ROUTE_LABEL = 'other';
+const UNMATCHED_ROUTE_LABEL = 'unmatched';
+
+export interface MetricsServiceOptions {
+  httpRouteLabelLimit?: number;
+}
+
 /**
  * Manages Prometheus metrics registration and request instrumentation.
  */
@@ -50,10 +58,19 @@ export class MetricsService implements MetricsServiceLike {
 
   private readonly webhookRateLimitQueueDepth: Gauge;
 
+  private readonly httpRouteLabelLimit: number;
+
+  private readonly observedHttpRouteLabels = new Set<string>();
+
   private rateLimitStopSampling: (() => void) | null = null;
 
-  constructor(private readonly serviceName: string, register?: Registry) {
+  constructor(
+    private readonly serviceName: string,
+    register?: Registry,
+    options: MetricsServiceOptions = {},
+  ) {
     this.register = register ?? new Registry();
+    this.httpRouteLabelLimit = options.httpRouteLabelLimit ?? DEFAULT_HTTP_ROUTE_LABEL_LIMIT;
     collectDefaultMetrics({
       register: this.register,
       prefix: `${sanitizeMetricPrefix(serviceName)}_`,
@@ -117,7 +134,7 @@ export class MetricsService implements MetricsServiceLike {
 
     res.on('finish', () => {
       const duration = Number(process.hrtime.bigint() - start) / 1_000_000_000;
-      const route = extractRoute(req);
+      const route = this.boundRouteLabel(extractRoute(req));
       const labels = {
         method: req.method,
         route,
@@ -169,6 +186,19 @@ export class MetricsService implements MetricsServiceLike {
   getMetrics(): Promise<string> {
     return this.register.metrics();
   }
+
+  private boundRouteLabel(route: string): string {
+    if (this.observedHttpRouteLabels.has(route)) {
+      return route;
+    }
+
+    if (this.observedHttpRouteLabels.size < this.httpRouteLabelLimit) {
+      this.observedHttpRouteLabels.add(route);
+      return route;
+    }
+
+    return OTHER_ROUTE_LABEL;
+  }
 }
 
 function sanitizeMetricPrefix(input: string): string {
@@ -176,12 +206,61 @@ function sanitizeMetricPrefix(input: string): string {
   return sanitized.length > 0 ? sanitized : 'service';
 }
 
+/**
+ * Returns a bounded, non-user-controlled route label for HTTP metrics.
+ *
+ * Express exposes the matched route template at `req.route.path`; joining it
+ * with the static mount point in `req.baseUrl` preserves useful labels such as
+ * `/api/v1/contracts/:id` without using concrete request paths that may contain
+ * attacker-controlled identifiers. Requests that never match a route collapse
+ * into one shared bucket.
+ */
 function extractRoute(req: Request): string {
-  if (req.route?.path) {
-    return String(req.route.path);
+  const routePath = formatExpressPath(req.route?.path);
+  if (routePath === null) {
+    return UNMATCHED_ROUTE_LABEL;
   }
 
-  return 'unmatched';
+  const baseUrl = normalizeRoutePart(req.baseUrl);
+  const route = joinRouteParts(baseUrl, routePath);
+  return route.length > 0 ? route : '/';
+}
+
+function formatExpressPath(path: unknown): string | null {
+  if (typeof path === 'string') {
+    return normalizeRoutePart(path);
+  }
+
+  if (path instanceof RegExp) {
+    return path.toString();
+  }
+
+  if (Array.isArray(path)) {
+    const parts = path.map(formatExpressPath).filter((part): part is string => part !== null);
+    return parts.length > 0 ? parts.join('|') : null;
+  }
+
+  return null;
+}
+
+function normalizeRoutePart(part: string | undefined): string {
+  if (!part || part === '/') {
+    return '';
+  }
+
+  return part.startsWith('/') ? part : `/${part}`;
+}
+
+function joinRouteParts(baseUrl: string, routePath: string): string {
+  if (!baseUrl) {
+    return routePath;
+  }
+
+  if (!routePath) {
+    return baseUrl;
+  }
+
+  return `${baseUrl}${routePath}`;
 }
 
 

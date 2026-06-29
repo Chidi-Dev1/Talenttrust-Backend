@@ -255,6 +255,25 @@ describe('Environment Configuration', () => {
       });
     });
 
+    it('should parse HTTP_METRICS_ROUTE_LABEL_LIMIT with a safe default', () => {
+      delete process.env.HTTP_METRICS_ROUTE_LABEL_LIMIT;
+      expect(validateEnv(process.env).HTTP_METRICS_ROUTE_LABEL_LIMIT).toBe(100);
+
+      process.env.HTTP_METRICS_ROUTE_LABEL_LIMIT = '250';
+      expect(validateEnv(process.env).HTTP_METRICS_ROUTE_LABEL_LIMIT).toBe(250);
+    });
+
+    it('should reject invalid HTTP_METRICS_ROUTE_LABEL_LIMIT values', () => {
+      process.env.HTTP_METRICS_ROUTE_LABEL_LIMIT = '0';
+      expect(() => validateEnv(process.env)).toThrow();
+
+      process.env.HTTP_METRICS_ROUTE_LABEL_LIMIT = '10001';
+      expect(() => validateEnv(process.env)).toThrow();
+
+      process.env.HTTP_METRICS_ROUTE_LABEL_LIMIT = 'not-a-number';
+      expect(() => validateEnv(process.env)).toThrow();
+    });
+
     it('should reject malformed ROUTE_BODY_LIMITS', () => {
       // Missing path prefix '/'
       process.env.ROUTE_BODY_LIMITS = 'api/upload:1024';
