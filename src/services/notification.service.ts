@@ -184,13 +184,12 @@ export class NotificationService {
         message: `Details: ${JSON.stringify(data || {})}`,
       };
 
-      // Persist so the UI can read past notifications
+      // Persist so the UI can read past notifications — propagate failure to caller
       try {
-        this.repo.saveWebNotification(payload.userId, payload.title, payload.message);
+        await Promise.resolve(this.repo.saveWebNotification(payload.userId, payload.title, payload.message));
       } catch (err: unknown) {
-        logger.error('[NotificationService:Web] Failed to persist web notification', {
-          err,
-        });
+        logger.error('[NotificationService:Web] Failed to persist web notification', { err });
+        return { success: false, message: `Persistence failure: ${(err as Error).message}` };
       }
 
       if (this.webTransport.sendWebNotification) {
