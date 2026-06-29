@@ -64,6 +64,8 @@ export function createApp(options?: AppFactoryOptions): express.Application {
 
   const metricsService = new MetricsService(
     process.env['SERVICE_NAME'] ?? 'talenttrust-backend',
+    undefined,
+    { httpRouteLabelLimit: env.HTTP_METRICS_ROUTE_LABEL_LIMIT },
   );
 
   // ── Middleware ────────────────────────────────────────────────────────────

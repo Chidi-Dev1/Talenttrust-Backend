@@ -149,6 +149,11 @@ export const envSchema = z.object({
     })
     .pipe(z.record(z.string(), z.number()).optional()),
 
+  HTTP_METRICS_ROUTE_LABEL_LIMIT: z.string()
+    .default('100')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive().max(10000)),
+
   // Reputation Scoring Configuration
   REPUTATION_DECAY_LAMBDA: z.string()
     .default('0.005')

@@ -227,6 +227,7 @@ Defined in: `src/logger.ts`, `src/middleware/metricsAuth.ts`, `src/middleware/ht
 | `METRICS_AUTH_TOKEN` | No       | _(none)_                             | Bearer token required to access the `/metrics` endpoint. If unset, the endpoint is open (acceptable in development, not in production). **Treat as a secret.** |
 | `TRUST_PROXY`        | No       | `false`                              | Set to `true` to trust the `X-Forwarded-For` header for client IP resolution. Enable only when running behind a trusted reverse proxy.                         |
 | `SERVICE_NAME`       | No       | `talenttrust-backend`                | Service name label attached to Prometheus metrics.                                                                                                             |
+| `HTTP_METRICS_ROUTE_LABEL_LIMIT` | No | `100` | Caps distinct HTTP route template labels for `http_requests_total` and `http_request_duration_seconds`; new routes beyond the cap are recorded as `other`. |
 
 ---
 

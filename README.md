@@ -425,6 +425,7 @@ All configuration is managed through `src/config/` and validated at startup usin
 | `ACTIVE_COLOR` | `blue` | Active backend color for blue-green routing |
 | `BLUE_PORT` | `3001` | Port for the 'blue' backend |
 | `GREEN_PORT` | `3002` | Port for the 'green' backend |
+| `HTTP_METRICS_ROUTE_LABEL_LIMIT` | `100` | Maximum distinct HTTP route template labels before new routes are recorded as `other` |
 
 
 ## API Endpoints
@@ -520,6 +521,17 @@ Each probe reports one of three statuses:
 **Production Security:**
 
 In production (NODE_ENV=production), probe details are stripped to prevent topology leakage to unauthenticated callers.
+
+### Metrics Cardinality Guard
+
+HTTP metrics use Express route templates for the `route` label, for example
+`/api/v1/contracts/:id`, instead of concrete request paths with embedded user
+or resource identifiers. Unmatched requests are recorded as `unmatched`.
+
+`HTTP_METRICS_ROUTE_LABEL_LIMIT` caps the number of distinct route template
+labels retained by `http_requests_total` and `http_request_duration_seconds`.
+After the cap is reached, newly observed route templates are recorded as
+`other`, while existing route labels, `method`, and `status_code` remain intact.
 
 ### Contracts
 - `GET /api/v1/contracts` - List contracts (placeholder)
