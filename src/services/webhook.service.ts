@@ -7,12 +7,14 @@ import { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from '../queue/webho
 import { isSafeUrl } from '../utils/ssrf';
 import { RateLimitStore } from '../lib/rateLimitStore';
 import { MetricsServiceLike } from '../observability';
-import { buildWebhookHeaders } from '../utils/correlationId';
+import { validateEnv } from '../config/env.schema';
 
 /** Max deliveries per destination host per window. Default: 60. */
 const HOST_RATE_LIMIT_MAX = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_MAX ?? 60);
 /** Window length in ms for per-host rate limiting. Default: 60 000 ms. */
 const HOST_RATE_LIMIT_WINDOW_MS = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_WINDOW_MS ?? 60_000);
+/** Per-attempt outbound webhook timeout, validated through env schema. */
+const WEBHOOK_DELIVERY_TIMEOUT_MS = validateEnv().WEBHOOK_DELIVERY_TIMEOUT_MS;
 
 export interface WebhookPayload {
   id: string;
@@ -67,6 +69,8 @@ export class WebhookService {
    * Before each attempt the destination URL is re-validated with `isSafeUrl`
    * (SSRF guard) and a per-host sliding-window rate limit is applied.  Either
    * check failing causes an immediate DLQ enqueue without further retries.
+   * Each outbound HTTP attempt also uses a validated per-request timeout so a
+   * slow receiver cannot pin the delivery worker indefinitely.
    *
    * @remarks
    * Uses a bounded for-loop so no call stack growth occurs across retries.
@@ -104,7 +108,14 @@ export class WebhookService {
           headers['X-Timestamp'] = timestamp.toString();
         }
 
-        await axios.post(payload.url, payload.data, { headers });
+        if (payload.correlationId) {
+          headers['X-Correlation-Id'] = payload.correlationId;
+        }
+
+        await axios.post(payload.url, payload.data, {
+          headers,
+          timeout: WEBHOOK_DELIVERY_TIMEOUT_MS,
+        });
         return;
       } catch (error: unknown) {
         lastError = error as Error;

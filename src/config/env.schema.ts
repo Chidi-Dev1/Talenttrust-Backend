@@ -110,6 +110,11 @@ export const envSchema = z.object({
     .transform((val) => val ? val.split(',').map(p => p.trim()) : undefined)
     .pipe(z.array(z.string()).optional()),
 
+  WEBHOOK_DELIVERY_TIMEOUT_MS: z.string()
+    .default('10000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().min(100).max(120_000)),
+
   IDEMPOTENCY_TTL_MS: z.string()
     .optional()
     .transform((val) => val === undefined ? undefined : parseInt(val, 10))
