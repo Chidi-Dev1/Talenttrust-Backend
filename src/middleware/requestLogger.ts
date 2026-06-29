@@ -13,6 +13,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger, createRequestLogger } from '../logger';
+import { sanitizeCorrelationId } from '../utils/correlationId';
 
 // Extend Express Request interface to include our logger
 declare global {
@@ -28,6 +29,20 @@ declare global {
 // Header names for correlation ID
 const CORRELATION_ID_HEADER = 'x-correlation-id';
 const REQUEST_ID_HEADER = 'x-request-id';
+
+function firstValidCorrelationId(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const sanitized = sanitizeCorrelationId(value);
+    if (sanitized) {
+      return sanitized;
+    }
+  }
+  return undefined;
+}
+
+function traceparentTraceId(req: Request): string | undefined {
+  return req.header('traceparent')?.split('-')[1];
+}
 
 /**
  * Express middleware that adds request correlation and logging capabilities.
@@ -45,18 +60,16 @@ export function requestLoggerMiddleware(
   next: NextFunction
 ): void {
   // Generate or extract request ID
-  const requestId = req.header(REQUEST_ID_HEADER) || uuidv4();
+  const requestId = sanitizeCorrelationId(req.header(REQUEST_ID_HEADER)) || uuidv4();
   
   // Extract or generate correlation ID
-  let correlationId = req.header(CORRELATION_ID_HEADER);
-  if (!correlationId) {
-    // Try to extract from other common headers
-    correlationId = 
-      req.header('x-trace-id') ||
-      req.header('x-request-id') ||
-      req.header('traceparent')?.split('-')[1] || // Extract from W3C traceparent
-      uuidv4();
-  }
+  const correlationId =
+    firstValidCorrelationId(
+      req.header(CORRELATION_ID_HEADER),
+      req.header('x-trace-id'),
+      req.header('x-request-id'),
+      traceparentTraceId(req),
+    ) || uuidv4();
 
   // Store IDs on request object
   req.requestId = requestId;
@@ -160,17 +173,16 @@ export function createRequestLoggerMiddleware(options: RequestLoggerOptions = {}
     next: NextFunction
   ): void {
     // Generate or extract request ID
-    const requestId = req.header(requestIdHeader) || uuidv4();
+    const requestId = sanitizeCorrelationId(req.header(requestIdHeader)) || uuidv4();
     
     // Extract or generate correlation ID
-    let correlationId = req.header(correlationIdHeader);
-    if (!correlationId) {
-      correlationId = 
-        req.header('x-trace-id') ||
-        req.header('x-request-id') ||
-        req.header('traceparent')?.split('-')[1] ||
-        uuidv4();
-    }
+    const correlationId =
+      firstValidCorrelationId(
+        req.header(correlationIdHeader),
+        req.header('x-trace-id'),
+        req.header('x-request-id'),
+        traceparentTraceId(req),
+      ) || uuidv4();
 
     // Store IDs on request object
     req.requestId = requestId;

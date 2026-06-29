@@ -70,7 +70,7 @@ Optional correlation ID for distributed tracing across service boundaries. Enabl
 - **Format:** Alphanumeric characters, hyphens, and underscores only
 - **Example:** `X-Correlation-Id: trace-12345-abc`
 
-**Security Note:** The correlation ID is validated for injection attacks. Only safe characters are accepted; invalid IDs are rejected and not echoed back in the response.
+**Security Note:** The correlation ID is validated for injection attacks. Only safe characters are accepted; invalid IDs are rejected, omitted from outbound webhook headers, and not echoed back in the response.
 
 ### Propagation Through the System
 

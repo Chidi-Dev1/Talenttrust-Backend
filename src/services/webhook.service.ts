@@ -7,6 +7,7 @@ import { WEBHOOK_RETRY_POLICY, calculateWebhookRetryDelay } from '../queue/webho
 import { isSafeUrl } from '../utils/ssrf';
 import { RateLimitStore } from '../lib/rateLimitStore';
 import { MetricsServiceLike } from '../observability';
+import { buildWebhookHeaders } from '../utils/correlationId';
 
 /** Max deliveries per destination host per window. Default: 60. */
 const HOST_RATE_LIMIT_MAX = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_MAX ?? 60);
@@ -92,9 +93,7 @@ export class WebhookService {
       }
 
       try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
+        const headers = buildWebhookHeaders(payload.correlationId);
 
         if (payload.webhookSecret) {
           const { signature, timestamp } = createWebhookSignature(
@@ -103,10 +102,6 @@ export class WebhookService {
           );
           headers['X-Signature'] = `sha256=${signature}`;
           headers['X-Timestamp'] = timestamp.toString();
-        }
-
-        if (payload.correlationId) {
-          headers['X-Correlation-Id'] = payload.correlationId;
         }
 
         await axios.post(payload.url, payload.data, { headers });
@@ -245,4 +240,3 @@ export class WebhookService {
     return { attempted, succeeded, failed, deduped };
   }
 }
-
