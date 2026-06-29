@@ -127,6 +127,15 @@ describe('WebhookService (iterative retry)', () => {
     );
   });
 
+  it('omits invalid correlation ID header values', async () => {
+    (axios.post as jest.Mock).mockResolvedValueOnce({ status: 200 });
+
+    await service.send(makePayload({ correlationId: 'trace\nX-Injected: true' }));
+
+    const call = (axios.post as jest.Mock).mock.calls[0];
+    expect(call[2].headers).not.toHaveProperty('X-Correlation-Id');
+  });
+
   it('adds signature headers when webhookSecret provided', async () => {
     (axios.post as jest.Mock).mockResolvedValueOnce({ status: 200 });
 
@@ -153,4 +162,3 @@ describe('WebhookService (iterative retry)', () => {
     expect(call[2].headers).not.toHaveProperty('X-Signature');
   });
 });
-

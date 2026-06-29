@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { NextFunction, Request, Response } from 'express';
 import { AsyncLocalStorage } from 'async_hooks';
+import { sanitizeCorrelationId } from '../utils/correlationId';
 
 export interface RequestContextInfo {
   requestId: string;
@@ -27,9 +28,8 @@ export function getRequestContext(): RequestContextInfo | undefined {
  * and runs downstream middleware and route handlers inside an AsyncLocalStorage context.
  */
 export function requestContext(req: Request, res: Response, next: NextFunction): void {
-  const headerRequestId = req.header('x-request-id');
-  const requestId = headerRequestId && headerRequestId.trim() ? headerRequestId : randomUUID();
-  const correlationId = req.header('x-correlation-id') || undefined;
+  const requestId = sanitizeCorrelationId(req.header('x-request-id')) ?? randomUUID();
+  const correlationId = sanitizeCorrelationId(req.header('x-correlation-id'));
 
   res.locals.requestId = requestId;
   res.setHeader('x-request-id', requestId);
