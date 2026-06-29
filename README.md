@@ -237,6 +237,7 @@ All sensitive metadata fields (`password`, `token`, `secret`, `credential`, `api
 ## Documentation
 
 - [Backend Notification Services](./docs/backend/notifications.md)
+- [Outbound Notification Subsystem (channels, transports, persistence)](docs/email-notifications.md)
 - [Event Ingestion Idempotency](docs/EVENT_INGESTION_IDEMPOTENCY.md)
 - [SLA/SLO Definitions and Alert Thresholds](docs/backend/SLA_SLO.md)
 - [SLO Runtime Evaluation](#slo-runtime-evaluation)
