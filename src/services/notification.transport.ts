@@ -94,9 +94,17 @@ function isSafeEmail(payload: EmailPayload): boolean {
   );
 }
 
+function failFastGuard(transportName: string, missing: string[]): void {
+  if (missing.length > 0) {
+    throw new Error(
+      `[${transportName}] Missing required configuration: ${missing.join(', ')}. ` +
+      'Set the required environment variables before starting the server.',
+    );
+  }
+}
+
 /**
- * SMTP-based email transport using nodemailer (placeholder implementation).
- * In a real implementation, install nodemailer and use it here.
+ * SMTP-based email transport with fail-fast configuration guard.
  */
 export class SMTPTransport implements NotificationTransport {
   private config: {
@@ -116,6 +124,11 @@ export class SMTPTransport implements NotificationTransport {
     from: string;
     secure?: boolean;
   }) {
+    const missing: string[] = [];
+    if (!config.host) missing.push('SMTP_HOST');
+    if (!config.port) missing.push('SMTP_PORT');
+    if (!config.from) missing.push('SMTP_FROM');
+    failFastGuard('SMTPTransport', missing);
     this.config = config;
   }
 
@@ -173,6 +186,10 @@ export class SESTransport implements NotificationTransport {
     region?: string;
     from: string;
   }) {
+    const missing: string[] = [];
+    if (!config.from) missing.push('SMTP_FROM (SES sender)');
+    if (!config.region) missing.push('AWS_REGION');
+    failFastGuard('SESTransport', missing);
     this.config = config;
   }
 
@@ -222,6 +239,10 @@ export class SendGridTransport implements NotificationTransport {
     apiKey?: string;
     from: string;
   }) {
+    const missing: string[] = [];
+    if (!config.apiKey) missing.push('SENDGRID_API_KEY');
+    if (!config.from) missing.push('SMTP_FROM (SendGrid sender)');
+    failFastGuard('SendGridTransport', missing);
     this.config = config;
   }
 
