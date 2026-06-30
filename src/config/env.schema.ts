@@ -164,6 +164,37 @@ export const envSchema = z.object({
 
   REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
     .default('exp-decay-v1'),
+
+  // Email transport (queue processor + notification service)
+  EMAIL_PROVIDER: z.enum(['console', 'smtp', 'ses', 'sendgrid'])
+    .default('console'),
+
+  EMAIL_SEND_TIMEOUT_MS: z.string()
+    .default('10000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().min(1000).max(120_000)),
+
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.string()
+    .optional()
+    .transform((val) => val === undefined ? undefined : parseInt(val, 10))
+    .pipe(z.number().int().min(1).max(65535).optional()),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(),
+  SMTP_FROM: z.string()
+    .optional()
+    .refine((val) => val === undefined || !/[\r\n]/.test(val), {
+      message: 'SMTP_FROM must not contain CR/LF characters',
+    }),
+  SMTP_SECURE: z.string()
+    .optional()
+    .transform((val) => val === undefined ? undefined : val === 'true'),
+
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  AWS_REGION: z.string().optional(),
+
+  SENDGRID_API_KEY: z.string().optional(),
 }).superRefine((obj, ctx) => {
   if (obj.NODE_ENV !== 'test') {
     if (!obj.JWT_SECRET) {

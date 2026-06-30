@@ -1,6 +1,46 @@
-# Outbound Notification Subsystem
+# Outbound Email Notifications
 
-This guide documents the outbound notification subsystem so contributors can
+This guide covers both synchronous notification dispatch and the asynchronous
+queue-based email processor.
+
+## Queue email processor
+
+Queued `email-notification` jobs are handled by
+[`src/queue/processors/email-processor.ts`](../src/queue/processors/email-processor.ts)
+using the pluggable transport in
+[`src/queue/processors/email.transport.ts`](../src/queue/processors/email.transport.ts).
+
+### Flow
+
+1. Validate the recipient with a strict single-address check (CR/LF, multi-recipient
+   separators, and non-RFC shapes are rejected).
+2. Require non-empty `subject` and `body`.
+3. Guard `to` / `subject` / `body` against SMTP header injection.
+4. Dispatch through the configured {@link EmailTransport}; provider failures throw
+   so BullMQ retries the job instead of marking it successful.
+5. Return `{ success, message, data: { emailId } }` on success.
+
+### Transport selection
+
+`resolveEmailTransport()` reads validated config from `src/config/env.schema.ts`:
+
+| `EMAIL_PROVIDER` | Transport class           | Required config                               |
+| ---------------- | ------------------------- | --------------------------------------------- |
+| `console`        | `ConsoleEmailTransport`   | — (default in development/test)               |
+| `smtp`           | `SmtpEmailTransport`      | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`         |
+| `ses`            | `SesEmailTransport`       | `SMTP_FROM`, `AWS_REGION`, AWS credentials    |
+| `sendgrid`       | `SendGridEmailTransport`  | `SMTP_FROM`, `SENDGRID_API_KEY`               |
+
+Set `EMAIL_SEND_TIMEOUT_MS` (default `10000`) to bound provider calls.
+
+Tests inject a mock via `setEmailTransportOverride()`; production code must not
+log full recipient addresses or bodies at info level.
+
+---
+
+## Notification service subsystem
+
+The following section documents the outbound notification subsystem so contributors can
 extend it safely. It reflects the code as implemented in:
 
 - Orchestration: [`src/services/notification.service.ts`](../src/services/notification.service.ts)
