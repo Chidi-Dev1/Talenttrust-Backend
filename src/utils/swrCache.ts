@@ -46,8 +46,11 @@ interface CacheEntry<T> {
   updatedAt: number;
 }
 
+/** Default cap applied when no `maxEntries` is supplied to the constructor. */
+export const DEFAULT_MAX_ENTRIES = 1000;
+
 /**
- * Stale-While-Revalidate (SWR) cache implementation.
+ * Stale-While-Revalidate (SWR) cache implementation with bounded LRU eviction.
  *
  * Provides high-availability fallback by returning stale data with a degraded signal
  * while transparently updating from upstream in the background. Supports coalesced
@@ -62,21 +65,6 @@ interface CacheEntry<T> {
  * }
  * ```
  */
-export class SWRCache {
-  /**
-   * In-memory SWR cache store mapping keys to cached entries.
-   * Each entry stores the payload and the last update timestamp.
-   */
-  private cache = new Map<string, CacheEntry<any>>();
-  /**
-   * Tracks in-flight fetches keyed by cache key.
-   * Used to coalesce concurrent requests for the same key
-   * so upstream is not hit redundantly.
-   */
-  private activeFetches = new Map<string, Promise<any>>();
-/** Default cap applied when no `maxEntries` is supplied to the constructor. */
-export const DEFAULT_MAX_ENTRIES = 1000;
-
 export class SWRCache {
   /** Maximum number of entries permitted before LRU eviction is triggered. */
   public readonly maxEntries: number;
@@ -123,7 +111,7 @@ export class SWRCache {
   async get<T>(
     key: string,
     fetcher: () => Promise<T>,
-    options: CacheOptions
+    options: CacheOptions,
   ): Promise<SWRResult<T>> {
     const now = Date.now();
     const entry = this.cache.get(key);
@@ -140,7 +128,11 @@ export class SWRCache {
       // 2. Stale hit (within SWR window)
       if (age < options.ttlMs + options.swrMs) {
         if (!this.activeFetches.has(key)) {
-          this.revalidate(key, fetcher);
+          // Fire-and-forget background revalidation. The rejection is already
+          // logged inside revalidate()'s catch block; we attach a no-op catch
+          // here to prevent Node from treating the unhandled rejection as a
+          // fatal error and to avoid test runner leakage.
+          this.revalidate(key, fetcher).catch(() => undefined);
         }
         this.touch(key, entry);
         return { data: entry.data as T, degraded: true, source: 'cache_stale' };
@@ -163,24 +155,6 @@ export class SWRCache {
   }
 
   /**
-   * Revalidates the cache entry by fetching fresh data from upstream.
-   * Manages active fetch tracking to coalesce concurrent requests.
-   * On error, logs to console and removes the pending fetch tracking.
-   *
-   * @param key - The cache key to revalidate.
-   * @param fetcher - Async function to fetch fresh data.
-   * @returns Promise resolving to the fetched data.
-   */
-  private async revalidate<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
-    const fetchPromise = fetcher()
-      .then((newData) => {
-        this.cache.set(key, { data: newData, updatedAt: Date.now() });
-        this.activeFetches.delete(key);
-        return newData;
-      })
-      .catch((err) => {
-        this.activeFetches.delete(key);
-        console.error(`[SWR Cache] Background revalidation failed for key: ${key}`, err.message);
    * Insert (or replace) a cache entry, then enforce the configured cap by
    * purging insertion-order-oldest entries until size satisfies the bound.
    *
