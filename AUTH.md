@@ -158,7 +158,14 @@ The authentication path employs strict measures to prevent attackers from determ
 1. **Constant-Time Verification**: On login, if an email is not found, the service hashes a dummy password (``${"a".repeat(32)}:${"b".repeat(128)}``) to ensure that the request takes the same amount of time as a matching account check.
 2. **Generic Error Messages**: Registration and login endpoints return generic codes and messages (e.g., `invalid_credentials` or `Registration failed. Please try again.`) without disclosing whether the password or the email was incorrect.
 
-### E. Centralized JWT Configuration (Algorithm Confusion Mitigation)
+### E. Email Normalization (Case-Variant Duplicate Prevention)
+Emails are normalized (trimmed + lowercased) before every write and lookup, via a single shared helper (`normalizeEmail` in [userRepository.ts](file:///c:/Users/DELL/Desktop/Talenttrust-Backend/src/repositories/userRepository.ts)) used by both `AuthService` (register/login) and `UserRepository` (create/findByEmail). This prevents `User@x.com` and `user@x.com` from registering as two distinct accounts, which would otherwise allow account confusion or impersonation of an existing identity.
+
+As defense in depth, a `UNIQUE` index on `LOWER(TRIM(email))` is enforced at the schema level (migration `add_unique_index_on_normalized_email`), so a case-variant duplicate is rejected by the database even if application code ever fails to normalize before an insert.
+
+The anti-enumeration behavior on login (Section D) is unaffected: the constant-time comparison still runs regardless of whether the normalized email matches an existing row.
+
+### F. Centralized JWT Configuration (Algorithm Confusion Mitigation)
 To prevent algorithm-confusion vulnerabilities (e.g., where a verification library honors a token header specifying `alg: none` or swaps RSA public keys for HMAC validation), all token verification calls MUST use the centralized config in [jwtConfig.ts](file:///c:/Users/DELL/Desktop/Talenttrust-Backend/src/auth/jwtConfig.ts):
 ```typescript
 export const JWT_VERIFY_OPTIONS = {

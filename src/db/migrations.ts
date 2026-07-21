@@ -268,6 +268,23 @@ MIGRATIONS.push({
   },
 });
 
+// Version 10: unique index on the normalised (trimmed + lowercased) email so
+// case-variant duplicates (e.g. "User@x.com" vs "user@x.com") are rejected at
+// the schema level even if application code ever writes an unnormalised
+// value. Application code additionally normalises before every write/lookup
+// (see UserRepository.normalizeEmail / AuthService), so this index enforces
+// the invariant rather than being the primary defense.
+MIGRATIONS.push({
+  version: 10,
+  name: "add_unique_index_on_normalized_email",
+  up: (db) => {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
+        ON users (LOWER(TRIM(email)));
+    `);
+  },
+});
+
 function ensureMigrationTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
