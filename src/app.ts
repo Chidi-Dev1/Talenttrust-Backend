@@ -29,6 +29,7 @@ import configRouter from './routes/config.routes';
 import dependencyScanRouter from './routes/dependency-scan.routes';
 import { adminRouter } from './routes/admin.routes';
 import { deployRouter } from './routes/deploy.routes';
+import { webhookSubscriptionRouter } from './routes/webhook-subscription.routes';
 import { requestIdMiddleware } from './middleware/requestId';
 import { httpLoggerMiddleware } from './middleware/httpLogger';
 import { ReputationService } from './services/reputation.service';
@@ -90,6 +91,7 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/v1/dependency-scan', dependencyScanRouter);
   app.use('/api/v1/admin', adminRouter);
   app.use('/api/v1/admin/deploy', deployRouter);
+  app.use('/api/v1/webhook-subscriptions', webhookSubscriptionRouter);
 
   if (includeTerminalHandlers) {
     attachTerminalHandlers(app);

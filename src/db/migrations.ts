@@ -268,6 +268,28 @@ MIGRATIONS.push({
   },
 });
 
+// Version 10: webhook_subscriptions table
+MIGRATIONS.push({
+  version: 10,
+  name: "create_webhook_subscriptions_table",
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+        id TEXT PRIMARY KEY,
+        consumer_id TEXT,
+        url TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        secret TEXT,
+        active BOOLEAN DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_webhook_subscriptions_consumer ON webhook_subscriptions(consumer_id);
+      CREATE INDEX IF NOT EXISTS idx_webhook_subscriptions_event ON webhook_subscriptions(event_type);
+    `);
+  },
+});
+
 function ensureMigrationTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
