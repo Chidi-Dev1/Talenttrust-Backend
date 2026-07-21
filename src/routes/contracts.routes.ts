@@ -28,7 +28,7 @@ function createContractsRouter(): Router {
    * Returns null when the contract does not exist (triggers 404).
    */
   const getContractOwnerId = async (req: any): Promise<string | null> => {
-    const contract = repo.findById(req.params?.id ?? '');
+    const contract = await repo.findById(req.params?.id ?? '');
     return contract ? contract.clientId : null;
   };
 

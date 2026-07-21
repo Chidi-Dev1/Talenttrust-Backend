@@ -64,7 +64,7 @@ export class ContractsService {
       throw new ContractBoundsError(boundsCheck.error);
     }
 
-    const newContract = this.contractRepository.create({
+    const newContract = await this.contractRepository.create({
       title: data.title,
       clientId: data.clientId,
       freelancerId: data.freelancerId ?? '',
@@ -153,7 +153,7 @@ export class ContractsService {
    * Deletes a contract by ID.
    */
   public async deleteContract(id: string): Promise<void> {
-    const deleted = this.contractRepository.delete(id);
+    const deleted = await this.contractRepository.delete(id);
     if (!deleted) {
       throw new NotFoundError(`Contract with id ${id} not found`);
     }
