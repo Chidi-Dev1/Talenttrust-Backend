@@ -32,6 +32,6 @@ export const jobProcessors: Record<JobType, JobProcessor> = {
   [JobType.EMAIL_NOTIFICATION]: processEmailNotification as JobProcessor,
   [JobType.CONTRACT_PROCESSING]: processContractProcessing as JobProcessor,
   [JobType.REPUTATION_UPDATE]: processReputationUpdate as JobProcessor,
-  [JobType.REPUTATION_RECOMPUTE]: processReputationRecompute as JobProcessor,
+  [JobType.REPUTATION_RECOMPUTE]: processReputationRecompute as unknown as JobProcessor,
   [JobType.BLOCKCHAIN_SYNC]: processBlockchainSync as JobProcessor,
 };

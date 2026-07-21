@@ -5,6 +5,8 @@ import type { CreateContractDto, UpdateContractDto } from '../modules/contracts/
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
 import { NotFoundError } from '../errors/appError';
 import { parsePaginationQuery, applyPagination } from '../utils/pagination';
+import { decodeCursor, parseLimit } from '../contracts/cursor.repository';
+import { CURSOR_DEFAULT_LIMIT } from '../contracts/cursor.types';
 import { ok, fail } from '../utils/apiResponse';
 
 interface ContractIdParams {
