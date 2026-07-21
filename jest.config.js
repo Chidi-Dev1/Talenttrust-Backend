@@ -29,10 +29,7 @@ module.exports = {
     'src/middleware/__tests__/rateLimiter.test.ts',
     'src/middleware/auth.test.ts',
     'src/rateLimit.integration.test.ts',
-    'src/repositories/contracts.repository.test.ts',
-    // 'src/repositories/reputationRepository.test.ts', — re-enabled: getDistinctTargetIdPage coverage
     'src/routes/reputation.api.test.ts',
-    'src/services/contracts.service.test.ts',
     // 'src/services/reputation.service.test.ts', — re-enabled: anti-abuse guard tests
     // 'src/shutdown.test.ts', — re-enabled: drain phase tests are now stable
   ],

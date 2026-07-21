@@ -2,18 +2,18 @@ import { ContractsService } from './contracts.service';
 import { SorobanService } from './soroban.service';
 import { ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
-import { InMemoryContractsRepository } from '../repositories/contracts.repository';
+import { InMemoryContractRepository } from '../repositories/contractRepository';
 import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
 
 jest.mock('./soroban.service');
 
 describe('ContractsService', () => {
   let contractsService: ContractsService;
-  let repository: InMemoryContractsRepository;
+  let repository: InMemoryContractRepository;
   let mockSorobanService: jest.Mocked<SorobanService>;
 
   beforeEach(() => {
-    repository = new InMemoryContractsRepository();
+    repository = new InMemoryContractRepository();
     contractsService = new ContractsService(repository as any);
     mockSorobanService = new SorobanService() as jest.Mocked<SorobanService>;
     (contractsService as any).sorobanService = mockSorobanService;
@@ -27,6 +27,26 @@ describe('ContractsService', () => {
     it('returns an empty array initially', async () => {
       const contracts = await contractsService.getAllContracts();
       expect(contracts).toEqual([]);
+    });
+
+    it('returns contracts in descending createdAt order from the real repository', async () => {
+      await contractsService.createContract({
+        title: 'First',
+        description: 'First contract',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+      await contractsService.createContract({
+        title: 'Second',
+        description: 'Second contract',
+        clientId: '550e8400-e29b-41d4-a716-446655440001',
+        budget: 2000,
+      });
+
+      const contracts = await contractsService.getAllContracts();
+      expect(contracts).toHaveLength(2);
+      expect(contracts[0]?.title).toBe('Second');
+      expect(contracts[1]?.title).toBe('First');
     });
   });
 
@@ -47,6 +67,26 @@ describe('ContractsService', () => {
 
       expect(page).toBe(fakePage);
       expect(mockRepository.findPage).toHaveBeenCalledWith({ limit: 10 });
+    });
+
+    it('returns cursor-paginated results from the real repository', async () => {
+      await contractsService.createContract({
+        title: 'Contract A',
+        description: 'First contract',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+      await contractsService.createContract({
+        title: 'Contract B',
+        description: 'Second contract',
+        clientId: '550e8400-e29b-41d4-a716-446655440001',
+        budget: 2000,
+      });
+
+      const page = await contractsService.getContractsPage({ limit: 1 });
+      expect(page.data).toHaveLength(1);
+      expect(page.hasNextPage).toBe(true);
+      expect(page.limit).toBe(1);
     });
   });
 
@@ -77,6 +117,11 @@ describe('ContractsService', () => {
 
       expect(contract).toBe(fakeContract);
       expect(mockRepository.findById).toHaveBeenCalledWith('abc');
+    });
+
+    it('returns undefined for a non-existent id from the real repository', async () => {
+      const contract = await contractsService.getContractById('non-existent-id');
+      expect(contract).toBeUndefined();
     });
   });
 
@@ -360,6 +405,21 @@ describe('ContractsService', () => {
       };
 
       await expect(contractsService.updateContract('non-existent-id', updateData)).rejects.toThrow();
+    });
+
+    it('throws VersionConflictError when version is stale', async () => {
+      const created = await contractsService.createContract({
+        title: 'Version conflict test',
+        description: 'Testing OCC',
+        clientId: '550e8400-e29b-41d4-a716-446655440000',
+        budget: 1000,
+      });
+
+      await contractsService.updateContract(created.id, { version: 0, title: 'First update' });
+
+      await expect(
+        contractsService.updateContract(created.id, { version: 0, title: 'Stale update' }),
+      ).rejects.toThrow(/Version conflict/);
     });
   });
 

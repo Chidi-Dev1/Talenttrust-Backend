@@ -1,6 +1,6 @@
 import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
 import { Contract } from '../db/types';
-import { ContractRepository } from '../repositories/contractRepository';
+import type { IContractRepository } from '../repositories/contractRepository';
 import { SorobanService } from './soroban.service';
 import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.types';
 
@@ -14,10 +14,10 @@ import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflic
  * and orchestration with the Soroban smart contract service.
  */
 export class ContractsService {
-  private contractRepository: ContractRepository;
+  private contractRepository: IContractRepository;
   private sorobanService: SorobanService;
 
-  constructor(contractRepository: ContractRepository) {
+  constructor(contractRepository: IContractRepository) {
     this.sorobanService = new SorobanService();
     this.contractRepository = contractRepository;
   }
