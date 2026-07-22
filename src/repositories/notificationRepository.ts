@@ -10,9 +10,9 @@ interface NotificationRow {
 }
 
 export class NotificationRepository {
-  private db: ReturnType<typeof Database>;
+  private db: BetterSqlite3.Database;
 
-  constructor(db: ReturnType<typeof Database>) {
+  constructor(db: BetterSqlite3.Database) {
     this.db = db;
   }
 

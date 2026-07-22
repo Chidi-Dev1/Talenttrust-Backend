@@ -16,6 +16,7 @@ process.env.DB_PATH = ':memory:';
 
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import { closeDb, getDb } from '../db/database';
 import app from '../index';
 
@@ -77,7 +78,7 @@ beforeEach(() => {
 async function createContractAsAdmin(): Promise<string> {
   const res = await request(app)
     .post('/api/v1/contracts')
-    .set(auth(adminToken()))
+    .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
     .send(validPayload);
   expect(res.status).toBe(201);
   return (res.body as { data: { id: string } }).data.id;
@@ -179,7 +180,7 @@ describe('POST /api/v1/contracts', () => {
   it('returns 201 for admin with valid payload', async () => {
     const res = await request(app)
       .post('/api/v1/contracts')
-      .set(auth(adminToken()))
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
       .send(validPayload);
     expect(res.status).toBe(201);
     expect(res.body.data).toHaveProperty('id');
@@ -189,7 +190,7 @@ describe('POST /api/v1/contracts', () => {
   it('returns 201 for client (create is permitted)', async () => {
     const res = await request(app)
       .post('/api/v1/contracts')
-      .set(auth(clientToken()))
+      .set({ ...auth(clientToken()), 'Idempotency-Key': randomUUID() })
       .send(validPayload);
     expect(res.status).toBe(201);
   });
@@ -223,7 +224,7 @@ describe('POST /api/v1/contracts', () => {
   it('returns 400 for budget exceeding maximum contract amount (validation)', async () => {
     const res = await request(app)
       .post('/api/v1/contracts')
-      .set(auth(adminToken()))
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
       .send({ ...validPayload, budget: 999_000_000_000_000_000 });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatchObject({ code: 'validation_error' });
@@ -237,7 +238,7 @@ describe('POST /api/v1/contracts', () => {
     }));
     const res = await request(app)
       .post('/api/v1/contracts')
-      .set(auth(adminToken()))
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
       .send({ ...validPayload, milestones: excessiveMilestones });
     expect(res.status).toBe(422);
     expect(res.body.error).toMatchObject({ code: 'contract_bounds_error' });
@@ -253,7 +254,7 @@ describe('POST /api/v1/contracts', () => {
     ];
     const res = await request(app)
       .post('/api/v1/contracts')
-      .set(auth(adminToken()))
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
       .send({ ...validPayload, milestones: excessiveAmountMilestones });
     expect(res.status).toBe(422);
     expect(res.body.error).toMatchObject({ code: 'contract_bounds_error' });

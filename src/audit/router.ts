@@ -151,7 +151,9 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
       const actor = (req as Request & { user?: { id?: string } }).user?.id ?? 'anonymous';
       const { query } = parseAuditQuery(req, { maxLimit: 50_000 });
 
-      // Extract only the filter fields — limit/offset are not meaningful for a full export.
+      // Extract the filter fields. Offset is not meaningful for an export, but an
+      // explicit limit caps how many records are written so callers can request a
+      // bounded export (e.g. a preview) rather than the entire log.
       const filters: AuditExportFilters = {
         ...(query.action && { action: query.action }),
         ...(query.severity && { severity: query.severity }),
@@ -160,6 +162,7 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
         ...(query.resourceId && { resourceId: query.resourceId }),
         ...(query.from && { from: query.from }),
         ...(query.to && { to: query.to }),
+        ...(query.limit !== undefined && { limit: query.limit }),
       };
 
       exportResult = await exportService.createNdjsonExport(filters);

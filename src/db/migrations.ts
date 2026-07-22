@@ -290,6 +290,44 @@ MIGRATIONS.push({
   },
 });
 
+// Version 11: enforce uniqueness on the normalized (trimmed + lowercased) email
+MIGRATIONS.push({
+  version: 11,
+  name: "add_normalized_email_unique_index",
+  up: (db) => {
+    // Duplicate emails that differ only by surrounding whitespace or letter
+    // case must be rejected. A plain UNIQUE(email) constraint compares the raw
+    // stored value, so 'alice@example.com' and '  Alice@Example.COM  ' would be
+    // treated as distinct. An expression index over lower(trim(email)) makes the
+    // normalized form the uniqueness key.
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
+        ON users (lower(trim(email)));
+    `);
+  },
+});
+
+// Version 12: notifications table backing the NotificationRepository
+MIGRATIONS.push({
+  version: 12,
+  name: "create_notifications_table",
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        message     TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_user_id
+        ON notifications(user_id);
+      CREATE INDEX IF NOT EXISTS idx_notifications_created_at
+        ON notifications(created_at);
+    `);
+  },
+});
+
 function ensureMigrationTable(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (

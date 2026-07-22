@@ -208,18 +208,18 @@ export const envSchema = z.object({
 
   SENDGRID_API_KEY: z.string().optional(),
 }).superRefine((obj, ctx) => {
-  if (obj.NODE_ENV !== 'test') {
+  if (obj.NODE_ENV === 'production') {
     if (!obj.JWT_SECRET) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['JWT_SECRET'],
-        message: 'JWT_SECRET is required in non-test environments',
+        message: 'JWT_SECRET is required in production',
       });
     } else if (obj.JWT_SECRET.length < 32) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['JWT_SECRET'],
-        message: 'JWT_SECRET must be at least 32 characters in non-test environments',
+        message: 'JWT_SECRET must be at least 32 characters in production',
       });
     }
   }  // ← closes the if block

@@ -137,6 +137,16 @@ export function recordThrottled(_providerId: string): void {
 }
 
 /**
+ * Record the outcome of a DLQ replay attempt.
+ * @param _outcome - Replay outcome label (e.g. 'success', 'failed', 'error',
+ *   'idempotent_noop').
+ */
+export function incrementDlqReplay(_outcome: string): void {
+  // Placeholder implementation - can be connected to a counter in the metrics
+  // registry. Kept as a no-op so callers have a stable, side-effect-free hook.
+}
+
+/**
  * Start DLQ metrics sampling at regular intervals.
  * @param dlqStore - The DLQ store instance.
  * @param intervalMs - Sampling interval in milliseconds.

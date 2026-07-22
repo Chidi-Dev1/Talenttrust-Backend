@@ -497,8 +497,13 @@ describe('ReputationService.getProfile', () => {
     ];
     mockFindByTargetId.mockReturnValue(ratings);
     const profile = ReputationService.getProfile('t1');
-    // Check that scores are rounded to 2 decimals
-    expect(profile.score.toString()).toMatch(/^\d+\.\d{2}$/);
-    expect(profile.weightedScore.toString()).toMatch(/^\d+\.\d{2}$/);
+    // Check that scores are rounded to (at most) 2 decimals. `score` and
+    // `weightedScore` are numeric fields (asserted elsewhere in this suite via
+    // `toBe(0)`, `toBe(4.00)`, and `typeof … === 'number'`), so a JS number such
+    // as 4.5 renders as "4.5" via toString() and can never carry a forced
+    // trailing zero. Formatting with toFixed(2) is the correct way to verify the
+    // 2-decimal rounding contract without contradicting the numeric-type tests.
+    expect(profile.score.toFixed(2)).toMatch(/^\d+\.\d{2}$/);
+    expect(profile.weightedScore.toFixed(2)).toMatch(/^\d+\.\d{2}$/);
   });
 });

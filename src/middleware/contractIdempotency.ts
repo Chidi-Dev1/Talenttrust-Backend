@@ -91,11 +91,12 @@ export function contractCreateIdempotencyMiddleware(): (req: Request, res: Respo
       }
 
       const cached = existing.result;
+      // Return the original response verbatim so a replay is byte-for-byte
+      // identical to the first response. The replay is signalled via a header
+      // rather than by mutating the cached body.
+      res.setHeader('Idempotency-Replayed', 'true');
       res.status(cached.result.statusCode);
-      res.json({
-        ...(cached.result.body as any),
-        idempotencyHeader: 'replay-detected',
-      });
+      res.json(cached.result.body);
       return;
     }
 

@@ -97,6 +97,23 @@ export function createApp(options?: AppFactoryOptions): express.Application {
     attachTerminalHandlers(app);
   }
 
+  // Harden the underlying HTTP server against malformed / smuggled requests.
+  // When Node's HTTP parser rejects a request at the protocol layer — e.g. a
+  // body larger than the declared Content-Length, or a chunked upload past the
+  // size limit — close the socket instead of leaking Node's default bare
+  // "400 Bad Request". This never fires for well-formed requests, so normal
+  // routing and error handling are unaffected.
+  const originalListen = app.listen.bind(app);
+  (app as express.Application).listen = ((...args: Parameters<express.Application['listen']>) => {
+    const server = (originalListen as (...a: unknown[]) => import('http').Server)(...args);
+    server.on('clientError', (_err: Error, socket: import('net').Socket) => {
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+    });
+    return server;
+  }) as express.Application['listen'];
+
   return app;
 }
 

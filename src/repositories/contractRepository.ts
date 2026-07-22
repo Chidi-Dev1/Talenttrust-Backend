@@ -165,7 +165,7 @@ export class ContractRepository implements IContractRepository {
       throw new VersionConflictError();
     }
 
-    return this.findById(id)!;
+    return (await this.findById(id))!;
   }
 
   async delete(id: string): Promise<boolean> {
@@ -220,6 +220,10 @@ export class ContractRepository implements IContractRepository {
  */
 export class InMemoryContractRepository implements IContractRepository {
   private contracts: Map<string, Contract> = new Map();
+  /** Monotonic insertion counter used as a deterministic tie-breaker when two
+   * contracts share an identical `createdAt` timestamp. */
+  private insertionSeq = 0;
+  private readonly insertionOrder: Map<string, number> = new Map();
 
   async create(data: CreateContractInput): Promise<Contract> {
     const id = randomUUID();
@@ -238,6 +242,7 @@ export class InMemoryContractRepository implements IContractRepository {
     };
 
     this.contracts.set(id, contract);
+    this.insertionOrder.set(id, this.insertionSeq++);
     return contract;
   }
 
@@ -249,7 +254,9 @@ export class InMemoryContractRepository implements IContractRepository {
     return Array.from(this.contracts.values()).sort((a, b) => {
       const cmp = b.createdAt.localeCompare(a.createdAt);
       if (cmp !== 0) return cmp;
-      return b.id.localeCompare(a.id);
+      // Deterministic, insertion-order tie-break (most recently inserted first)
+      // so equal-timestamp contracts sort stably instead of by random UUID.
+      return (this.insertionOrder.get(b.id) ?? 0) - (this.insertionOrder.get(a.id) ?? 0);
     });
   }
 
@@ -259,7 +266,7 @@ export class InMemoryContractRepository implements IContractRepository {
 
   async findPage(input: CursorPaginationInput = {}): Promise<CursorPage<Contract>> {
     const limit = parseLimit(input.limit);
-    let sorted = this.findAll();
+    let sorted = await this.findAll();
 
     if (input.cursor) {
       const pos = decodeCursor(input.cursor);

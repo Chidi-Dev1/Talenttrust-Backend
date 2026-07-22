@@ -278,6 +278,14 @@ export function loadRetryPolicyOverrides(): RetryPolicyOverrides {
       const { multiplier: _dropped, ...rest } = backoff;
       overrides[jobType].backoff = rest;
     }
+
+    // Discard entries that ended up empty because every candidate value was
+    // invalid (NaN, non-positive, or out of the accepted range). A truthy but
+    // unparseable env var (e.g. `MULTIPLIER=not-a-number` or `MULTIPLIER=-2`)
+    // must not leave behind a phantom `{}` override for the job type.
+    if (overrides[jobType] && Object.keys(overrides[jobType]).length === 0) {
+      delete overrides[jobType];
+    }
   });
 
   return overrides;

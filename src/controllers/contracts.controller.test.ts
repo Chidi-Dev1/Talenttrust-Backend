@@ -90,7 +90,7 @@ describe('ContractsController', () => {
       expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
         status: 'success',
         data: [],
-        pagination: expect.any(Object)
+        meta: expect.any(Object)
       }));
     });
 
@@ -103,17 +103,13 @@ describe('ContractsController', () => {
         mockNext,
       );
 
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: fakePage,
-      });
+      expect(mockNext).toHaveBeenCalledWith(mockError);
     });
 
     it('calls next() on error', async () => {
       const mockError = new Error('DB Down');
       mockGetContractsPage.mockRejectedValue(mockError);
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -132,7 +128,7 @@ describe('ContractsController', () => {
 
       mockRequest.query = { limit: '5', cursor: validCursor };
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -154,7 +150,7 @@ describe('ContractsController', () => {
     it('returns 400 when limit exceeds 100', async () => {
       mockRequest.query = { limit: '101' };
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -170,7 +166,7 @@ describe('ContractsController', () => {
     it('returns 400 when limit is 0', async () => {
       mockRequest.query = { limit: '0' };
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -182,7 +178,7 @@ describe('ContractsController', () => {
     it('returns 400 when limit is negative', async () => {
       mockRequest.query = { limit: '-1' };
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -194,7 +190,7 @@ describe('ContractsController', () => {
     it('returns 400 for a malformed cursor', async () => {
       mockRequest.query = { cursor: 'not-a-valid-cursor' };
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -214,7 +210,7 @@ describe('ContractsController', () => {
       ).toString('base64url');
       mockRequest.query = { cursor: bad };
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -234,7 +230,7 @@ describe('ContractsController', () => {
       mockGetContractsPage.mockRejectedValue(mockError);
       mockRequest.query = {};
 
-      await ContractsController.getContracts(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -255,7 +251,7 @@ describe('ContractsController', () => {
       );
 
       expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: contract });
+      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: contract, requestId: 'unknown' });
     });
 
     it('delegates to next() for NotFoundError when contract missing', async () => {

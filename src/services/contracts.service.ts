@@ -64,6 +64,23 @@ export class ContractsService {
       throw new ContractBoundsError(boundsCheck.error);
     }
 
+    // Enforce that the sum of milestone amounts does not exceed the contract
+    // budget. `validateContractBounds` only guards the absolute policy cap
+    // (MAX_CONTRACT_AMOUNT_STROOPS); the per-contract budget is the tighter,
+    // caller-supplied limit that milestone payouts must never overrun.
+    if (data.milestones && data.milestones.length > 0) {
+      const totalMilestoneAmount = data.milestones.reduce(
+        (sum, milestone) => sum + milestone.amount,
+        0,
+      );
+      if (totalMilestoneAmount > data.budget) {
+        throw new ContractBoundsError(
+          `Total milestone amount exceeds maximum contract amount ` +
+            `(milestones total ${totalMilestoneAmount} exceeds budget of ${data.budget})`,
+        );
+      }
+    }
+
     const newContract = await this.contractRepository.create({
       title: data.title,
       clientId: data.clientId,

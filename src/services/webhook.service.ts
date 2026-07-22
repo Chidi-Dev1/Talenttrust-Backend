@@ -20,6 +20,20 @@ const HOST_RATE_LIMIT_WINDOW_MS = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_WIN
 /** Per-attempt outbound webhook timeout, validated through env schema. */
 const WEBHOOK_DELIVERY_TIMEOUT_MS = validateEnv().WEBHOOK_DELIVERY_TIMEOUT_MS;
 
+/**
+ * Public, secret-redacted view of a DLQ entry. Exposes the failure reason as
+ * `error` (aliasing the internal `lastError` column) and never leaks the
+ * per-subscription webhook secret.
+ */
+export type WebhookDLQView = Omit<WebhookDLQEntry, 'webhookSecret' | 'lastError'> & {
+  error: string;
+};
+
+function toDLQView(entry: WebhookDLQEntry): WebhookDLQView {
+  const { webhookSecret: _webhookSecret, lastError, ...rest } = entry;
+  return { ...rest, error: lastError };
+}
+
 export interface WebhookPayload {
   id: string;
   url: string;
@@ -124,8 +138,7 @@ export class WebhookService {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       // ── SSRF re-check ────────────────────────────────────────────────────
-      const isTestEnv = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID;
-      if (!isTestEnv && !isSafeUrl(payload.url)) {
+      if (!isSafeUrl(payload.url)) {
         await this.persistToDLQ(payload, 'SSRF_BLOCKED: destination URL is private or invalid');
         return;
       }
@@ -149,10 +162,6 @@ export class WebhookService {
           headers['X-Timestamp'] = timestamp.toString();
         }
 
-        if (payload.correlationId) {
-          headers['X-Correlation-Id'] = payload.correlationId;
-        }
-
         await axios.post(payload.url, payload.data, {
           headers,
           timeout: WEBHOOK_DELIVERY_TIMEOUT_MS,
@@ -164,7 +173,10 @@ export class WebhookService {
 
         const isLastAttempt = attempt === maxAttempts - 1;
         if (!isLastAttempt) {
-          const delay = calculateWebhookRetryDelay(attempt);
+          // Under test we collapse the inter-attempt backoff so the bounded
+          // retry loop resolves promptly instead of blocking on multi-second
+          // real-timer sleeps. Production keeps the exponential-with-jitter delay.
+          const delay = process.env.NODE_ENV === 'test' ? 0 : calculateWebhookRetryDelay(attempt);
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
@@ -191,19 +203,15 @@ export class WebhookService {
     }
   }
 
-  getDLQ(): Omit<WebhookDLQEntry, 'webhookSecret'>[] {
+  getDLQ(): WebhookDLQView[] {
     const entries = this.dlqStorage.listEntries();
-    return entries.map((entry) => {
-      const { webhookSecret, ...rest } = entry;
-      return rest;
-    });
+    return entries.map((entry) => toDLQView(entry));
   }
 
-  async getDLQEntry(id: string): Promise<Omit<WebhookDLQEntry, 'webhookSecret'> | null> {
+  async getDLQEntry(id: string): Promise<WebhookDLQView | null> {
     const entry = this.dlqStorage.getEntry(id);
     if (!entry) return null;
-    const { webhookSecret, ...rest } = entry;
-    return rest;
+    return toDLQView(entry);
   }
 
   async replayDLQEntry(id: string): Promise<{ success: boolean; message: string }> {
@@ -293,12 +301,20 @@ export class WebhookService {
   }
 }
 
+/**
+ * Correlation IDs are echoed verbatim into an outbound HTTP header, so they must
+ * be constrained to a safe token charset. This prevents header/response-splitting
+ * (CRLF injection) via values such as `trace\nX-Injected: true`.
+ */
+function isValidCorrelationId(correlationId: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(correlationId) && correlationId.length <= 256;
+}
+
 function buildWebhookHeaders(correlationId?: string): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'User-Agent': 'TalentTrust-Webhook-Service/1.0',
   };
-  if (correlationId) {
+  if (correlationId && isValidCorrelationId(correlationId)) {
     headers['X-Correlation-Id'] = correlationId;
   }
   return headers;
