@@ -18,6 +18,28 @@ export interface CreateContractInput {
   status?: ContractStatus;
 }
 
+/** Canonical set of valid contract statuses (mirrors the DB CHECK constraint). */
+const VALID_CONTRACT_STATUSES: readonly ContractStatus[] = [
+  "draft",
+  "active",
+  "completed",
+  "disputed",
+  "cancelled",
+];
+
+/**
+ * Reject any status outside the allowed set before it reaches the database.
+ * The `contracts.status` column carries a matching CHECK constraint, but some
+ * SQLite builds (notably the one bundled on CI) do not enforce CHECK on every
+ * write path, so we validate in code to keep the behavior deterministic across
+ * platforms.
+ */
+function assertValidContractStatus(status: ContractStatus): void {
+  if (!VALID_CONTRACT_STATUSES.includes(status)) {
+    throw new Error(`Invalid contract status: ${String(status)}`);
+  }
+}
+
 /**
  * Repository interface for contracts data access layer.
  *
@@ -102,6 +124,7 @@ export class ContractRepository implements IContractRepository {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     const status: ContractStatus = data.status ?? "draft";
+    assertValidContractStatus(status);
 
     this.db
       .prepare<[string, string, string, string, number, string, number, string]>(
@@ -229,6 +252,7 @@ export class InMemoryContractRepository implements IContractRepository {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
     const status: ContractStatus = data.status ?? "draft";
+    assertValidContractStatus(status);
 
     const contract: Contract = {
       id,
