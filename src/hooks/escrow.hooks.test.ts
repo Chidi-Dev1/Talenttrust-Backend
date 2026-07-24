@@ -132,7 +132,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     });
 
     it('returns email:failed and web:succeeded', async () => {
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.FUNDS_DEPOSITED,
         BASE_PAYLOAD,
       );
@@ -192,7 +192,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     });
 
     it('returns email:succeeded and web:failed', async () => {
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.MILESTONE_APPROVED,
         BASE_PAYLOAD,
       );
@@ -234,7 +234,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     });
 
     it('returns allSucceeded:false, anySucceeded:false', async () => {
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.DISPUTE_RAISED,
         BASE_PAYLOAD,
       );
@@ -244,7 +244,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     });
 
     it('returns failure entries for both channels', async () => {
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.DISPUTE_RAISED,
         BASE_PAYLOAD,
       );
@@ -278,7 +278,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     it('treats email success:false as a failed channel', async () => {
       sendEmailSpy.mockResolvedValue({ success: false, message: 'Recipient rejected' });
 
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.ESCROW_RESOLVED,
         BASE_PAYLOAD,
       );
@@ -296,7 +296,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     it('treats web success:false as a failed channel', async () => {
       sendWebSpy.mockResolvedValue({ success: false, message: 'User not found' });
 
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.ESCROW_CANCELLED,
         BASE_PAYLOAD,
       );
@@ -325,7 +325,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     it('handles a string rejection gracefully', async () => {
       sendEmailSpy.mockRejectedValue('plain string error');
 
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.FUNDS_DEPOSITED,
         BASE_PAYLOAD,
       );
@@ -338,7 +338,7 @@ describe('EscrowHooks.onEscrowEvent — channel isolation', () => {
     it('handles a numeric rejection gracefully', async () => {
       sendWebSpy.mockRejectedValue(503);
 
-      const result = await EscrowHooks.onEscrowEvent(
+      const result: EscrowDispatchResult = await EscrowHooks.onEscrowEvent(
         KeyEscrowEvent.FUNDS_DEPOSITED,
         BASE_PAYLOAD,
       );
