@@ -203,6 +203,13 @@ export class MetricsService implements MetricsServiceLike {
   }
 
   private boundRouteLabel(route: string): string {
+    // Unmatched requests (no route template matched) always get their own
+    // dedicated label and must never be collapsed into OTHER_ROUTE_LABEL,
+    // regardless of how full the cardinality cap is.
+    if (route === UNMATCHED_ROUTE_LABEL) {
+      return route;
+    }
+
     if (this.observedHttpRouteLabels.has(route)) {
       return route;
     }

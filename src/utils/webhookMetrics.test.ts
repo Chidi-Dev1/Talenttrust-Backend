@@ -7,11 +7,17 @@ import {
   incrementDlqOperation,
   incrementDlqReplay,
   webhookDlqRegistry,
+  webhookDlqOperationsTotal,
+  webhookDlqReplaysTotal,
 } from './webhookMetrics';
 
 describe('webhookMetrics DLQ counters', () => {
   beforeEach(() => {
-    webhookDlqRegistry.clear();
+    // Reset counter values without de-registering them from the registry.
+    // registry.clear() would remove the counters entirely, causing
+    // getMetricsAsJSON() to return an empty array for subsequent assertions.
+    webhookDlqOperationsTotal.reset();
+    webhookDlqReplaysTotal.reset();
   });
 
   describe('incrementDlqOperation', () => {
