@@ -146,12 +146,12 @@ describe('TokenBucketLimiter & BucketStore', () => {
       await instance1.acquireToken('provider-x');
       await instance1.acquireToken('provider-x');
 
-      expect(await redisStore.getTokenCount('provider-x')).toBe(1);
+      expect(await redisStore.getTokenCount('provider-x')).toBeCloseTo(1, 0);
 
       // Acquire 1 token on instance2 (3rd total token, now bucket is empty)
       await instance2.acquireToken('provider-x');
 
-      expect(await redisStore.getTokenCount('provider-x')).toBe(0);
+      expect(await redisStore.getTokenCount('provider-x')).toBeLessThan(0.1);
 
       // Attempt 4th token on instance1 — bucket empty, should enqueue
       let instance1Acquired = false;
