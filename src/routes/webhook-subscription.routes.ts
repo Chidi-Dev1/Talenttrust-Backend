@@ -18,6 +18,15 @@ const router = Router();
 const getRepo = () => new SqliteWebhookSubscriptionRepository(getDb());
 
 /**
+ * Removes the webhook secret from a subscription object before sending to the client.
+ * Secrets must never be exposed in API responses.
+ */
+function sanitizeSubscription(sub: any): any {
+  const { secret: _secret, ...rest } = sub;
+  return rest;
+}
+
+/**
  * POST /api/v1/webhook-subscriptions
  * Creates a new webhook subscription. Admins can create subscription for any consumer,
  * but let's restrict it to admin-only or authenticated users.
@@ -44,7 +53,7 @@ router.post(
       const subscription = await repo.create(req.body);
       res.status(201).json({
         status: 'success',
-        data: subscription,
+        data: sanitizeSubscription(subscription),
       });
     } catch (error) {
       next(error);
@@ -67,7 +76,7 @@ router.get(
       const list = await repo.findAll(req.query);
       res.status(200).json({
         status: 'success',
-        data: list,
+        data: list.map(sanitizeSubscription),
       });
     } catch (error) {
       next(error);
@@ -102,7 +111,7 @@ router.get(
 
       res.status(200).json({
         status: 'success',
-        data: subscription,
+        data: sanitizeSubscription(subscription),
       });
     } catch (error) {
       next(error);
@@ -149,7 +158,7 @@ router.patch(
       const updated = await repo.update(id, req.body);
       res.status(200).json({
         status: 'success',
-        data: updated,
+        data: sanitizeSubscription(updated),
       });
     } catch (error) {
       next(error);
