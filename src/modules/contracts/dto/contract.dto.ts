@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { registry } from '../../../docs/openapi-registry';
-import { MAX_CONTRACT_AMOUNT_STROOPS } from '../../../contracts/bounds';
+import {
+  MAX_CONTRACT_AMOUNT_STROOPS,
+  MAX_CONTRACT_TERMS_LENGTH,
+  MAX_MILESTONES_PER_CONTRACT,
+} from '../../../contracts/bounds';
 
 // Base contract schema for common fields
 const contractBaseSchema = {
@@ -26,7 +30,10 @@ export const createContractSchema = z.object({
   body: z.object(contractBaseSchema),
 });
 
-// Update contract schema with partial fields for PATCH and OCC version
+// Update contract schema with partial fields for PATCH and OCC version.
+// `.strict()` on both the body and each milestone rejects unrecognized
+// fields (400 validation_error) instead of silently dropping them — this is
+// the write path used to initiate/resolve disputes via `status`.
 export const updateContractSchema = z.object({
   body: z.object({
     version: z.number().int().min(0),
@@ -37,15 +44,15 @@ export const updateContractSchema = z.object({
     budget: z.number().positive().max(MAX_CONTRACT_AMOUNT_STROOPS).optional(),
     deadline: z.string().datetime().nullable().optional(),
     status: z.enum(['draft', 'active', 'completed', 'cancelled', 'disputed']).optional(),
-    terms: z.string().nullable().optional(),
+    terms: z.string().max(MAX_CONTRACT_TERMS_LENGTH).nullable().optional(),
     milestones: z.array(z.object({
       title: z.string().min(1).max(100),
       description: z.string().min(1).max(500),
-      amount: z.number().positive(),
+      amount: z.number().positive().max(MAX_CONTRACT_AMOUNT_STROOPS),
       deadline: z.string().datetime().optional(),
       completed: z.boolean().default(false),
-    })).optional(),
-  }),
+    }).strict()).max(MAX_MILESTONES_PER_CONTRACT).optional(),
+  }).strict(),
 });
 
 // Query parameters schema for filtering and pagination
