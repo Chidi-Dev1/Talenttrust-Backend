@@ -340,18 +340,48 @@ export class TokenBucketLimiter {
    * Acquire a single token for `providerId`, resolving immediately when one is
    * available or once one refills. Enqueued waiters resolve in FIFO order.
    */
-  async acquireToken(providerId: string): Promise<void> {
+  acquireToken(providerId: string): Promise<void> {
     const queue = this.getOrCreateQueue(providerId);
 
     if (queue.length === 0) {
-      const consumed = await this.store.consumeToken(
+      const consumedResult = this.store.consumeToken(
         providerId,
         this.capacity,
         this.refillRatePerSec,
       );
-      if (consumed) {
+
+      if (consumedResult === true) {
         this.syncLegacyStoreQueue(providerId, queue);
-        return;
+        return Promise.resolve();
+      }
+
+      if (consumedResult instanceof Promise) {
+        let resolveWaiter!: () => void;
+        const waiterPromise = new Promise<void>((res) => {
+          resolveWaiter = res;
+        });
+
+        queue.push(resolveWaiter);
+        this.syncLegacyStoreQueue(providerId, queue);
+
+        consumedResult
+          .then((consumed) => {
+            if (consumed) {
+              const idx = queue.indexOf(resolveWaiter);
+              if (idx !== -1) queue.splice(idx, 1);
+              this.syncLegacyStoreQueue(providerId, queue);
+              resolveWaiter();
+            } else {
+              recordThrottled(providerId);
+              this.scheduleDrain(providerId);
+            }
+          })
+          .catch(() => {
+            recordThrottled(providerId);
+            this.scheduleDrain(providerId);
+          });
+
+        return waiterPromise;
       }
     }
 
