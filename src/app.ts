@@ -23,6 +23,8 @@ import { createRequestLimitsMiddleware } from './middleware/requestLimits';
 
 import contractsModuleRouter from './routes/contracts.routes';
 import eventsRouter from './routes/events.routes';
+import { createMetricsRouter } from './routes/metrics.routes';
+import { metricsAuthMiddleware } from './middleware/metricsAuth';
 
 import reputationRouter from './routes/reputation.routes';
 import apiKeysRouter from './routes/apiKeys.routes';
@@ -94,6 +96,7 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/v1/admin', adminRouter);
   app.use('/api/v1/admin/deploy', deployRouter);
   app.use('/api/v1/webhook-subscriptions', webhookSubscriptionRouter);
+  app.use('/api/v1/metrics', metricsAuthMiddleware, createMetricsRouter(metricsService));
 
   if (includeTerminalHandlers) {
     attachTerminalHandlers(app);
