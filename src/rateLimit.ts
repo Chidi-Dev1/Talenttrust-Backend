@@ -7,9 +7,26 @@
  * the webhook limiter share consistent key hashing and lifecycle semantics.
  */
 
-import { recordThrottled } from './webhookMetrics';
+import { recordQueueOverflow, recordThrottled } from './webhookMetrics';
 import type { RateLimitStore, TokenBucketEntry } from './lib/rateLimitStore';
 import { loadWebhookTokenBucketConfig } from './config/rateLimit';
+
+/**
+ * Thrown by {@link TokenBucketLimiter.acquireToken} when the per-provider
+ * waiter queue has reached its configured maximum depth. Callers should
+ * catch this error and route the delivery to the DLQ rather than retrying.
+ */
+export class RateLimitQueueFullError extends Error {
+  public readonly code: string;
+  constructor(public readonly providerId: string, maxQueueDepth: number) {
+    super(
+      `Rate-limit queue full for provider "${providerId}": ` +
+        `max depth ${maxQueueDepth} reached. Route to DLQ.`,
+    );
+    this.name = 'RateLimitQueueFullError';
+    this.code = 'RATE_LIMIT_QUEUE_FULL';
+  }
+}
 
 /** Parsed token-bucket configuration for the outbound webhook limiter. */
 export interface RateLimiterConfig {
@@ -17,6 +34,13 @@ export interface RateLimiterConfig {
   capacity: number;
   /** Steady-state token replenishment rate, in tokens per second. */
   refillRatePerSec: number;
+  /**
+   * Hard cap on the number of pending waiters queued per provider.
+   * When the queue reaches this depth, new acquisitions throw
+   * {@link RateLimitQueueFullError} so the caller can route the
+   * delivery to the DLQ instead of accumulating unbounded memory.
+   */
+  maxQueueDepth: number;
 }
 
 /**
@@ -26,7 +50,8 @@ export interface RateLimiterConfig {
  * of the system agree on `WEBHOOK_BUCKET_CAPACITY` / `WEBHOOK_REFILL_RATE_PER_SEC`.
  */
 export function loadRateLimiterConfig(env: NodeJS.ProcessEnv = process.env): RateLimiterConfig {
-  return loadWebhookTokenBucketConfig(env);
+  const { capacity, refillRatePerSec, maxQueueDepth } = loadWebhookTokenBucketConfig(env);
+  return { capacity, refillRatePerSec, maxQueueDepth };
 }
 
 /**
@@ -39,6 +64,7 @@ export function loadRateLimiterConfig(env: NodeJS.ProcessEnv = process.env): Rat
 export class TokenBucketLimiter {
   private readonly capacity: number;
   private readonly refillRatePerSec: number;
+  private readonly maxQueueDepth: number;
   private readonly store: RateLimitStore;
   /** Active drain timers keyed by provider id. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -46,6 +72,7 @@ export class TokenBucketLimiter {
   constructor(config: RateLimiterConfig, store: RateLimitStore) {
     this.capacity = config.capacity;
     this.refillRatePerSec = config.refillRatePerSec;
+    this.maxQueueDepth = config.maxQueueDepth;
     this.store = store;
   }
 
@@ -62,6 +89,13 @@ export class TokenBucketLimiter {
       bucket.tokens -= 1;
       this.store.setTokenBucket(providerId, bucket);
       return Promise.resolve();
+    }
+
+    if (bucket.queue.length >= this.maxQueueDepth) {
+      recordQueueOverflow();
+      return Promise.reject(
+        new RateLimitQueueFullError(providerId, this.maxQueueDepth),
+      );
     }
 
     return new Promise<void>((resolve) => {

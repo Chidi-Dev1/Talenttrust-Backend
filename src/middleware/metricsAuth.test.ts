@@ -8,21 +8,13 @@ const mockTimingSafeEqual = jest.fn(
 );
 
 jest.mock("crypto", () => {
-  const actual = jest.requireActual("crypto");
-  return {
-    ...actual,
-    timingSafeEqual: mockTimingSafeEqual,
-  };
+  const actual = jest.requireActual<typeof import("crypto")>("crypto");
+  return { ...actual, timingSafeEqual: mockTimingSafeEqual };
 });
 
 import express, { Request, Response } from "express";
 import request from "supertest";
 import { metricsAuthMiddleware } from "./metricsAuth";
-
-jest.mock("crypto", () => {
-  const actual = jest.requireActual<typeof import("crypto")>("crypto");
-  return { ...actual, timingSafeEqual: jest.fn(actual.timingSafeEqual) };
-});
 
 function buildApp() {
   const app = express();
