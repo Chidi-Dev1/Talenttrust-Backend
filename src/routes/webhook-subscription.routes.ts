@@ -4,6 +4,7 @@ import { SqliteWebhookSubscriptionRepository } from '../repositories/webhook-sub
 import { validateSchema } from '../middleware/validate.middleware';
 import { requireAuth, requireRole } from '../middleware/authorization';
 import { isSafeUrl } from '../utils/ssrf';
+import { decodeCursor } from '../contracts/cursor.repository';
 import {
   createWebhookSubscriptionSchema,
   updateWebhookSubscriptionSchema,
@@ -54,7 +55,7 @@ router.post(
 
 /**
  * GET /api/v1/webhook-subscriptions
- * Lists subscriptions with filter support
+ * Lists subscriptions with filter and cursor-based pagination support
  */
 router.get(
   '/',
@@ -64,10 +65,30 @@ router.get(
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const repo = getRepo();
-      const list = await repo.findAll(req.query);
+      const { cursor, limit, ...filters } = req.query;
+      const cursorStr = cursor as string | undefined;
+      if (cursorStr !== undefined) {
+        try {
+          decodeCursor(cursorStr);
+        } catch (err) {
+          return res.status(400).json({
+            error: {
+              code: 'invalid_cursor',
+              message: (err as Error).message,
+              requestId: res.locals.requestId || 'unknown',
+            },
+          });
+        }
+      }
+      const filter = {
+        consumerId: filters.consumerId as string | undefined,
+        eventType: filters.eventType as string | undefined,
+        active: filters.active as boolean | undefined,
+      };
+      const page = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
       res.status(200).json({
         status: 'success',
-        data: list,
+        data: page,
       });
     } catch (error) {
       next(error);
