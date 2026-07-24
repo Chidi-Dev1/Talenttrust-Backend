@@ -202,7 +202,7 @@ describe('POST /auth/login', () => {
   it('login error message does not distinguish missing user from wrong password', async () => {
     const wrongPass = await request(app)
       .post('/auth/login')
-      .send({ email: creds.email, password: 'wrong' });
+      .send({ email: creds.email, password: 'WrongPass1!' });
     const unknownUser = await request(app)
       .post('/auth/login')
       .send({ email: 'nobody@example.com', password: 'anything1' });
