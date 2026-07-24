@@ -155,6 +155,11 @@ export const envSchema = z.object({
     .transform((val) => val === undefined ? undefined : parseInt(val, 10))
     .pipe(z.number().int().positive().optional()),
 
+  RATE_LIMIT_STORE_TYPE: z.enum(['memory', 'redis'])
+    .default('memory'),
+  REDIS_URL: z.string().optional(),
+  REDIS_KEY_PREFIX: z.string().default('rate_limit:'),
+
   ROUTE_BODY_LIMITS: z.string()
     .optional()
     .refine(val => {
