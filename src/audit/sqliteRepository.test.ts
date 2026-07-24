@@ -63,6 +63,66 @@ function makeInput(overrides: Partial<CreateAuditEntryInput> = {}): CreateAuditE
   };
 }
 
+/**
+ * Seeds a repository with a fixed set of five heterogeneous audit entries used
+ * by the `query()` filter-combination suite. The distribution is pinned so the
+ * per-filter counts asserted by those tests hold:
+ *   - action:     1 × CONTRACT_CREATED, 1 × CONTRACT_UPDATED
+ *   - severity:   1 × CRITICAL, 2 × WARNING, 2 × INFO
+ *   - actor:      2 × alice, 1 × bob, 1 × carol, 1 × dave
+ *   - resource:   3 × contract, 1 × payment, 1 × user
+ *   - resourceId: 2 × c-1, 1 × p-1, others unique
+ * Both `alice` rows share `resourceId: c-1`; exactly one of them is
+ * CONTRACT_CREATED so three-filter AND queries resolve to a single row.
+ */
+function seedMixedEntries(repository: SqliteAuditRepository): void {
+  repository.append(
+    makeInput({
+      action: 'CONTRACT_CREATED',
+      severity: 'INFO',
+      actor: 'alice',
+      resource: 'contract',
+      resourceId: 'c-1',
+    }),
+  );
+  repository.append(
+    makeInput({
+      action: 'CONTRACT_UPDATED',
+      severity: 'WARNING',
+      actor: 'alice',
+      resource: 'contract',
+      resourceId: 'c-1',
+    }),
+  );
+  repository.append(
+    makeInput({
+      action: 'PAYMENT_DISPUTED',
+      severity: 'CRITICAL',
+      actor: 'bob',
+      resource: 'payment',
+      resourceId: 'p-1',
+    }),
+  );
+  repository.append(
+    makeInput({
+      action: 'CONTRACT_CANCELLED',
+      severity: 'WARNING',
+      actor: 'carol',
+      resource: 'contract',
+      resourceId: 'c-2',
+    }),
+  );
+  repository.append(
+    makeInput({
+      action: 'USER_UPDATED',
+      severity: 'INFO',
+      actor: 'dave',
+      resource: 'user',
+      resourceId: 'u-1',
+    }),
+  );
+}
+
 describe('SqliteAuditRepository', () => {
   let db: ReturnType<typeof Database>;
   let repository: SqliteAuditRepository;

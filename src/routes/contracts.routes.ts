@@ -1,19 +1,15 @@
 import { Router, Request, Response, NextFunction } from 'express';
 
-
 import { createContractsController } from '../controllers/contracts.controller';
 import { ContractsService } from '../services/contracts.service';
 import { ContractRepository } from '../repositories/contractRepository';
 import { getDb } from '../db/database';
 import { validateSchema } from '../middleware/validate.middleware';
-import { createContractSchema, updateContractSchema } from '../modules/contracts/dto/contract.dto';
+import { createContractSchema } from '../modules/contracts/dto/contract.dto';
+import { validateUpdateContract } from '../modules/contracts/validation.middleware';
 import { eventIngestionService } from '../events/registry';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-
-
-
-
 
 /**
  * Creates the contracts router with injected dependencies.
@@ -32,10 +28,9 @@ function createContractsRouter(): Router {
    * Returns null when the contract does not exist (triggers 404).
    */
   const getContractOwnerId = async (req: any): Promise<string | null> => {
-    const contract = repo.findById(req.params?.id ?? '');
+    const contract = await repo.findById(req.params?.id ?? '');
     return contract ? contract.clientId : null;
   };
-
 
   // GET /bounds — public-facing bounds, still requires auth
   /** @permission contracts:read — admin, client (ownOnly), freelancer (ownOnly) */
@@ -80,14 +75,14 @@ function createContractsRouter(): Router {
     controller.createContract,
   );
 
-
   // PATCH /:id — update an existing contract (owner or admin only)
+  // Uses validateUpdateContract middleware to enforce OCC version requirements
   /** @permission contracts:update (ownOnly for client/freelancer) — admin, client, freelancer */
   router.patch(
     '/:id',
     requireAuth,
     requirePermission('contracts', 'update', getContractOwnerId),
-    validateSchema(updateContractSchema),
+    validateUpdateContract,
     controller.updateContract,
   );
 

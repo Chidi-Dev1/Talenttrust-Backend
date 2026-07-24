@@ -253,9 +253,9 @@ MIGRATIONS.push({
   },
 });
 
-// Version 8: add started_at to transactions table
+// Version 9: add started_at to transactions table
 MIGRATIONS.push({
-  version: 8,
+  version: 9,
   name: "add_started_at_to_transactions",
   up: (db) => {
     // Check if the column already exists to prevent errors during repeated migrations
@@ -265,6 +265,66 @@ MIGRATIONS.push({
     if (!hasStartedAt) {
       db.exec("ALTER TABLE transactions ADD COLUMN started_at TEXT");
     }
+  },
+});
+
+// Version 10: webhook_subscriptions table
+MIGRATIONS.push({
+  version: 10,
+  name: "create_webhook_subscriptions_table",
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+        id TEXT PRIMARY KEY,
+        consumer_id TEXT,
+        url TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        secret TEXT,
+        active BOOLEAN DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_webhook_subscriptions_consumer ON webhook_subscriptions(consumer_id);
+      CREATE INDEX IF NOT EXISTS idx_webhook_subscriptions_event ON webhook_subscriptions(event_type);
+    `);
+  },
+});
+
+// Version 11: enforce uniqueness on the normalized (trimmed + lowercased) email
+MIGRATIONS.push({
+  version: 11,
+  name: "add_normalized_email_unique_index",
+  up: (db) => {
+    // Duplicate emails that differ only by surrounding whitespace or letter
+    // case must be rejected. A plain UNIQUE(email) constraint compares the raw
+    // stored value, so 'alice@example.com' and '  Alice@Example.COM  ' would be
+    // treated as distinct. An expression index over lower(trim(email)) makes the
+    // normalized form the uniqueness key.
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
+        ON users (lower(trim(email)));
+    `);
+  },
+});
+
+// Version 12: notifications table backing the NotificationRepository
+MIGRATIONS.push({
+  version: 12,
+  name: "create_notifications_table",
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL,
+        title       TEXT NOT NULL,
+        message     TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_user_id
+        ON notifications(user_id);
+      CREATE INDEX IF NOT EXISTS idx_notifications_created_at
+        ON notifications(created_at);
+    `);
   },
 });
 

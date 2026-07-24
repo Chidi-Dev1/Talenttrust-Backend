@@ -148,8 +148,6 @@ describe('parseLimit', () => {
   });
 });
 
-import { InMemoryCursorRepository } from './cursor.repository';
-
 describe('InMemoryCursorRepository', () => {
   it('returns null for non-existent cursor', async () => {
     const repo = new InMemoryCursorRepository();

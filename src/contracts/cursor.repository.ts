@@ -99,7 +99,7 @@ export function parseLimit(raw: unknown): number {
   return n;
 }
 
-import { IndexerCursor, CursorUpdateResult, CursorResumeResult, CursorResumeRequest } from './cursor.types';
+
 
 /**
  * @notice Persistence interface for indexer cursors.
