@@ -1,6 +1,7 @@
 import { EmailPayload, WebPayload } from '../types/notification.types';
 import { WebhookService } from './webhook.service';
 import { logger } from '../logger';
+import * as crypto from 'crypto';
 import {
   assertSafeEmailHeaders,
   EmailMessage,
@@ -46,9 +47,35 @@ export const ConsoleTransport: NotificationTransport = {
 export class WebhookTransport implements NotificationTransport {
   constructor(private readonly webhookService: WebhookService, private readonly url: string, private readonly secret?: string) {}
 
+  /**
+   * Generates a collision-resistant delivery id for a notification.
+   *
+   * The id is constructed as `${userId}:${crypto.randomUUID()}` so it remains
+   * human-readable (the userId prefix aids log correlation) while being unique
+   * under rapid successive sends — even multiple sends for the same user within
+   * the same millisecond produce distinct ids. The random component uses
+   * `crypto.randomUUID()` which provides 122 bits of entropy (version 4 UUID).
+   *
+   * @param userId - The recipient's platform identifier.
+   * @returns A unique delivery id string (e.g. `user-abc:550e8400-e29b-41d4-a716-446655440000`).
+   */
+  private buildDeliveryId(userId: string): string {
+    return `${userId}:${crypto.randomUUID()}`;
+  }
+
+  /**
+   * Sends a web notification via the configured webhook endpoint.
+   *
+   * The delivery id is generated once per call (via {@link buildDeliveryId}) and
+   * passed to `webhookService.send`, which handles its own bounded retry cycle
+   * using that same id — so the id is stable for a single logical send.
+   *
+   * @param payload - The web notification payload (userId, title, message).
+   * @returns A result indicating success or failure with an optional message.
+   */
   async sendWebNotification(payload: WebPayload): Promise<NotificationResult> {
     try {
-      await this.webhookService.send({ id: `${payload.userId}:${Date.now()}`, url: this.url, data: payload, retryCount: 0, webhookSecret: this.secret });
+      await this.webhookService.send({ id: this.buildDeliveryId(payload.userId), url: this.url, data: payload, retryCount: 0, webhookSecret: this.secret });
       return { success: true };
     } catch (error) {
       return { success: false, message: (error as Error).message };

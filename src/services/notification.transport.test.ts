@@ -1,6 +1,7 @@
-import { ConsoleTransport, SMTPTransport, SESTransport, SendGridTransport } from './notification.transport';
-import { EmailPayload } from '../types/notification.types';
+import { ConsoleTransport, SMTPTransport, SESTransport, SendGridTransport, WebhookTransport } from './notification.transport';
+import { EmailPayload, WebPayload } from '../types/notification.types';
 import { EmailTransport } from '../queue/processors/email.transport';
+import { WebhookService } from './webhook.service';
 
 describe('notification email transports', () => {
   const payload: EmailPayload = { to: 'recipient@example.com', subject: 'Escrow update', body: 'Your escrow changed.' };
@@ -53,5 +54,73 @@ describe('notification email transports', () => {
 
   it('keeps ConsoleTransport as an explicit safe dev/test default', async () => {
     await expect(ConsoleTransport.sendEmail!(payload)).resolves.toEqual({ success: true });
+  });
+});
+
+describe('WebhookTransport id uniqueness', () => {
+  const userId = 'user-abc';
+  const webPayload: WebPayload = { userId, title: 'Escrow update', message: 'Your escrow has been funded.' };
+
+  let webhookService: WebhookService;
+
+  beforeEach(() => {
+    webhookService = new WebhookService();
+  });
+
+  it('generates ids with the userId prefix for log correlation', async () => {
+    const ids: string[] = [];
+    jest.spyOn(webhookService, 'send').mockImplementation(async (p) => {
+      ids.push(p.id);
+    });
+
+    const transport = new WebhookTransport(webhookService, 'https://example.test/webhook');
+    await transport.sendWebNotification!(webPayload);
+
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toMatch(new RegExp(`^${userId}:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`));
+  });
+
+  it('produces distinct ids across 1000 concurrent sends for one user', async () => {
+    const ids: string[] = [];
+    jest.spyOn(webhookService, 'send').mockImplementation(async (p) => {
+      ids.push(p.id);
+    });
+
+    const transport = new WebhookTransport(webhookService, 'https://example.test/webhook');
+
+    // Fire 1000 concurrent sends to stress-test collision resistance
+    await Promise.all(
+      Array.from({ length: 1000 }, () => transport.sendWebNotification!(webPayload))
+    );
+
+    expect(ids).toHaveLength(1000);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(1000);
+  });
+
+  it('produces distinct ids for different users', async () => {
+    const ids: string[] = [];
+    jest.spyOn(webhookService, 'send').mockImplementation(async (p) => {
+      ids.push(p.id);
+    });
+
+    const transport = new WebhookTransport(webhookService, 'https://example.test/webhook');
+
+    await transport.sendWebNotification!({ userId: 'user-a', title: 'Test', message: 'A' });
+    await transport.sendWebNotification!({ userId: 'user-b', title: 'Test', message: 'B' });
+
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toMatch(/^user-a:/);
+    expect(ids[1]).toMatch(/^user-b:/);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it('returns failure result when webhookService.send throws', async () => {
+    jest.spyOn(webhookService, 'send').mockRejectedValue(new Error('Network timeout'));
+
+    const transport = new WebhookTransport(webhookService, 'https://example.test/webhook');
+    const result = await transport.sendWebNotification!(webPayload);
+
+    expect(result).toEqual({ success: false, message: 'Network timeout' });
   });
 });
