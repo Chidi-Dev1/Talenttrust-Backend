@@ -3,7 +3,6 @@ import { registry } from '../../../docs/openapi-registry';
 import {
   MAX_CONTRACT_AMOUNT_STROOPS,
   MAX_CONTRACT_TERMS_LENGTH,
-  MAX_MILESTONES_PER_CONTRACT,
 } from '../../../contracts/bounds';
 
 // Base contract schema for common fields
@@ -34,6 +33,10 @@ export const createContractSchema = z.object({
 // `.strict()` on both the body and each milestone rejects unrecognized
 // fields (400 validation_error) instead of silently dropping them — this is
 // the write path used to initiate/resolve disputes via `status`.
+// Milestone *count* is intentionally left unbounded here: it's enforced by
+// `validateContractBounds` in the service layer, which returns a 422
+// contract_bounds_error — an established, separately-tested contract this
+// schema must not shadow with an earlier 400.
 export const updateContractSchema = z.object({
   body: z.object({
     version: z.number().int().min(0),
@@ -51,7 +54,7 @@ export const updateContractSchema = z.object({
       amount: z.number().positive().max(MAX_CONTRACT_AMOUNT_STROOPS),
       deadline: z.string().datetime().optional(),
       completed: z.boolean().default(false),
-    }).strict()).max(MAX_MILESTONES_PER_CONTRACT).optional(),
+    }).strict()).optional(),
   }).strict(),
 });
 

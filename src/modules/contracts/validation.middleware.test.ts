@@ -5,7 +5,6 @@ import { MissingVersionError, InvalidVersionError } from '../../errors/appError'
 import {
   MAX_CONTRACT_AMOUNT_STROOPS,
   MAX_CONTRACT_TERMS_LENGTH,
-  MAX_MILESTONES_PER_CONTRACT,
 } from '../../contracts/bounds';
 
 function run(body: unknown) {
@@ -68,16 +67,6 @@ describe('validateUpdateContract', () => {
       expect(next).toHaveBeenCalledWith(expect.any(ZodError));
     });
 
-    it('passes a ZodError to next() when milestone count exceeds the configured maximum', () => {
-      const milestones = Array.from({ length: MAX_MILESTONES_PER_CONTRACT + 1 }, (_, i) => ({
-        title: `M${i}`,
-        description: 'd',
-        amount: 1,
-      }));
-      const { next } = run({ version: 0, milestones });
-      expect(next).toHaveBeenCalledWith(expect.any(ZodError));
-    });
-
     it('passes a ZodError to next() for a wrong-typed field', () => {
       const { next } = run({ version: 0, status: 'not_a_status' });
       expect(next).toHaveBeenCalledWith(expect.any(ZodError));
@@ -111,6 +100,20 @@ describe('validateUpdateContract', () => {
 
       expect(next).toHaveBeenCalledWith();
       expect((req.body as any).milestones[0].completed).toBe(false);
+    });
+
+    // Milestone count is enforced downstream by the service-layer
+    // contract_bounds_error (422) check, not by this schema — see the
+    // comment on updateContractSchema.
+    it('lets a body with many milestones reach the service layer unrejected', () => {
+      const milestones = Array.from({ length: 25 }, (_, i) => ({
+        title: `M${i}`,
+        description: 'd',
+        amount: 1,
+      }));
+      const { next } = run({ version: 0, milestones });
+
+      expect(next).toHaveBeenCalledWith();
     });
   });
 });

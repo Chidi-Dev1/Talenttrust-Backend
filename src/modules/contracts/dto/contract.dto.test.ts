@@ -2,7 +2,6 @@ import { updateContractSchema } from './contract.dto';
 import {
   MAX_CONTRACT_AMOUNT_STROOPS,
   MAX_CONTRACT_TERMS_LENGTH,
-  MAX_MILESTONES_PER_CONTRACT,
 } from '../../../contracts/bounds';
 
 const bodySchema = updateContractSchema.shape.body;
@@ -143,19 +142,11 @@ describe('updateContractSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('rejects more milestones than the configured maximum', () => {
-      const milestones = Array.from({ length: MAX_MILESTONES_PER_CONTRACT + 1 }, (_, i) => ({
-        title: `M${i}`,
-        description: 'desc',
-        amount: 10,
-      }));
-
-      const result = parse({ version: 0, milestones });
-      expect(result.success).toBe(false);
-    });
-
-    it('accepts exactly the maximum number of milestones', () => {
-      const milestones = Array.from({ length: MAX_MILESTONES_PER_CONTRACT }, (_, i) => ({
+    // Milestone *count* is intentionally not bounded at the schema level —
+    // see the comment on updateContractSchema. That limit is covered by the
+    // service-layer contract_bounds_error (422) tests instead.
+    it('accepts a milestones array with no schema-level count ceiling', () => {
+      const milestones = Array.from({ length: 25 }, (_, i) => ({
         title: `M${i}`,
         description: 'desc',
         amount: 10,
