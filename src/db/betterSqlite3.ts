@@ -232,7 +232,6 @@ try {
 
   class MockDatabase {
     open: boolean;
-    state: Record<string, any[]>;
     private _pragmaValues: Record<string, any> = {};
     private state: Record<string, any[]> = {
       users: [],
@@ -294,7 +293,7 @@ try {
           if (match) {
             const table = match[1].toLowerCase();
             const whereSql = match[2];
-            const tableState = this._state[table];
+            const tableState = this.state[table];
             if (tableState) {
               if (whereSql) {
                 const rowsToKeep = tableState.filter((row: any) => {
@@ -307,7 +306,7 @@ try {
                   }
                   return false;
                 });
-                this._state[table] = rowsToKeep;
+                this.state[table] = rowsToKeep;
               } else {
                 tableState.length = 0;
               }
@@ -350,7 +349,7 @@ try {
               }
             }
 
-            const tableState = this._state[tableName];
+            const tableState = this.state[tableName];
             if (tableState) {
               for (const rowValStr of rowsOfValues) {
                 const rawValues = splitSqlValues(rowValStr);

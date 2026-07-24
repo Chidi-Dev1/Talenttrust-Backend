@@ -55,15 +55,25 @@ describe("GET /health", () => {
     });
   });
 
-  it("includes detail field outside production", async () => {
+  it("includes detail field outside production when verbose=true", async () => {
     const original = process.env.NODE_ENV;
     process.env.NODE_ENV = "development";
-    const res = await request(buildApp([failProbe])).get("/health");
+    const res = await request(buildApp([failProbe])).get("/health?verbose=true");
     process.env.NODE_ENV = original;
     const failedProbe = res.body.probes.find(
       (p: Record<string, unknown>) => !p.ok
     );
     expect(failedProbe?.detail).toBe("down");
+  });
+
+  it("strips detail field outside production when verbose is not set", async () => {
+    const original = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    const res = await request(buildApp([failProbe])).get("/health");
+    process.env.NODE_ENV = original;
+    res.body.probes.forEach((p: Record<string, unknown>) => {
+      expect(p.detail).toBeUndefined();
+    });
   });
 
   it("returns 200 with no probes configured", async () => {

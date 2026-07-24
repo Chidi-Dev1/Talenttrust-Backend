@@ -38,7 +38,9 @@ module.exports = {
     // 'src/shutdown.test.ts', — re-enabled: drain phase tests are now stable
   ],
   transform: {
-    '^.+\\.ts$': 'ts-jest',
+    '^.+\\.ts$': ['ts-jest', {
+      diagnostics: false,
+    }],
   },
   testEnvironment: 'node',
   testTimeout: 15000,
