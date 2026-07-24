@@ -3,7 +3,6 @@ import { getDb } from '../db/database';
 import { SqliteWebhookSubscriptionRepository } from '../repositories/webhook-subscription.repository';
 import { validateSchema } from '../middleware/validate.middleware';
 import { requireAuth, requireRole } from '../middleware/authorization';
-import { isSafeUrl } from '../utils/ssrf';
 import { decodeCursor } from '../contracts/cursor.repository';
 import {
   createWebhookSubscriptionSchema,
@@ -12,6 +11,7 @@ import {
   listWebhookSubscriptionsQuerySchema,
 } from '../modules/webhooks/dto/webhook-subscription.dto';
 import { AuthenticatedRequest } from '../lib/types';
+import { validateWebhookUrl, findSubscriptionOrFail } from './webhook-subscription.validation';
 
 const router = Router();
 
@@ -40,15 +40,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { url } = req.body;
-      if (!isSafeUrl(url)) {
-        return res.status(400).json({
-          error: {
-            code: 'invalid_url',
-            message: 'Provided URL is invalid or resolved to a private/reserved address.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      if (!validateWebhookUrl(url, res)) return;
 
       const repo = getRepo();
       const subscription = await repo.create(req.body);
@@ -118,17 +110,8 @@ router.get(
     try {
       const { id } = req.params;
       const repo = getRepo();
-      const subscription = await repo.findById(id);
-
-      if (!subscription) {
-        return res.status(404).json({
-          error: {
-            code: 'not_found',
-            message: 'Webhook subscription not found.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      const subscription = await findSubscriptionOrFail(id, repo, res);
+      if (!subscription) return;
 
       res.status(200).json({
         status: 'success',
@@ -154,27 +137,11 @@ router.patch(
       const { id } = req.params;
       const { url } = req.body;
 
-      if (url !== undefined && !isSafeUrl(url)) {
-        return res.status(400).json({
-          error: {
-            code: 'invalid_url',
-            message: 'Provided URL is invalid or resolved to a private/reserved address.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      if (url !== undefined && !validateWebhookUrl(url, res)) return;
 
       const repo = getRepo();
-      const existing = await repo.findById(id);
-      if (!existing) {
-        return res.status(404).json({
-          error: {
-            code: 'not_found',
-            message: 'Webhook subscription not found.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      const existing = await findSubscriptionOrFail(id, repo, res);
+      if (!existing) return;
 
       const updated = await repo.update(id, req.body);
       res.status(200).json({
@@ -200,18 +167,9 @@ router.delete(
     try {
       const { id } = req.params;
       const repo = getRepo();
-      const deleted = await repo.delete(id);
+      if (!(await findSubscriptionOrFail(id, repo, res))) return;
 
-      if (!deleted) {
-        return res.status(404).json({
-          error: {
-            code: 'not_found',
-            message: 'Webhook subscription not found.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
-
+      await repo.delete(id);
       res.status(200).json({
         status: 'success',
         data: {
