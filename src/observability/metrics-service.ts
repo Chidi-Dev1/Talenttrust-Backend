@@ -203,6 +203,12 @@ export class MetricsService implements MetricsServiceLike {
   }
 
   private boundRouteLabel(route: string): string {
+    // Never collapse unmatched routes — they are not user-controlled and must
+    // always be tracked separately so operators can monitor 404 rates.
+    if (route === UNMATCHED_ROUTE_LABEL) {
+      return route;
+    }
+
     if (this.observedHttpRouteLabels.has(route)) {
       return route;
     }

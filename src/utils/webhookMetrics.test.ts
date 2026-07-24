@@ -10,10 +10,6 @@ import {
 } from './webhookMetrics';
 
 describe('webhookMetrics DLQ counters', () => {
-  beforeEach(() => {
-    webhookDlqRegistry.clear();
-  });
-
   describe('incrementDlqOperation', () => {
     it('increments enqueue counter', async () => {
       incrementDlqOperation('enqueue');
