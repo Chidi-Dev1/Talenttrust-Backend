@@ -194,6 +194,18 @@ export const envSchema = z.object({
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().int().positive().max(10000)),
 
+  // Metrics Rate Limiting
+  METRICS_RATE_LIMIT_MAX_REQUESTS: z.string()
+    .default('100')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive()),
+
+  METRICS_RATE_LIMIT_WINDOW_MS: z.string()
+    .default('60000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive()),
+
+
   // Reputation Scoring Configuration
   REPUTATION_DECAY_LAMBDA: z.string()
     .default('0.005')

@@ -1118,3 +1118,79 @@ describe('Auth & tenant scoping', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rate Limiting
+// ---------------------------------------------------------------------------
+describe('Rate Limiting on Metrics Routes', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+
+  beforeEach(() => {
+    originalEnv = { ...process.env };
+    process.env.METRICS_RATE_LIMIT_MAX_REQUESTS = '3';
+    process.env.METRICS_RATE_LIMIT_WINDOW_MS = '1000';
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    jest.useRealTimers();
+  });
+
+  it('allows requests up to the limit', async () => {
+    const svc = buildMockService();
+    // Build app directly to recreate rate limiter with updated env
+    const app = buildApp(svc);
+
+    for (let i = 0; i < 3; i++) {
+      const res = await request(app)
+        .post('/api/v1/metrics/health-status')
+        .send({ status: 'up' });
+      expect(res.status).toBe(204);
+    }
+  });
+
+  it('returns 429 over the limit', async () => {
+    const svc = buildMockService();
+    const app = buildApp(svc);
+
+    for (let i = 0; i < 3; i++) {
+      await request(app)
+        .post('/api/v1/metrics/health-status')
+        .send({ status: 'up' });
+    }
+
+    const res = await request(app)
+      .post('/api/v1/metrics/health-status')
+      .send({ status: 'up' });
+
+    expect(res.status).toBe(429);
+    expect(res.headers).toHaveProperty('retry-after');
+  });
+
+  it('resets after the window expires', async () => {
+    jest.useFakeTimers();
+    // Advance Date.now to start window at a known time to avoid issues with fake timers
+    jest.setSystemTime(new Date('2023-01-01T00:00:00Z'));
+    
+    const svc = buildMockService();
+    const app = buildApp(svc);
+
+    for (let i = 0; i < 3; i++) {
+      await request(app)
+        .post('/api/v1/metrics/health-status')
+        .send({ status: 'up' });
+    }
+
+    let res = await request(app)
+      .post('/api/v1/metrics/health-status')
+      .send({ status: 'up' });
+    expect(res.status).toBe(429);
+
+    jest.advanceTimersByTime(1500);
+
+    res = await request(app)
+      .post('/api/v1/metrics/health-status')
+      .send({ status: 'up' });
+    expect(res.status).toBe(204);
+  });
+});
