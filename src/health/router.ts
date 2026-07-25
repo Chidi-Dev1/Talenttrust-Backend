@@ -7,27 +7,15 @@
  *   internal topology to unauthenticated callers.
  * - HTTP 200 for "ok", 503 for "degraded" so load-balancers can act on it.
  * - Cache-Control: no-store prevents stale health data from caches.
- *
- * Observability:
- * - Structured logs are emitted for every health check request including
- *   status, probe results, and duration (no PII).
- * - When a MetricsService is supplied the handler records the health status
- *   gauge so operators can monitor it via Prometheus.
+ * - Query parameters are validated against {@link HealthQuerySchema} so that
+ *   unknown keys are rejected and `verbose` is constrained to "true"/"false".
  */
 
 import { Router, Request, Response } from "express";
 import { runHealthCheck } from "./checker";
-import { Probe, HealthResponse, ProbeResult } from "./types";
-import { Logger, logger as rootLogger } from "../logger";
-
-export interface HealthRouterOptions {
-  /** Probe list override (useful in tests). */
-  probes?: Probe[];
-  /** Metrics service used to record the health status gauge. */
-  metricsService?: { recordHealthStatus(status: "up" | "degraded" | "down"): void };
-  /** Logger instance; defaults to the root logger. */
-  log?: Logger;
-}
+import { Probe, HealthResponse } from "./types";
+import { validateQuery } from "../middleware/validation";
+import { HealthQuerySchema } from "./validation";
 
 /**
  * Build the health router.
@@ -43,7 +31,7 @@ export function buildHealthRouter(
   const log = opts.log ?? rootLogger;
   const router = Router();
 
-  router.get("/", async (_req: Request, res: Response) => {
+  router.get("/", validateQuery(HealthQuerySchema), async (req: Request, res: Response) => {
     res.setHeader("Cache-Control", "no-store");
 
     const start = process.hrtime.bigint();
@@ -76,9 +64,15 @@ export function buildHealthRouter(
       probes: probeSummary,
     });
 
+    // Respect the `verbose` query param — include detail strings when
+    // verbose=true is explicitly requested (non-production only).
+    const isVerbose = req.query['verbose'] === 'true';
+    const isProduction = process.env.NODE_ENV === "production";
+
     // Strip probe details in production to avoid topology leakage.
+    // Outside production, details are stripped unless verbose=true is set.
     const sanitized: HealthResponse =
-      process.env.NODE_ENV === "production"
+      isProduction || !isVerbose
         ? {
             ...result,
             probes: result.probes.map(({ name, ok, latencyMs }) => ({
