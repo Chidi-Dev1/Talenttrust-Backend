@@ -1,10 +1,60 @@
-import { ReputationProfile } from '../types/reputation';
+import { ReputationProfile, UpdateReputationPayload } from '../types/reputation';
 import { ReputationRepository, ReputationEntry } from '../repositories/reputationRepository';
 import { auditService } from '../audit/service';
-import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
+import {
+  AppError,
+  ForbiddenError,
+  ConflictError,
+  ValidationError,
+} from '../errors/appError';
 import type BetterSqlite3 from 'better-sqlite3';
 import { createHash } from 'crypto';
 import { validateEnv } from '../config/env.schema';
+
+/**
+ * Defense-in-depth runtime validation predicate for a reputation rating payload.
+ *
+ * Mirrors the rules enforced by the Zod `updateReputationSchema` at the route
+ * layer so the service layer remains safe even if middleware is bypassed or
+ * reused from a non-HTTP caller (cron job, queue processor, etc.).
+ *
+ * Returns a type-guard so that callers branching on the result receive a
+ * narrowed payload type with `reviewerId` and `rating` typed correctly.
+ *
+ * Rules (in order):
+ *  1. `payload` is a non-null object.
+ *  2. `reviewerId` is a truthy string.
+ *  3. `rating` is a finite integer in the closed range [1, 5].
+ *
+ * The bound/value coercion is intentionally identical to the existing
+ * `isValidReputationRatingPayload` so dropping in this predicate is a
+ * behaviour-preserving change.
+ *
+ * Additional fields (e.g. `comment`, `contextId`, `jobCompleted`) are allowed
+ * and forwarded to the underlying `createRating` call - they are validated at
+ * a later stage (DB-level participation check, private `validateComment`,
+ * etc.).
+ */
+export function isValidReputationRatingPayload(
+  payload: unknown,
+): payload is UpdateReputationPayload {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  const rating = candidate.rating;
+
+  return (
+    typeof candidate.reviewerId === 'string' &&
+    candidate.reviewerId.length > 0 &&
+    typeof rating === 'number' &&
+    Number.isFinite(rating) &&
+    Number.isInteger(rating) &&
+    rating >= 1 &&
+    rating <= 5
+  );
+}
 
 /**
  * Computes a recency-weighted reputation score using exponential time decay.
@@ -213,10 +263,77 @@ export class ReputationService {
   }
 
   /**
+   * Updates a freelancer's reputation profile by recording a new rating and
+   * returning the recomputed profile.
+   *
+   * Acts as the payload-shaped entry point used by the HTTP layer. Validates
+   * the payload defensively (so direct callers - cron, queue, tests - cannot
+   * bypass schema enforcement), then delegates the heavy lifting to
+   * {@link createRating} so all anti-abuse guards (self-rating, duplicate,
+   * contract participation, comment policy, audit) are exercised exactly once.
+   * Finally returns the freshly aggregated profile so callers see post-write
+   * state without a second round-trip.
+   *
+   * @param targetId - UUID of the freelancer being rated (path parameter).
+   * @param payload  - Untrusted payload from the HTTP body. Defensively
+   *                   validated via {@link validateUpdatePayload}.
+   * @returns The recomputed `ReputationProfile` for `targetId`.
+   *
+   * @throws `AppError(400, 'bad_request', 'Freelancer ID is required')`
+   *         when `targetId` is missing.
+   * @throws `AppError(400, 'bad_request', 'Invalid payload: ...')`
+   *         when the payload fails the defense-in-depth predicate.
+   * @throws `ForbiddenError`     - self-rating or non-participant reviewer/target.
+   * @throws `ConflictError`      - duplicate rating for the same
+   *                                reviewer/target/context triple.
+   * @throws `ValidationError`    - comment fails the policy (length / spam).
+   * @throws `Error`              - audit logging failed (existing behaviour).
+   */
+  public static updateProfile(targetId: string, payload: unknown): ReputationProfile {
+    // Ensure repository is initialized
+    if (!this.repository) {
+      throw new Error('ReputationService not initialized. Call initialize() first.');
+    }
+
+    if (!targetId) {
+      throw new AppError(400, 'bad_request', 'Freelancer ID is required');
+    }
+
+    if (!isValidReputationRatingPayload(payload)) {
+      throw new AppError(
+        400,
+        'bad_request',
+        'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required'
+      );
+    }
+
+    // Narrowed by the type-guard. Comment / contextId / jobCompleted are
+    // optional and forwarded as-is so the underlying createRating + DB layer
+    // remain the single source of truth for those rules.
+    const validPayload = payload as UpdateReputationPayload;
+    this.createRating(
+      validPayload.reviewerId,
+      targetId,
+      validPayload.rating,
+      // ContextId is enforced at the route layer; tolerate its absence here
+      // so defense-in-depth never blocks writes that the route validator
+      // would have caught earlier. If absent, the DB layer will surface a
+      // clear error rather than this service silently fabricating one.
+      typeof validPayload.contextId === 'string' ? validPayload.contextId : '',
+      validPayload.comment
+    );
+
+    return this.getProfile(targetId);
+  }
+
+  /**
    * Retrieves a freelancer's reputation profile with aggregated statistics.
    * 
    * @param targetId - The target user's ID
    * @returns ReputationProfile with aggregated stats and reviews
+   *
+   * @throws `AppError(400, 'bad_request', 'Freelancer ID is required')`
+   *         when the caller forgot to pass a `targetId`.
    */
   public static getProfile(targetId: string): ReputationProfile {
     // Ensure repository is initialized
@@ -225,7 +342,7 @@ export class ReputationService {
     }
 
     if (!targetId) {
-      throw new Error('Target ID is required');
+      throw new AppError(400, 'bad_request', 'Freelancer ID is required');
     }
 
     const entries = this.repository.findByTargetId(targetId);
