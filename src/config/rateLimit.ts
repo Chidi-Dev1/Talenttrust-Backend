@@ -24,6 +24,9 @@
  * | RL_AUDIT_ABUSE_THRESHOLD   | 5          | Violations before hard block (audit)     |
  * | RL_AUDIT_INTEGRITY_MAX     | 10         | Max requests per window (audit integrity)|
  * | RL_AUDIT_INTEGRITY_WINDOW_MS | 60000    | Window duration in ms (audit integrity)  |
+ * | RL_REPUTATION_MAX          | 300        | Max requests per window (reputation)     |
+ * | RL_REPUTATION_WINDOW_MS    | 60000      | Window duration in ms (reputation)       |
+ * | RL_REPUTATION_ABUSE_THRESHOLD | 5       | Violations before hard block (reputation)|
  *
  * ## Tier Descriptions
  *
@@ -217,6 +220,25 @@ export const rateLimitConfig = {
     blockWindowMs: toMs(process.env.RL_AUDIT_INTEGRITY_BLOCK_WINDOW_MS, 300_000),
     blockDurationMs: toMs(process.env.RL_AUDIT_INTEGRITY_BLOCK_DURATION_MS, 600_000),
     maxBlockDurationMs: toMs(process.env.RL_AUDIT_INTEGRITY_MAX_BLOCK_MS, 86_400_000),
+    sendHeaders: true,
+    ...sharedStore,
+  } satisfies RateLimiterConfig,
+
+  /**
+   * Reputation tier: profile reads and rating writes.
+   *
+   * Reputation routes are authenticated, but they are public-facing enough
+   * to need an independent per-client bucket. The router namespaces keys
+   * before they enter the shared store so this tier does not interfere with
+   * auth, audit, or other route families for the same API key/IP.
+   */
+  reputation: {
+    maxRequests: toCount(process.env.RL_REPUTATION_MAX, 300),
+    windowMs: toMs(process.env.RL_REPUTATION_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_REPUTATION_ABUSE_THRESHOLD, 5),
+    blockWindowMs: toMs(process.env.RL_REPUTATION_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_REPUTATION_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_REPUTATION_MAX_BLOCK_MS, 86_400_000),
     sendHeaders: true,
     ...sharedStore,
   } satisfies RateLimiterConfig,
