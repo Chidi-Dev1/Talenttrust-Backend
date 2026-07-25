@@ -31,7 +31,6 @@ module.exports = {
     'src/middleware/__tests__/rateLimiter.test.ts',
     'src/middleware/auth.test.ts',
     'src/rateLimit.integration.test.ts',
-    'src/routes/reputation.api.test.ts',
     // 'src/services/reputation.service.test.ts', — re-enabled: anti-abuse guard tests
     // 'src/shutdown.test.ts', — re-enabled: drain phase tests are now stable
   ],
