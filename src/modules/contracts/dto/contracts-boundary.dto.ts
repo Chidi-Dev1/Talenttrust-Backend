@@ -129,3 +129,24 @@ export function fromContractResponseDto(dto: ContractResponseDto): Contract {
     version: dto.version,
   };
 }
+
+// ─── Bulk milestones types ────────────────────────────────────────────────────
+
+export interface BulkMilestoneOperationResult {
+  index: number;
+  status: 'success' | 'error';
+  contractId?: string;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+export interface BulkMilestonesResponseDto {
+  results: BulkMilestoneOperationResult[];
+  summary: {
+    total: number;
+    succeeded: number;
+    failed: number;
+  };
+}

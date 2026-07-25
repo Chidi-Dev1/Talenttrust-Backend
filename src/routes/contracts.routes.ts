@@ -9,6 +9,7 @@ import {
   createContractSchema,
   contractIdParamSchema,
   contractQuerySchema,
+  bulkMilestonesSchema,
 } from '../modules/contracts/dto/contract.dto';
 import { validateUpdateContract } from '../modules/contracts/validation.middleware';
 import { eventIngestionService } from '../events/registry';
@@ -172,6 +173,17 @@ function createContractsRouter(): Router {
     contractCreateIdempotencyMiddleware(),
     validateSchema(createContractSchema),
     controller.createContract,
+  );
+
+  // POST /bulk — batch milestone operations (create/update/delete contracts with milestones)
+  // Each item in the batch is processed independently; partial failures are reported per-item.
+  /** @permission contracts:create — admin, client */
+  router.post(
+    '/bulk',
+    requireAuth,
+    requirePermission('contracts', 'create'),
+    validateSchema(bulkMilestonesSchema),
+    controller.bulkMilestones,
   );
 
   // PATCH /:id — update an existing contract (owner or admin only)

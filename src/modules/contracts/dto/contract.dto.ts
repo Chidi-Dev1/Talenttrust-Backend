@@ -39,6 +39,9 @@ export const CONTRACT_ID_MAX_LENGTH = 128;
 /** Max allowed `limit` query param value */
 export const QUERY_LIMIT_MAX = 100;
 
+/** Maximum number of operations allowed in a single bulk milestones request */
+export const BULK_BATCH_SIZE_MAX = 25;
+
 // ─── Reusable sub-schemas ─────────────────────────────────────────────────────
 
 /**
@@ -307,9 +310,106 @@ export const contractQuerySchema = z
   })
   .strip();
 
+// ─── Bulk milestones schemas ──────────────────────────────────────────────────
+
+/**
+ * Schema for a single bulk milestone operation.
+ *
+ * Supports three actions:
+ *  - `create`: creates a new contract with milestones (requires title, description,
+ *    clientId, budget; milestones is required and must be non-empty)
+ *  - `update`: replaces milestones on an existing contract (requires contractId,
+ *    version, and milestones)
+ *  - `delete`: removes all milestones from an existing contract (requires contractId
+ *    and version; milestones is optional and ignored)
+ *
+ * `.passthrough()` preserves the `action` discriminator field so it appears in the
+ * parsed output. `.strip()` is not applied here; unknown-key rejection is handled
+ * at the array level by the wrapping schema.
+ */
+const bulkMilestoneOperationSchema = z
+  .object({
+    action: z.enum(['create', 'update', 'delete']),
+    contractId: z.string().optional(),
+    version: z.number().int().min(0).optional(),
+    title: z
+      .string()
+      .min(TITLE_MIN_LENGTH, `title must be at least ${TITLE_MIN_LENGTH} characters`)
+      .max(TITLE_MAX_LENGTH, `title must not exceed ${TITLE_MAX_LENGTH} characters`)
+      .trim()
+      .optional(),
+    description: z
+      .string()
+      .min(DESCRIPTION_MIN_LENGTH, `description must be at least ${DESCRIPTION_MIN_LENGTH} characters`)
+      .max(DESCRIPTION_MAX_LENGTH, `description must not exceed ${DESCRIPTION_MAX_LENGTH} characters`)
+      .trim()
+      .optional(),
+    freelancerId: z.string().uuid('freelancerId must be a valid UUID').optional(),
+    clientId: z.string().uuid('clientId must be a valid UUID').optional(),
+    budget: z
+      .number()
+      .positive('budget must be a positive number')
+      .max(MAX_CONTRACT_AMOUNT_STROOPS, `budget must not exceed ${MAX_CONTRACT_AMOUNT_STROOPS}`)
+      .optional(),
+    milestones: z
+      .array(createMilestoneSchema)
+      .optional(),
+  })
+  .passthrough()
+  .refine(
+    (op) => {
+      if (op.action === 'create') {
+        return Array.isArray(op.milestones) && op.milestones.length > 0;
+      }
+      return true;
+    },
+    { message: 'milestones array is required and must be non-empty for create action' },
+  )
+  .refine(
+    (op) => {
+      if (op.action === 'update' || op.action === 'delete') {
+        return op.contractId !== undefined && op.contractId.length > 0;
+      }
+      return true;
+    },
+    { message: 'contractId is required for update and delete actions' },
+  )
+  .refine(
+    (op) => {
+      if (op.action === 'update' || op.action === 'delete') {
+        return op.version !== undefined;
+      }
+      return true;
+    },
+    { message: 'version is required for update and delete actions' },
+  );
+
+/**
+ * Full request schema for POST /api/v1/contracts/milestones/bulk.
+ *
+ * Wraps the operations array in the standard `{ body }` envelope expected
+ * by the `validateSchema` middleware. The array is bounded by
+ * {@link BULK_BATCH_SIZE_MAX}.
+ */
+export const bulkMilestonesSchema = z
+  .object({
+    body: z
+      .object({
+        operations: z
+          .array(bulkMilestoneOperationSchema, {
+            invalid_type_error: 'operations must be an array',
+          })
+          .min(1, 'operations must contain at least one item')
+          .max(BULK_BATCH_SIZE_MAX, `operations must not exceed ${BULK_BATCH_SIZE_MAX} items`),
+      })
+      .strict(),
+  })
+  .strip();
+
 // ─── OpenAPI registry ─────────────────────────────────────────────────────────
 
 registry.register('CreateContract', createContractSchema.shape.body);
+registry.register('BulkMilestones', bulkMilestonesSchema.shape.body);
 
 // ─── Exported types ───────────────────────────────────────────────────────────
 
@@ -317,3 +417,5 @@ export type CreateContractDto = z.infer<typeof createContractBodySchema>;
 export type UpdateContractDto = z.infer<typeof updateContractBodySchema>;
 export type ContractQueryParams = z.infer<typeof contractQuerySchema>;
 export type ContractIdParam = z.infer<typeof contractIdParamSchema>;
+export type BulkMilestoneOperationDto = z.infer<typeof bulkMilestoneOperationSchema>;
+export type BulkMilestonesRequestDto = z.infer<typeof bulkMilestonesSchema>['body'];
