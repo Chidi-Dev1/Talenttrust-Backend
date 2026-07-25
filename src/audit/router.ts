@@ -119,7 +119,7 @@ function parseAuditQuery(
   if (cursor) {
     try {
       decodeCursor(cursor);
-    } catch (_error) {
+    } catch {
       throw new Error('Invalid cursor format');
     }
   }
