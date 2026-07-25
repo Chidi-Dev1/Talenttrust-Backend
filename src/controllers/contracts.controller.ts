@@ -12,12 +12,10 @@ import {
 import { ContractsService } from '../services/contracts.service';
 import { fail, ok } from '../utils/apiResponse';
 import { applyPagination, parsePaginationQuery } from '../utils/pagination';
+import type { AuthenticatedRequest } from '../auth/authenticate';
 
-type ContractRequest<TBody = unknown> = Request<
-  Record<string, string>,
-  unknown,
-  TBody
->;
+type ContractRequest<TBody = unknown> = AuthenticatedRequest &
+  Request<Record<string, string>, unknown, TBody>;
 
 /**
  * Presentation layer for contracts. Transport DTOs are mapped explicitly at
@@ -84,6 +82,7 @@ export class ContractsController {
     try {
       const contract = await this.service.createContract(
         toCreateContractDto(req.body),
+        req.user?.userId,
       );
       ok(res, toContractResponseDto(contract), undefined, 201);
     } catch (error) {
@@ -104,6 +103,7 @@ export class ContractsController {
       const contract = await this.service.updateContract(
         req.params.id!,
         toUpdateContractDto(req.body),
+        req.user?.userId,
       );
       ok(res, toContractResponseDto(contract));
     } catch (error) {
@@ -121,7 +121,7 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      await this.service.deleteContract(req.params.id!);
+      await this.service.deleteContract(req.params.id!, req.user?.userId);
       ok(res, { message: 'Contract deleted successfully' });
     } catch (error) {
       next(error);

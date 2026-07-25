@@ -769,7 +769,10 @@ describe('ContractsController', () => {
         mockNext,
       );
 
-      expect(mockUpdateContract).toHaveBeenCalledWith('abc', { version: 0, title: 'Updated' });
+      // Third arg is the authenticated actor id (used for the contract audit
+      // log — see #853); undefined here since this mock request has no
+      // req.user attached.
+      expect(mockUpdateContract).toHaveBeenCalledWith('abc', { version: 0, title: 'Updated' }, undefined);
       expect(mockResponse.status).toHaveBeenCalledWith(200);
       expect(mockResponse.json).toHaveBeenCalledWith({
         status: 'success',
@@ -833,7 +836,10 @@ describe('ContractsController', () => {
         mockNext,
       );
 
-      expect(mockDeleteContract).toHaveBeenCalledWith('abc');
+      // Second arg is the authenticated actor id (used for the contract audit
+      // log — see #853); undefined here since this mock request has no
+      // req.user attached.
+      expect(mockDeleteContract).toHaveBeenCalledWith('abc', undefined);
       expect(mockResponse.status).toHaveBeenCalledWith(200);
       expect(mockResponse.json).toHaveBeenCalledWith({
         status: 'success',
