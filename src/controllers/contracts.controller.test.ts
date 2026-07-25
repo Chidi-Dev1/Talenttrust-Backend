@@ -381,7 +381,7 @@ describe('ContractsController', () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
       mockGetContractsPage.mockResolvedValue(fakePage);
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -400,7 +400,7 @@ describe('ContractsController', () => {
       mockGetContractsPage.mockResolvedValue(fakePage);
       mockRequest.query = { limit: '10', cursor: validCursor };
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -412,7 +412,7 @@ describe('ContractsController', () => {
     it('returns 400 for malformed cursor', async () => {
       mockRequest.query = { cursor: 'invalid' };
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -425,7 +425,7 @@ describe('ContractsController', () => {
       const error = new Error('Service error');
       mockGetContractsPage.mockRejectedValue(error);
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -653,7 +653,7 @@ describe('ContractsController', () => {
     });
 
     it('returns 200 with CONTRACT_BOUNDS (static)', () => {
-      ContractsController.getBounds(mockRequest as Request, mockResponse as Response);
+      controller.getBounds(mockRequest as Request, mockResponse as Response);
       expect(mockResponse.status).toHaveBeenCalledWith(200);
     });
   });
@@ -686,7 +686,7 @@ describe('ContractsController', () => {
       mockGetContractsPage.mockResolvedValue(fakePage);
       mockRequest.query = {};
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -711,7 +711,7 @@ describe('ContractsController', () => {
 
       mockRequest.query = { limit: '10', cursor: validCursor };
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -724,7 +724,7 @@ describe('ContractsController', () => {
     it('returns 400 for a malformed cursor', async () => {
       mockRequest.query = { cursor: 'not-a-valid-cursor' };
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
@@ -742,7 +742,7 @@ describe('ContractsController', () => {
       mockGetContractsPage.mockRejectedValue(mockError);
       mockRequest.query = {};
 
-      await controller.getContractsCursor(
+      await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
