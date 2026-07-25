@@ -164,6 +164,12 @@ export class ReputationService {
     }
 
     /**
+     * Snapshot the target's rating count immediately before the write so the
+     * audit entry can carry a before/after summary for incident review.
+     */
+    const totalRatingsBefore = this.repository.findByTargetId(targetId).length;
+
+    /**
      * Guard 5 — Persist the reputation entry.
      * Runs only after all guards have passed.
      */
@@ -177,7 +183,9 @@ export class ReputationService {
 
     /**
      * Guard 6 — Mandatory audit log.
-     * Every successful write MUST produce an immutable audit entry.
+     * Every successful write MUST produce an immutable audit entry, carrying
+     * a before/after summary of the target's rating count so reviewers can
+     * see the effect of the mutation without re-deriving it from raw rows.
      * The comment is stored as a SHA-256 hash to avoid leaking PII into the
      * audit store; the plaintext is never logged.
      *
@@ -197,9 +205,16 @@ export class ReputationService {
         resource: 'reputation',
         resourceId: targetId,
         metadata: {
-          rating,
-          comment: comment ? this.hashComment(comment) : undefined,
+          entryId: entry.id,
           contextId,
+          before: {
+            totalRatings: totalRatingsBefore,
+          },
+          after: {
+            totalRatings: totalRatingsBefore + 1,
+            rating,
+            comment: comment ? this.hashComment(comment) : undefined,
+          },
         },
       });
     } catch (auditError) {
