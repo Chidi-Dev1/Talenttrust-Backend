@@ -196,6 +196,7 @@ export const rateLimitConfig = {
   webhook: {
     capacity: toCount(process.env.WEBHOOK_BUCKET_CAPACITY, 10),
     refillRatePerSec: toCount(process.env.WEBHOOK_REFILL_RATE_PER_SEC, 2),
+    maxQueueDepth: toCount(process.env.WEBHOOK_MAX_QUEUE_DEPTH, 1000),
   },
 };
 
@@ -207,6 +208,16 @@ export interface WebhookTokenBucketConfig {
   capacity: number;
   /** Number of tokens added to each bucket per second. */
   refillRatePerSec: number;
+  /**
+   * Hard cap on the number of pending waiters queued per provider.
+   * When the queue reaches this depth, new acquisitions are rejected
+   * with a {@link import('../rateLimit').RateLimitQueueFullError}
+   * so the caller can route the delivery to the DLQ instead of
+   * accumulating unbounded memory.
+   *
+   * @default 1000
+   */
+  maxQueueDepth: number;
 }
 
 /**
@@ -218,9 +229,11 @@ export interface WebhookTokenBucketConfig {
 export function loadWebhookTokenBucketConfig(env: NodeJS.ProcessEnv = process.env): WebhookTokenBucketConfig {
   const rawCapacity = env.WEBHOOK_BUCKET_CAPACITY ?? '10';
   const rawRefill = env.WEBHOOK_REFILL_RATE_PER_SEC ?? '2';
+  const rawMaxQueueDepth = env.WEBHOOK_MAX_QUEUE_DEPTH ?? '1000';
 
   const capacity = Number(rawCapacity);
   const refillRatePerSec = Number(rawRefill);
+  const maxQueueDepth = Number(rawMaxQueueDepth);
 
   if (!Number.isFinite(capacity) || capacity <= 0) {
     throw new Error(
@@ -236,5 +249,12 @@ export function loadWebhookTokenBucketConfig(env: NodeJS.ProcessEnv = process.en
     );
   }
 
-  return { capacity, refillRatePerSec };
+  if (!Number.isFinite(maxQueueDepth) || maxQueueDepth <= 0 || !Number.isInteger(maxQueueDepth)) {
+    throw new Error(
+      `[rateLimit] Invalid WEBHOOK_MAX_QUEUE_DEPTH="${rawMaxQueueDepth}". ` +
+        'Must be a finite positive integer greater than zero.',
+    );
+  }
+
+  return { capacity, refillRatePerSec, maxQueueDepth };
 }

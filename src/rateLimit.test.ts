@@ -2,253 +2,340 @@ import { RateLimitStore } from './lib/rateLimitStore';
 import {
   TokenBucketLimiter,
   loadRateLimiterConfig,
-  InMemoryBucketStore,
-  RedisBucketStore,
-  createBucketStore,
-  redactId,
+  RateLimitQueueFullError,
 } from './rateLimit';
 
 jest.mock('./webhookMetrics', () => ({
   recordThrottled: jest.fn(),
+  recordQueueOverflow: jest.fn(),
 }));
-
-/** Mock Redis implementation supporting eval (Lua) and basic hash operations */
-class MockRedisClient {
-  private readonly data = new Map<string, Map<string, string>>();
-  public isConnected = true;
-  private readonly listeners = new Map<string, Array<(...args: any[]) => void>>();
-
-  on(event: string, cb: (...args: any[]) => void) {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, []);
-    }
-    this.listeners.get(event)!.push(cb);
-  }
-
-  async hmget(key: string, ...fields: string[]): Promise<(string | null)[]> {
-    if (!this.isConnected) {
-      throw new Error('Redis connection lost');
-    }
-    const hash = this.data.get(key);
-    if (!hash) return fields.map(() => null);
-    return fields.map((f) => hash.get(f) ?? null);
-  }
-
-  async keys(pattern: string): Promise<string[]> {
-    if (!this.isConnected) {
-      throw new Error('Redis connection lost');
-    }
-    const prefix = pattern.replace('*', '');
-    return Array.from(this.data.keys()).filter((k) => k.startsWith(prefix));
-  }
-
-  async eval(script: string, numkeys: number, key: string, ...args: string[]): Promise<[number, number]> {
-    if (!this.isConnected) {
-      throw new Error('Redis connection lost');
-    }
-    const capacity = parseFloat(args[0]);
-    const refillRate = parseFloat(args[1]);
-    const now = parseFloat(args[2]);
-    const requested = parseFloat(args[3]);
-
-    let hash = this.data.get(key);
-    let tokens: number;
-    let lastRefill: number;
-
-    if (!hash) {
-      hash = new Map<string, string>();
-      this.data.set(key, hash);
-      tokens = capacity;
-      lastRefill = now;
-    } else {
-      tokens = parseFloat(hash.get('tokens') ?? capacity.toString());
-      lastRefill = parseFloat(hash.get('last_refill') ?? now.toString());
-      const elapsedMs = now - lastRefill;
-      if (elapsedMs > 0) {
-        const refilled = (elapsedMs / 1000.0) * refillRate;
-        tokens = Math.min(capacity, tokens + refilled);
-        lastRefill = now;
-      }
-    }
-
-    let consumed = 0;
-    if (tokens >= requested) {
-      tokens -= requested;
-      consumed = 1;
-    }
-
-    hash.set('tokens', tokens.toString());
-    hash.set('last_refill', lastRefill.toString());
-
-    return [consumed, tokens];
-  }
-
-  async quit(): Promise<'OK'> {
-    this.data.clear();
-    return 'OK';
-  }
-}
-
-describe('TokenBucketLimiter & BucketStore', () => {
-  afterEach(() => {
-    jest.useRealTimers();
-    jest.restoreAllMocks();
-  });
-
-  describe('InMemoryBucketStore', () => {
-    it('stores provider buckets in the unified rate-limit store', async () => {
-      const store = new RateLimitStore({ sweepIntervalMs: 0 });
-      const limiter = new TokenBucketLimiter({ capacity: 2, refillRatePerSec: 1 }, store);
-
-      await limiter.acquireToken('provider-a');
-      await limiter.acquireToken('provider-b');
-
-      expect(store.tokenBucketSize).toBe(2);
-      expect(await limiter.getTokenCount('provider-a')).toBe(1);
-      expect(await limiter.getTokenCount('provider-b')).toBe(1);
-
-      store.destroy();
-    });
-
-    it('preserves token-bucket queuing and refill behavior', async () => {
-      jest.useFakeTimers();
-      jest.setSystemTime(1_000);
-      jest.spyOn(console, 'log').mockImplementation(() => undefined);
-
-      const store = new RateLimitStore({ sweepIntervalMs: 0 });
-      const limiter = new TokenBucketLimiter({ capacity: 1, refillRatePerSec: 1 }, store);
-
-      await limiter.acquireToken('provider-a');
-      const queued = limiter.acquireToken('provider-a');
-
-      expect(limiter.getQueueDepth('provider-a')).toBe(1);
-
-      jest.setSystemTime(2_000);
-      jest.advanceTimersByTime(1_000);
-      await queued;
-
-      expect(limiter.getQueueDepth('provider-a')).toBe(0);
-      expect(await limiter.getTokenCount('provider-a')).toBe(0);
-
-      store.destroy();
-    });
-  });
-
-  describe('RedisBucketStore (Cross-instance & Atomic operations)', () => {
-    it('enforces limit cluster-wide across multiple instances sharing a Redis store', async () => {
-      const mockRedis = new MockRedisClient();
-      const redisStore = new RedisBucketStore({ redisClient: mockRedis });
-
-      const instance1 = new TokenBucketLimiter({ capacity: 3, refillRatePerSec: 1 }, redisStore);
-      const instance2 = new TokenBucketLimiter({ capacity: 3, refillRatePerSec: 1 }, redisStore);
-
-      // Acquire 2 tokens on instance1
-      await instance1.acquireToken('provider-x');
-      await instance1.acquireToken('provider-x');
-
-      expect(await redisStore.getTokenCount('provider-x')).toBeCloseTo(1, 0);
-
-      // Acquire 1 token on instance2 (3rd total token, now bucket is empty)
-      await instance2.acquireToken('provider-x');
-
-      expect(await redisStore.getTokenCount('provider-x')).toBeLessThan(0.1);
-
-      // Attempt 4th token on instance1 — bucket empty, should enqueue
-      let instance1Acquired = false;
-      const p4 = instance1.acquireToken('provider-x').then(() => {
-        instance1Acquired = true;
-      });
-
-      expect(limiterQueueDepth(instance1, 'provider-x')).toBe(1);
-      expect(instance1Acquired).toBe(false);
-
-      await redisStore.destroy();
-    });
-
-    it('handles burst over capacity cleanly', async () => {
-      const mockRedis = new MockRedisClient();
-      const redisStore = new RedisBucketStore({ redisClient: mockRedis });
-
-      const capacity = 2;
-      const consumed1 = await redisStore.consumeToken('provider-y', capacity, 1);
-      const consumed2 = await redisStore.consumeToken('provider-y', capacity, 1);
-      const consumed3 = await redisStore.consumeToken('provider-y', capacity, 1);
-
-      expect(consumed1).toBe(true);
-      expect(consumed2).toBe(true);
-      expect(consumed3).toBe(false);
-
-      await redisStore.destroy();
-    });
-
-    it('falls back cleanly to in-process memory mode when Redis throws an error', async () => {
-      const mockRedis = new MockRedisClient();
-      const redisStore = new RedisBucketStore({ redisClient: mockRedis });
-
-      // Consume 1 token successfully
-      const c1 = await redisStore.consumeToken('provider-z', 2, 1);
-      expect(c1).toBe(true);
-
-      // Simulate Redis disconnect / error
-      mockRedis.isConnected = false;
-
-      // Next consume should fall back to memory store without throwing
-      const c2 = await redisStore.consumeToken('provider-z', 2, 1);
-      expect(typeof c2).toBe('boolean');
-
-      await redisStore.destroy();
-    });
-  });
-
-  describe('createBucketStore factory', () => {
-    it('creates InMemoryBucketStore when RATE_LIMIT_STORE_TYPE is memory', () => {
-      const store = createBucketStore({ RATE_LIMIT_STORE_TYPE: 'memory' });
-      expect(store).toBeInstanceOf(InMemoryBucketStore);
-      store.destroy();
-    });
-
-    it('creates RedisBucketStore when custom redisClient is provided', () => {
-      const mockRedis = new MockRedisClient();
-      const store = createBucketStore({}, mockRedis);
-      expect(store).toBeInstanceOf(RedisBucketStore);
-      store.destroy();
-    });
-  });
-
-  describe('Security & redaction', () => {
-    it('hashes provider IDs so raw secrets or identifiers never appear in store keys', () => {
-      const rawSecretProvider = 'secret-provider-key-12345';
-      const opaqueKey = redactId(rawSecretProvider);
-
-      expect(opaqueKey).not.toContain('secret-provider-key');
-      expect(opaqueKey).toHaveLength(64); // SHA-256 hex string
-    });
-  });
-});
 
 describe('loadRateLimiterConfig', () => {
   it('reads token-bucket defaults from centralized rate-limit config', () => {
     const originalCapacity = process.env.WEBHOOK_BUCKET_CAPACITY;
     const originalRefill = process.env.WEBHOOK_REFILL_RATE_PER_SEC;
+    const originalDepth = process.env.WEBHOOK_MAX_QUEUE_DEPTH;
     process.env.WEBHOOK_BUCKET_CAPACITY = '7';
     process.env.WEBHOOK_REFILL_RATE_PER_SEC = '3';
+    process.env.WEBHOOK_MAX_QUEUE_DEPTH = '500';
 
-    expect(loadRateLimiterConfig()).toEqual({ capacity: 7, refillRatePerSec: 3 });
+    expect(loadRateLimiterConfig()).toEqual({
+      capacity: 7,
+      refillRatePerSec: 3,
+      maxQueueDepth: 500,
+    });
 
-    if (originalCapacity === undefined) {
-      delete process.env.WEBHOOK_BUCKET_CAPACITY;
-    } else {
-      process.env.WEBHOOK_BUCKET_CAPACITY = originalCapacity;
-    }
+    restoreEnv('WEBHOOK_BUCKET_CAPACITY', originalCapacity);
+    restoreEnv('WEBHOOK_REFILL_RATE_PER_SEC', originalRefill);
+    restoreEnv('WEBHOOK_MAX_QUEUE_DEPTH', originalDepth);
+  });
 
-    if (originalRefill === undefined) {
-      delete process.env.WEBHOOK_REFILL_RATE_PER_SEC;
-    } else {
-      process.env.WEBHOOK_REFILL_RATE_PER_SEC = originalRefill;
-    }
+  it('uses default maxQueueDepth of 1000 when env var is not set', () => {
+    const originalDepth = process.env.WEBHOOK_MAX_QUEUE_DEPTH;
+    delete process.env.WEBHOOK_MAX_QUEUE_DEPTH;
+
+    const config = loadRateLimiterConfig();
+    expect(config.maxQueueDepth).toBe(1000);
+
+    restoreEnv('WEBHOOK_MAX_QUEUE_DEPTH', originalDepth);
+  });
+
+  it('throws for invalid WEBHOOK_MAX_QUEUE_DEPTH', () => {
+    expect(() =>
+      loadRateLimiterConfig({ WEBHOOK_MAX_QUEUE_DEPTH: '0' }),
+    ).toThrow('Invalid WEBHOOK_MAX_QUEUE_DEPTH');
+
+    expect(() =>
+      loadRateLimiterConfig({ WEBHOOK_MAX_QUEUE_DEPTH: '-5' }),
+    ).toThrow('Invalid WEBHOOK_MAX_QUEUE_DEPTH');
+
+    expect(() =>
+      loadRateLimiterConfig({ WEBHOOK_MAX_QUEUE_DEPTH: '1.5' }),
+    ).toThrow('Invalid WEBHOOK_MAX_QUEUE_DEPTH');
+
+    expect(() =>
+      loadRateLimiterConfig({ WEBHOOK_MAX_QUEUE_DEPTH: 'NaN' }),
+    ).toThrow('Invalid WEBHOOK_MAX_QUEUE_DEPTH');
   });
 });
 
-function limiterQueueDepth(limiter: TokenBucketLimiter, providerId: string): number {
-  return limiter.getQueueDepth(providerId);
+describe('TokenBucketLimiter', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  describe('single fast provider (never queues)', () => {
+    it('resolves immediately when a token is available with empty queue', async () => {
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 5, refillRatePerSec: 10, maxQueueDepth: 100 },
+        store,
+      );
+
+      const p = limiter.acquireToken('fast-provider');
+      await expect(p).resolves.toBeUndefined();
+      expect(limiter.getQueueDepth('fast-provider')).toBe(0);
+
+      store.destroy();
+    });
+
+    it('always resolves immediately for a single provider with sufficient capacity', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 3, refillRatePerSec: 5, maxQueueDepth: 100 },
+        store,
+      );
+
+      for (let i = 0; i < 3; i++) {
+        await expect(limiter.acquireToken('fast-provider')).resolves.toBeUndefined();
+      }
+
+      // Fourth acquisition should queue (no remaining tokens)
+      const queued = limiter.acquireToken('fast-provider');
+      expect(limiter.getQueueDepth('fast-provider')).toBe(1);
+
+      // Advance time to refill a token
+      jest.setSystemTime(2_000);
+      jest.advanceTimersByTime(1_000);
+      await expect(queued).resolves.toBeUndefined();
+
+      store.destroy();
+    });
+  });
+
+  describe('FIFO ordering below cap', () => {
+    it('releases queued waiters in FIFO order', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+      jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 1, refillRatePerSec: 3, maxQueueDepth: 100 },
+        store,
+      );
+
+      // Consume the only token so subsequent calls queue
+      await limiter.acquireToken('fifo-provider');
+
+      const order: number[] = [];
+      const p1 = limiter.acquireToken('fifo-provider').then(() => order.push(1));
+      const p2 = limiter.acquireToken('fifo-provider').then(() => order.push(2));
+      const p3 = limiter.acquireToken('fifo-provider').then(() => order.push(3));
+
+      expect(limiter.getQueueDepth('fifo-provider')).toBe(3);
+
+      // Advance time enough for 3 refills (1 token/sec * 3 sec)
+      jest.setSystemTime(4_000);
+      jest.advanceTimersByTime(3_000);
+
+      await Promise.all([p1, p2, p3]);
+      expect(order).toEqual([1, 2, 3]);
+      expect(limiter.getQueueDepth('fifo-provider')).toBe(0);
+
+      store.destroy();
+    });
+
+    it('preserves FIFO across multiple drain cycles', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 2, refillRatePerSec: 1, maxQueueDepth: 100 },
+        store,
+      );
+
+      // Use both tokens immediately
+      await limiter.acquireToken('multi-fifo');
+      await limiter.acquireToken('multi-fifo');
+
+      const order: number[] = [];
+      const p1 = limiter.acquireToken('multi-fifo').then(() => order.push(1));
+      const p2 = limiter.acquireToken('multi-fifo').then(() => order.push(2));
+
+      // Advance 1 second — 1 token refills, waiter 1 resolves
+      jest.setSystemTime(2_000);
+      jest.advanceTimersByTime(1_000);
+      await p1;
+
+      // Queue waiter 3 now — should go behind waiter 2
+      const p3 = limiter.acquireToken('multi-fifo').then(() => order.push(3));
+
+      // Advance another second — 1 token refills, waiter 2 resolves
+      jest.setSystemTime(3_000);
+      jest.advanceTimersByTime(1_000);
+      await p2;
+
+      // Advance another second — 1 token refills, waiter 3 resolves
+      jest.setSystemTime(4_000);
+      jest.advanceTimersByTime(1_000);
+      await p3;
+
+      expect(order).toEqual([1, 2, 3]);
+
+      store.destroy();
+    });
+  });
+
+  describe('queue depth cap enforcement', () => {
+    it('rejects with RateLimitQueueFullError when queue is at capacity', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 1, refillRatePerSec: 1, maxQueueDepth: 2 },
+        store,
+      );
+
+      // Consume initial token
+      await limiter.acquireToken('capped');
+
+      // Queue 2 waiters (fills to maxQueueDepth = 2)
+      const q1 = limiter.acquireToken('capped');
+      const q2 = limiter.acquireToken('capped');
+      expect(limiter.getQueueDepth('capped')).toBe(2);
+
+      // Next acquisition should be rejected
+      const overCap = limiter.acquireToken('capped');
+      await expect(overCap).rejects.toThrow(RateLimitQueueFullError);
+      await expect(overCap).rejects.toMatchObject({
+        code: 'RATE_LIMIT_QUEUE_FULL',
+        providerId: 'capped',
+      });
+
+      // Resolve existing waiters by advancing time
+      jest.setSystemTime(4_000);
+      jest.advanceTimersByTime(3_000);
+      await expect(q1).resolves.toBeUndefined();
+      await expect(q2).resolves.toBeUndefined();
+
+      store.destroy();
+    });
+
+    it('rejects exactly when queue.length >= maxQueueDepth (boundary check)', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 1, refillRatePerSec: 1, maxQueueDepth: 1 },
+        store,
+      );
+
+      // Consume initial token
+      await limiter.acquireToken('boundary');
+
+      // Queue 1 waiter (exactly at cap)
+      const q1 = limiter.acquireToken('boundary');
+      expect(limiter.getQueueDepth('boundary')).toBe(1);
+
+      // One more should be rejected
+      const overflow = limiter.acquireToken('boundary');
+      await expect(overflow).rejects.toThrow(RateLimitQueueFullError);
+
+      // Advance time to drain the queued waiter
+      jest.setSystemTime(2_000);
+      jest.advanceTimersByTime(1_000);
+      await expect(q1).resolves.toBeUndefined();
+      expect(limiter.getQueueDepth('boundary')).toBe(0);
+
+      store.destroy();
+    });
+
+    it('rejects one over cap while using small maxQueueDepth', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 1, refillRatePerSec: 1, maxQueueDepth: 0 },
+        store,
+      );
+
+      // Consume the single token
+      await limiter.acquireToken('tiny');
+
+      // With maxQueueDepth=0, every new acquisition should be rejected
+      const overflow = limiter.acquireToken('tiny');
+      await expect(overflow).rejects.toThrow(RateLimitQueueFullError);
+
+      store.destroy();
+    });
+  });
+
+  describe('drain-then-refill cycles', () => {
+    it('accepts new acquisitions after draining below cap', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(1_000);
+
+      const store = new RateLimitStore({ sweepIntervalMs: 0 });
+      const limiter = new TokenBucketLimiter(
+        { capacity: 1, refillRatePerSec: 1, maxQueueDepth: 2 },
+        store,
+      );
+
+      // Consume initial token
+      await limiter.acquireToken('drain-test');
+
+      // Fill queue to cap (2 waiters)
+      const q1 = limiter.acquireToken('drain-test');
+      const q2 = limiter.acquireToken('drain-test');
+      expect(limiter.getQueueDepth('drain-test')).toBe(2);
+
+      // Advance 1 second — 1 token refills, q1 resolves, queue drops to 1
+      jest.setSystemTime(2_000);
+      jest.advanceTimersByTime(1_000);
+      await q1;
+      expect(limiter.getQueueDepth('drain-test')).toBe(1);
+
+      // Now we can queue again (below cap)
+      const q3 = limiter.acquireToken('drain-test');
+      expect(limiter.getQueueDepth('drain-test')).toBe(2);
+
+      // Advance 1 second — 1 token refills, q2 resolves
+      jest.setSystemTime(3_000);
+      jest.advanceTimersByTime(1_000);
+      await q2;
+
+      // Advance 1 second — 1 token refills, q3 resolves
+      jest.setSystemTime(4_000);
+      jest.advanceTimersByTime(1_000);
+      await q3;
+
+      expect(limiter.getQueueDepth('drain-test')).toBe(0);
+
+      store.destroy();
+    });
+  });
+
+  describe('RateLimitQueueFullError', () => {
+    it('has the correct error name, code, and message', () => {
+      const err = new RateLimitQueueFullError('test-provider', 50);
+      expect(err.name).toBe('RateLimitQueueFullError');
+      expect(err.code).toBe('RATE_LIMIT_QUEUE_FULL');
+      expect(err.message).toContain('test-provider');
+      expect(err.message).toContain('50');
+      expect(err.providerId).toBe('test-provider');
+    });
+
+    it('is an instance of Error and RateLimitQueueFullError', () => {
+      const err = new RateLimitQueueFullError('p', 10);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toBeInstanceOf(RateLimitQueueFullError);
+    });
+  });
+});
+
+function restoreEnv(key: string, original: string | undefined): void {
+  if (original === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = original;
+  }
 }

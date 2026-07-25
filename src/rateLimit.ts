@@ -4,10 +4,26 @@
  * Provides single-node (in-process Map) or multi-replica (Redis-backed) pacing for outbound webhooks.
  */
 
-import Redis from 'ioredis';
-import { recordThrottled } from './webhookMetrics';
-import { RateLimitStore } from './lib/rateLimitStore';
+import { recordQueueOverflow, recordThrottled } from './webhookMetrics';
+import type { RateLimitStore, TokenBucketEntry } from './lib/rateLimitStore';
 import { loadWebhookTokenBucketConfig } from './config/rateLimit';
+
+/**
+ * Thrown by {@link TokenBucketLimiter.acquireToken} when the per-provider
+ * waiter queue has reached its configured maximum depth. Callers should
+ * catch this error and route the delivery to the DLQ rather than retrying.
+ */
+export class RateLimitQueueFullError extends Error {
+  public readonly code: string;
+  constructor(public readonly providerId: string, maxQueueDepth: number) {
+    super(
+      `Rate-limit queue full for provider "${providerId}": ` +
+        `max depth ${maxQueueDepth} reached. Route to DLQ.`,
+    );
+    this.name = 'RateLimitQueueFullError';
+    this.code = 'RATE_LIMIT_QUEUE_FULL';
+  }
+}
 
 /** Parsed token-bucket configuration for the outbound webhook limiter. */
 export interface RateLimiterConfig {
@@ -15,6 +31,13 @@ export interface RateLimiterConfig {
   capacity: number;
   /** Steady-state token replenishment rate, in tokens per second. */
   refillRatePerSec: number;
+  /**
+   * Hard cap on the number of pending waiters queued per provider.
+   * When the queue reaches this depth, new acquisitions throw
+   * {@link RateLimitQueueFullError} so the caller can route the
+   * delivery to the DLQ instead of accumulating unbounded memory.
+   */
+  maxQueueDepth: number;
 }
 
 /**
@@ -302,7 +325,8 @@ export function createBucketStore(
  * Reads token-bucket defaults from the centralized rate-limit configuration.
  */
 export function loadRateLimiterConfig(env: NodeJS.ProcessEnv = process.env): RateLimiterConfig {
-  return loadWebhookTokenBucketConfig(env);
+  const { capacity, refillRatePerSec, maxQueueDepth } = loadWebhookTokenBucketConfig(env);
+  return { capacity, refillRatePerSec, maxQueueDepth };
 }
 
 /**
@@ -311,29 +335,16 @@ export function loadRateLimiterConfig(env: NodeJS.ProcessEnv = process.env): Rat
 export class TokenBucketLimiter {
   private readonly capacity: number;
   private readonly refillRatePerSec: number;
-  private readonly store: BucketStore;
-  private readonly rateLimitStore?: RateLimitStore;
-
-  /** Active in-process waiter queues keyed by provider id. */
-  private readonly queues = new Map<string, Array<() => void>>();
+  private readonly maxQueueDepth: number;
+  private readonly store: RateLimitStore;
   /** Active drain timers keyed by provider id. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(config: RateLimiterConfig, store?: BucketStore | RateLimitStore) {
     this.capacity = config.capacity;
     this.refillRatePerSec = config.refillRatePerSec;
-
-    if (store instanceof RateLimitStore) {
-      this.rateLimitStore = store;
-      this.store = new InMemoryBucketStore(store);
-    } else if (store) {
-      this.store = store;
-      if (store instanceof InMemoryBucketStore) {
-        this.rateLimitStore = store.underlyingStore;
-      }
-    } else {
-      this.store = createBucketStore();
-    }
+    this.maxQueueDepth = config.maxQueueDepth;
+    this.store = store;
   }
 
   /**
@@ -383,6 +394,13 @@ export class TokenBucketLimiter {
 
         return waiterPromise;
       }
+    }
+
+    if (bucket.queue.length >= this.maxQueueDepth) {
+      recordQueueOverflow();
+      return Promise.reject(
+        new RateLimitQueueFullError(providerId, this.maxQueueDepth),
+      );
     }
 
     return new Promise<void>((resolve) => {
