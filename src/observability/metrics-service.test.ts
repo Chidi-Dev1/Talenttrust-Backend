@@ -474,3 +474,208 @@ describe('MetricsService — histogram bucket configuration', () => {
     expect(leValues).toContain('+Inf');
   });
 });
+
+describe('MetricsService — HTTP error_cause labels', () => {
+  async function errorCauseValues(register: Registry): Promise<string[]> {
+    const metrics = await register.getMetricsAsJSON();
+    const counter = metrics.find((m) => m.name === 'http_requests_total');
+    return ((counter?.values ?? []) as any[]).map((value) => value.labels.error_cause);
+  }
+
+  function recordWithLocals(
+    service: MetricsService,
+    opts: {
+      statusCode: number;
+      locals?: Record<string, unknown>;
+    },
+  ) {
+    const response = new EventEmitter() as Response & EventEmitter;
+    response.statusCode = opts.statusCode;
+    (response as any).locals = opts.locals ?? {};
+
+    const req = {
+      method: 'GET',
+      baseUrl: '',
+      route: { path: '/test' },
+    } as unknown as Request;
+
+    const next = jest.fn() as NextFunction;
+    service.trackHttpRequest(req, response, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    response.emit('finish');
+  }
+
+  it('labels successful 2xx responses with error_cause=none', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, { statusCode: 200 });
+    expect(await errorCauseValues(register)).toContain('none');
+  });
+
+  it('labels redirect 3xx responses with error_cause=none', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, { statusCode: 302 });
+    expect(await errorCauseValues(register)).toContain('none');
+  });
+
+  it('labels client errors with generic client_error when no explicit cause set', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, { statusCode: 400 });
+    recordWithLocals(service, { statusCode: 404 });
+    recordWithLocals(service, { statusCode: 422 });
+
+    const values = await errorCauseValues(register);
+    expect(values.every((v) => v === 'client_error')).toBe(true);
+  });
+
+  it('labels server errors with generic server_error when no explicit cause set', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, { statusCode: 500 });
+    recordWithLocals(service, { statusCode: 503 });
+
+    const values = await errorCauseValues(register);
+    expect(values.every((v) => v === 'server_error')).toBe(true);
+  });
+
+  it('uses explicit errorCause from res.locals when provided (not_found)', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, {
+      statusCode: 404,
+      locals: { errorCause: 'not_found' },
+    });
+    expect(await errorCauseValues(register)).toContain('not_found');
+  });
+
+  it('uses explicit errorCause for validation_error on 400', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, {
+      statusCode: 400,
+      locals: { errorCause: 'validation_error' },
+    });
+    expect(await errorCauseValues(register)).toContain('validation_error');
+  });
+
+  it('uses explicit errorCause for internal_error on 500', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, {
+      statusCode: 500,
+      locals: { errorCause: 'internal_error' },
+    });
+    expect(await errorCauseValues(register)).toContain('internal_error');
+  });
+
+  it('ignores empty-string explicit errorCause and falls back', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, {
+      statusCode: 500,
+      locals: { errorCause: '' },
+    });
+    expect(await errorCauseValues(register)).toContain('server_error');
+  });
+
+  it('ignores non-string explicit errorCause and falls back', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, {
+      statusCode: 403,
+      locals: { errorCause: 123 },
+    });
+    expect(await errorCauseValues(register)).toContain('client_error');
+  });
+
+  it('applies error_cause label on both counter and histogram series', async () => {
+    const { service, register } = makeService();
+    recordWithLocals(service, {
+      statusCode: 500,
+      locals: { errorCause: 'internal_error' },
+    });
+
+    const json = await register.getMetricsAsJSON();
+    const hist = json.find((m) => m.name === 'http_request_duration_seconds');
+    const histLabels = (hist!.values as any[]).map((v: any) => v.labels);
+    const relevant = histLabels.find(
+      (l: any) => l.method === 'GET' && l.status_code === '500',
+    );
+    expect(relevant.error_cause).toBe('internal_error');
+  });
+});
+
+describe('MetricsService — structured request metric logs', () => {
+  it('emits a structured log for each tracked request with no PII', () => {
+    const { service } = makeService();
+    const records: unknown[] = [];
+    const originalWrite = require('../logger').writeRecord;
+    require('../logger').setWriteRecordImpl((rec: unknown) => records.push(rec));
+
+    try {
+      const response = new EventEmitter() as Response & EventEmitter;
+      response.statusCode = 200;
+      (response as any).locals = {
+        requestId: 'req-123',
+        correlationId: 'corr-456',
+      };
+
+      const req = {
+        method: 'POST',
+        baseUrl: '/api/v1',
+        route: { path: '/contracts/:id' },
+      } as unknown as Request;
+
+      service.trackHttpRequest(req, response, jest.fn() as NextFunction);
+      response.emit('finish');
+
+      const metricLogs = records.filter(
+        (r: any) => r.message === 'http request metric',
+      );
+      expect(metricLogs.length).toBe(1);
+
+      const log = metricLogs[0] as any;
+      expect(log.metric).toBe('http_request');
+      expect(log.method).toBe('POST');
+      expect(log.route).toBe('/api/v1/contracts/:id');
+      expect(log.statusCode).toBe(200);
+      expect(log.errorCause).toBe('none');
+      expect(typeof log.durationMs).toBe('number');
+      expect(log.requestId).toBe('req-123');
+      expect(log.correlationId).toBe('corr-456');
+      expect(log).not.toHaveProperty('ip');
+      expect(log).not.toHaveProperty('userAgent');
+      expect(log).not.toHaveProperty('headers');
+      expect(log).not.toHaveProperty('email');
+      expect(log).not.toHaveProperty('token');
+    } finally {
+      require('../logger').setWriteRecordImpl(originalWrite);
+    }
+  });
+
+  it('omits optional correlation IDs when absent from res.locals', () => {
+    const { service } = makeService();
+    const records: unknown[] = [];
+    const originalWrite = require('../logger').writeRecord;
+    require('../logger').setWriteRecordImpl((rec: unknown) => records.push(rec));
+
+    try {
+      const response = new EventEmitter() as Response & EventEmitter;
+      response.statusCode = 404;
+      (response as any).locals = { errorCause: 'not_found' };
+
+      const req = {
+        method: 'GET',
+        baseUrl: '',
+        route: { path: '/missing' },
+      } as unknown as Request;
+
+      service.trackHttpRequest(req, response, jest.fn() as NextFunction);
+      response.emit('finish');
+
+      const log = records.find(
+        (r: any) => r.message === 'http request metric',
+      ) as any;
+      expect(log).toBeDefined();
+      expect(log.statusCode).toBe(404);
+      expect(log.errorCause).toBe('not_found');
+      expect(log).not.toHaveProperty('requestId');
+      expect(log).not.toHaveProperty('correlationId');
+    } finally {
+      require('../logger').setWriteRecordImpl(originalWrite);
+    }
+  });
+});
