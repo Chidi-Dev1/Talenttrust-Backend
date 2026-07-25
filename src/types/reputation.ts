@@ -21,6 +21,19 @@ export interface ReputationProfile {
   scoreAlgorithm: string;   // Algorithm identifier, e.g. "exp-decay-v1"
 }
 
+/**
+ * Paginated reputation profile returned when cursor-based pagination is active.
+ * Extends {@link ReputationProfile} with opaque-cursor navigation fields.
+ */
+export interface PaginatedReputationProfile extends ReputationProfile {
+  /** Opaque cursor to pass for the next page of reviews, or null on the last page. */
+  nextCursor: string | null;
+  /** Convenience flag; true when `nextCursor` is non-null. */
+  hasNextPage: boolean;
+  /** Page size used for this request (clamped to [1, 100]). */
+  limit: number;
+}
+
 export interface UpdateReputationPayload {
   reviewerId: string;
   rating: number;

@@ -3,6 +3,7 @@ import { ReputationController } from './reputation.controller';
 import { ReputationService } from '../services/reputation.service';
 import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
+import { encodeCursor } from '../contracts/cursor.repository';
 
 jest.mock('../services/reputation.service');
 
@@ -21,7 +22,7 @@ function makeRes(): { res: Partial<Response>; statusMock: jest.Mock; jsonMock: j
 }
 
 function makeReq(overrides: Partial<Request> = {}): Partial<Request> {
-  return { params: { id: 'user-1' }, body: {}, ...overrides };
+  return { params: { id: 'user-1' }, query: {}, body: {}, ...overrides };
 }
 
 // ---------------------------------------------------------------------------
@@ -405,5 +406,160 @@ describe('ReputationController.createRating', () => {
 
     expect(statusMock).toHaveBeenCalledWith(500);
     expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Internal server error' });
+  });
+});
+
+// ─── Cursor-paginated getProfile ─────────────────────────────────────────
+
+describe('ReputationController.getProfile — cursor pagination', () => {
+  const mockProfile = {
+    freelancerId: 'user-1',
+    score: 4.0,
+    totalRatings: 25,
+    reviews: [
+      { reviewerId: 'r1', rating: 5, createdAt: '2024-01-01T00:00:00.000Z' },
+      { reviewerId: 'r2', rating: 4, createdAt: '2024-01-02T00:00:00.000Z' },
+    ],
+    lastUpdated: '2024-01-02T00:00:00.000Z',
+    weightedScore: 4.2,
+    scoreAlgorithm: 'exp-decay-v1',
+    jobsCompleted: 0,
+  };
+
+  const mockPaginatedProfile = {
+    ...mockProfile,
+    nextCursor: encodeCursor({ createdAt: '2024-01-01T00:00:00.000Z', id: 'entry-1' }),
+    hasNextPage: true,
+    limit: 2,
+  };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('calls getProfilePaginated when cursor param is present', async () => {
+    (ReputationService.getProfilePaginated as jest.Mock).mockReturnValue(mockPaginatedProfile);
+
+    const { res, statusMock, jsonMock } = makeRes();
+    const req = makeReq({
+      query: { cursor: mockPaginatedProfile.nextCursor! },
+    }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(ReputationService.getProfilePaginated).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({
+        cursor: mockPaginatedProfile.nextCursor,
+      }),
+    );
+    expect(statusMock).toHaveBeenCalledWith(200);
+    expect(jsonMock).toHaveBeenCalledWith({
+      status: 'success',
+      data: mockPaginatedProfile,
+    });
+  });
+
+  it('calls getProfilePaginated when limit param is present', async () => {
+    (ReputationService.getProfilePaginated as jest.Mock).mockReturnValue(mockPaginatedProfile);
+
+    const { res, statusMock } = makeRes();
+    const req = makeReq({ query: { limit: '5' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(ReputationService.getProfilePaginated).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ limit: 5 }),
+    );
+    expect(statusMock).toHaveBeenCalledWith(200);
+  });
+
+  it('calls legacy getProfile when neither cursor nor limit is present', async () => {
+    (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
+
+    const { res, statusMock, jsonMock } = makeRes();
+    const req = makeReq() as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(ReputationService.getProfile).toHaveBeenCalledWith('user-1');
+    expect(ReputationService.getProfilePaginated).not.toHaveBeenCalled();
+    expect(statusMock).toHaveBeenCalledWith(200);
+    expect(jsonMock).toHaveBeenCalledWith({
+      status: 'success',
+      data: mockProfile,
+    });
+  });
+
+  it('returns 400 for invalid cursor string', async () => {
+    const { res, statusMock, jsonMock } = makeRes();
+    const req = makeReq({ query: { cursor: 'not-valid!!!' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({ code: 'bad_request' }),
+      }),
+    );
+  });
+
+  it('returns 400 for limit exceeding max', async () => {
+    const { res, statusMock, jsonMock } = makeRes();
+    const req = makeReq({ query: { limit: '999' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({ code: 'bad_request' }),
+      }),
+    );
+  });
+
+  it('returns 400 for limit = 0', async () => {
+    const { res, statusMock } = makeRes();
+    const req = makeReq({ query: { limit: '0' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+  });
+
+  it('returns 400 for negative limit', async () => {
+    const { res, statusMock } = makeRes();
+    const req = makeReq({ query: { limit: '-5' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+  });
+
+  it('returns 400 for non-numeric limit', async () => {
+    const { res, statusMock } = makeRes();
+    const req = makeReq({ query: { limit: 'abc' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+  });
+
+  it('returns paginated profile with nextCursor and hasNextPage', async () => {
+    (ReputationService.getProfilePaginated as jest.Mock).mockReturnValue(mockPaginatedProfile);
+
+    const { res, jsonMock } = makeRes();
+    const req = makeReq({ query: { limit: '2' } }) as Request;
+
+    await ReputationController.getProfile(req, res as Response);
+
+    expect(jsonMock).toHaveBeenCalledWith({
+      status: 'success',
+      data: expect.objectContaining({
+        nextCursor: expect.any(String),
+        hasNextPage: true,
+        limit: 2,
+      }),
+    });
   });
 });
