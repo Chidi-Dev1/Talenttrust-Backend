@@ -60,6 +60,59 @@ describe('API Key Controller', () => {
 
       expect(response.status).toBe(401);
     });
+
+    it('should reject invalid scope format', async () => {
+      const response = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({
+          name: 'Bad Scope Key',
+          scope: ['invalid-scope-format']
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('Invalid scope format');
+      expect(response.body).toHaveProperty('invalidScopes');
+      expect(response.body).toHaveProperty('validFormats');
+    });
+
+    it('should create API key with expiration', async () => {
+      const expiresAt = new Date('2025-12-31T23:59:59Z').toISOString();
+      const response = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({
+          name: 'Temporal Key',
+          scope: ['contracts:read'],
+          expiresAt
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.info.expiresAt).toBeDefined();
+      expect(new Date(response.body.info.expiresAt).toISOString()).toBe(expiresAt);
+    });
+
+    it('should allow creating multiple keys with the same name (idempotent)', async () => {
+      const body = {
+        name: 'Repeatable Key',
+        scope: ['contracts:read']
+      };
+
+      const response1 = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send(body);
+
+      expect(response1.status).toBe(201);
+
+      const response2 = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send(body);
+
+      expect(response2.status).toBe(201);
+      expect(response2.body.apiKey).not.toBe(response1.body.apiKey);
+    });
   });
 
   describe('GET /api/v1/api-keys', () => {
@@ -246,12 +299,23 @@ describe('API Key Controller', () => {
       expect(response.body).not.toHaveProperty('key_hash'); // Sensitive data removed
     });
 
-    it('should return 404 for non-existent key', async () => {
+    it('should return 404 with error message for non-existent key', async () => {
       const response = await request(app)
         .get('/api/v1/api-keys/non-existent')
         .set('Authorization', `Bearer ${userToken}`);
 
       expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'API key not found' });
+    });
+
+    it('should return 403 for another user\'s key (access denied)', async () => {
+      const otherUserToken = createToken('other-user', 'admin');
+      const response = await request(app)
+        .get(`/api/v1/api-keys/${keyId}`)
+        .set('Authorization', `Bearer ${otherUserToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'Access denied' });
     });
 
     it('should require authentication', async () => {
@@ -289,13 +353,25 @@ describe('API Key Controller', () => {
       expect(response.body.apiKey).not.toBe(keyId); // New key should be different
     });
 
-    it('should return 404 for non-existent key', async () => {
+    it('should return 404 with error message for non-existent key', async () => {
       const response = await request(app)
         .post('/api/v1/api-keys/non-existent/rotate')
         .set('Authorization', `Bearer ${userToken}`)
         .send({});
 
       expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'API key not found' });
+    });
+
+    it('should return 403 for another user\'s key (access denied)', async () => {
+      const otherUserToken = createToken('other-user', 'admin');
+      const response = await request(app)
+        .post(`/api/v1/api-keys/${keyId}/rotate`)
+        .set('Authorization', `Bearer ${otherUserToken}`)
+        .send({});
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'Access denied' });
     });
 
     it('should require authentication', async () => {
@@ -329,12 +405,39 @@ describe('API Key Controller', () => {
       expect(response.body.message).toBe('API key deactivated successfully');
     });
 
-    it('should return 404 for non-existent key', async () => {
+    it('should return 404 with error message for non-existent key', async () => {
       const response = await request(app)
         .delete('/api/v1/api-keys/non-existent')
         .set('Authorization', `Bearer ${userToken}`);
 
       expect(response.status).toBe(404);
+      expect(response.body).toEqual({ error: 'API key not found' });
+    });
+
+    it('should return 403 for another user\'s key (access denied)', async () => {
+      const otherUserToken = createToken('other-user', 'admin');
+      const response = await request(app)
+        .delete(`/api/v1/api-keys/${keyId}`)
+        .set('Authorization', `Bearer ${otherUserToken}`);
+
+      expect(response.status).toBe(403);
+      expect(response.body).toEqual({ error: 'Access denied' });
+    });
+
+    it('should return 404 for an already-deactivated key (idempotent-repeat)', async () => {
+      const response = await request(app)
+        .delete(`/api/v1/api-keys/${keyId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+
+      expect(response.status).toBe(200);
+
+      // Second deactivation should return 404 since key is no longer active
+      const secondResponse = await request(app)
+        .delete(`/api/v1/api-keys/${keyId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+
+      expect(secondResponse.status).toBe(404);
+      expect(secondResponse.body).toEqual({ error: 'API key not found' });
     });
 
     it('should require authentication', async () => {
