@@ -205,6 +205,31 @@ export const envSchema = z.object({
   REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
     .default('exp-decay-v1'),
 
+  // Reputation Read Cache Configuration
+  /**
+   * Time-to-live (ms) for cached reputation profiles.
+   * Reads within this window are served from in-memory LRU cache without
+   * hitting the database. Must be a positive integer. Default: 60 000 (1 min).
+   */
+  REPUTATION_CACHE_TTL_MS: z.string()
+    .default('60000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number()
+      .int('REPUTATION_CACHE_TTL_MS must be an integer')
+      .positive('REPUTATION_CACHE_TTL_MS must be greater than 0')),
+
+  /**
+   * Maximum number of reputation profiles to hold in the LRU cache.
+   * When this bound is exceeded, the least-recently-used entry is evicted.
+   * Must be a positive integer. Default: 500.
+   */
+  REPUTATION_CACHE_MAX_ENTRIES: z.string()
+    .default('500')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number()
+      .int('REPUTATION_CACHE_MAX_ENTRIES must be an integer')
+      .positive('REPUTATION_CACHE_MAX_ENTRIES must be greater than 0')),
+
   // Email transport (queue processor + notification service)
   EMAIL_PROVIDER: z.enum(['console', 'smtp', 'ses', 'sendgrid'])
     .default('console'),

@@ -3,6 +3,7 @@ import { ReputationController } from './reputation.controller';
 import { ReputationService } from '../services/reputation.service';
 import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
+import { reputationCache } from '../utils/reputationCache';
 
 jest.mock('../services/reputation.service');
 
@@ -134,7 +135,10 @@ describe('updateReputationSchema — rating field validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('ReputationController.getProfile', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    reputationCache.clear();
+  });
 
   it('returns 200 with profile data on success', async () => {
     const mockProfile = { freelancerId: 'user-1', score: 4.5, totalRatings: 10 };
@@ -189,7 +193,10 @@ describe('ReputationController.getProfile', () => {
 // ---------------------------------------------------------------------------
 
 describe('ReputationController.createRating', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    reputationCache.clear();
+  });
 
   const validBody = {
     reviewerId: 'reviewer-1',
