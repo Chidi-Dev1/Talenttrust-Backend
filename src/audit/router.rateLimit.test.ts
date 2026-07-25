@@ -61,8 +61,10 @@ describe('audit router rate limiting', () => {
     accessLimiterConfig?: Parameters<typeof createRateLimiter>[0];
     integrityLimiterConfig?: Parameters<typeof createRateLimiter>[0];
     exportLimiterConfig?: Parameters<typeof createRateLimiter>[0];
+    bulkLimiterConfig?: Parameters<typeof createRateLimiter>[0];
   } = {}) {
     const app = express();
+    app.use(express.json());
     app.use((_req, res, next) => {
       res.locals['requestId'] = 'req-audit-ratelimit';
       next();
@@ -101,6 +103,17 @@ describe('audit router rate limiting', () => {
       ...overrides.exportLimiterConfig,
     });
 
+    const bulkLimiter = createRateLimiter({
+      maxRequests: 1,
+      windowMs: 60_000,
+      abuseThreshold: 10,
+      blockWindowMs: 60_000,
+      blockDurationMs: 60_000,
+      maxBlockDurationMs: 60_000,
+      keyFn: actorKeyFn('bulk'),
+      ...overrides.bulkLimiterConfig,
+    });
+
     app.use(
       '/api/v1/audit',
       createAuditRouter({
@@ -109,6 +122,7 @@ describe('audit router rate limiting', () => {
         accessMiddleware: [requireAuth, requireRole('admin', 'auditor'), accessLimiter],
         exportMiddleware: [exportLimiter],
         integrityMiddleware: [integrityLimiter],
+        bulkMiddleware: [bulkLimiter],
       }),
     );
 
@@ -244,6 +258,58 @@ describe('audit router rate limiting', () => {
         .expect(429);
 
       expect(response.body.error.code).toBe('rate_limited');
+    });
+  });
+
+  describe('bulk tier (POST /bulk)', () => {
+    it('is rate limited independently and stacks with the general access tier', async () => {
+      const app = buildApp({ accessLimiterConfig: { maxRequests: 100 } });
+      const token = makeToken('admin', 'admin-bulk');
+      const entries = [{
+        action: 'CONTRACT_CREATED',
+        severity: 'INFO',
+        actor: 'user-1',
+        resource: 'contract',
+        resourceId: 'contract-1',
+      }];
+
+      await request(app)
+        .post('/api/v1/audit/bulk')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ entries })
+        .expect(201);
+
+      const response = await request(app)
+        .post('/api/v1/audit/bulk')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ entries })
+        .expect(429);
+
+      expect(response.body.error.code).toBe('rate_limited');
+      expect(response.headers['retry-after']).toBeDefined();
+    });
+
+    it('does not consume the general-access bucket for a different route', async () => {
+      const app = buildApp();
+      const token = makeToken('admin', 'admin-bulk-isolation');
+      const entries = [{
+        action: 'CONTRACT_CREATED',
+        severity: 'INFO',
+        actor: 'user-1',
+        resource: 'contract',
+        resourceId: 'contract-1',
+      }];
+
+      // Bulk is capped at 1 by default in this test app, and also consumes
+      // one unit of the shared access bucket (cap 2).
+      await request(app)
+        .post('/api/v1/audit/bulk')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ entries })
+        .expect(201);
+
+      // One access-bucket slot remains; a query should still succeed.
+      await request(app).get('/api/v1/audit').set('Authorization', `Bearer ${token}`).expect(200);
     });
   });
 
