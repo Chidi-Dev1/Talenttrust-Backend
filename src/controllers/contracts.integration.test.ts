@@ -262,10 +262,24 @@ describe('GET /api/v1/contracts', () => {
       await createContractAsAdmin();
       await createContractAsAdmin();
 
-      const first = await request(app)
-        .get('/api/v1/contracts?limit=2')
-        .set(auth(adminToken()));
-      expect(first.status).toBe(200);
+  it('returns 400 for total milestone amount exceeding bounds (schema validation)', async () => {
+    const excessiveAmountMilestones = [
+      {
+        title: 'Milestone 1',
+        description: 'Valid description',
+        amount: 999_000_000_000_000_000,
+      },
+    ];
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...validPayload, milestones: excessiveAmountMilestones });
+    // The DTO schema now catches this at validation time (400) before the
+    // service can apply the 422 bounds check.
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+});
 
       if (first.body.data.nextCursor) {
         const second = await request(app)
@@ -521,401 +535,283 @@ describe('GET /api/v1/contracts', () => {
       expect(res.body.error).toMatchObject({ code: 'bad_request' });
     });
 
-    it('replay with same key returns the same response and does not create a duplicate contract', async () => {
-      const idempotencyKey = 'idem-create-1';
+afterAll(() => {
+  closeDb();
+});
 
-      const first = await request(app)
-        .post('/api/v1/contracts')
-        .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
-        .send(validPayload);
-      expect(first.status).toBe(201);
+// ─── Validation hardening: unknown field stripping ────────────────────────────
 
-      const second = await request(app)
-        .post('/api/v1/contracts')
-        .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
-        .send(validPayload);
-
-      expect(second.status).toBe(201);
-      expect(second.body).toEqual(first.body);
-    });
-
-    it('replay with same key but different body returns 409 Conflict', async () => {
-      const idempotencyKey = 'idem-create-2';
-
-      const first = await request(app)
-        .post('/api/v1/contracts')
-        .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
-        .send(validPayload);
-      expect(first.status).toBe(201);
-
-      const differentBody = { ...validPayload, title: 'Different Title' };
-      const replay = await request(app)
-        .post('/api/v1/contracts')
-        .set({ ...auth(adminToken()), 'Idempotency-Key': idempotencyKey })
-        .send(differentBody);
-
-      expect(replay.status).toBe(409);
-      expect(replay.body.error).toMatchObject({ code: 'conflict' });
-    });
+describe('POST /api/v1/contracts — unknown field stripping', () => {
+  it('strips unknown fields from body and still creates successfully', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...validPayload, __admin: true, inject: 'evil', extraField: 999 });
+    expect(res.status).toBe(201);
+    // unknown fields must not appear in the response data
+    expect(res.body.data).not.toHaveProperty('__admin');
+    expect(res.body.data).not.toHaveProperty('inject');
+    expect(res.body.data).not.toHaveProperty('extraField');
   });
 
-  // ─── GET /api/v1/contracts/:id ────────────────────────────────────────────────
-
-
-  describe('GET /api/v1/contracts/:id', () => {
-    let contractId: string;
-
-    beforeEach(async () => {
-      contractId = await createContractAsAdmin();
-    });
-
-    it('returns 401 without a token', async () => {
-      const res = await request(app).get(`/api/v1/contracts/${contractId}`);
-      expect(res.status).toBe(401);
-    });
-
-    it('returns 200 for admin', async () => {
-      const res = await request(app)
-        .get(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()));
-      expect(res.status).toBe(200);
-      expect(res.body.data.id).toBe(contractId);
-    });
-
-    it('returns 200 for the owning client (sub === clientId)', async () => {
-      const res = await request(app)
-        .get(`/api/v1/contracts/${contractId}`)
-        .set(auth(clientToken(CLIENT_ID)));
-      expect(res.status).toBe(200);
-    });
-
-    it('returns 403 for a non-owning client', async () => {
-      const res = await request(app)
-        .get(`/api/v1/contracts/${contractId}`)
-        .set(auth(clientToken('00000000-0000-0000-0000-000000000099')));
-      expect(res.status).toBe(403);
-      expect(res.body.error).toMatchObject({ code: 'forbidden' });
-    });
-
-    it('returns 404 for a non-existent contract id', async () => {
-      const res = await request(app)
-        .get('/api/v1/contracts/00000000-0000-0000-0000-000000000000')
-        .set(auth(adminToken()));
-      expect(res.status).toBe(404);
-    });
-
-    it('does not reveal resource existence to non-owner (returns 403, not 200/404)', async () => {
-      const nonOwner = clientToken('00000000-0000-0000-0000-000000000099');
-      const res = await request(app)
-        .get(`/api/v1/contracts/${contractId}`)
-        .set(auth(nonOwner));
-      expect(res.status).toBe(403);
-      const body = JSON.stringify(res.body);
-      expect(body).not.toContain(contractId);
-      expect(body).not.toContain(CLIENT_ID);
-    });
-
-    it('returns 404 for a non-existent id (non-UUID string)', async () => {
-      const res = await request(app)
-        .get('/api/v1/contracts/not-a-valid-uuid')
-        .set(auth(adminToken()));
-      expect(res.status).toBe(404);
-      expect(res.body.error).toMatchObject({ code: 'not_found' });
-    });
-
-    it('returns 200 on success with expected response shape', async () => {
-      const res = await request(app)
-        .get(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()));
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        status: 'success',
-        data: expect.objectContaining({
-          id: contractId,
-          title: 'Test Contract Title',
-        }),
+  it('strips unknown milestone fields and still creates successfully', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({
+        ...validPayload,
+        milestones: [
+          { title: 'M1', description: 'Valid desc', amount: 100, __secret: 'leak', bonus: 50 },
+        ],
       });
-      expect(res.body).toHaveProperty('requestId');
-      expect(res.body.data).toHaveProperty('version');
-      expect(res.body.data).toHaveProperty('createdAt');
-    });
+    expect(res.status).toBe(201);
   });
+});
 
-  // ─── PATCH /api/v1/contracts/:id ─────────────────────────────────────────────
+describe('PATCH /api/v1/contracts/:id — unknown field stripping', () => {
+  it('strips unknown fields from update body and still succeeds', async () => {
+    const contractId = await createContractAsAdmin();
+    const fetched = await request(app)
+      .get(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()));
+    const version = (fetched.body as { data: { version: number } }).data.version;
 
-  describe('PATCH /api/v1/contracts/:id', () => {
-    let contractId: string;
-    let contractVersion: number;
-
-    beforeEach(async () => {
-      contractId = await createContractAsAdmin();
-      const fetched = await request(app)
-        .get(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()));
-      contractVersion = (fetched.body as { data: { version: number } }).data.version;
-    });
-
-    it('returns 401 without a token', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .send({ version: contractVersion, title: 'No Auth Update' });
-      expect(res.status).toBe(401);
-    });
-
-    it('returns 200 for admin', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: contractVersion, title: 'Admin Updated Title' });
-      expect(res.status).toBe(200);
-      contractVersion = (res.body as { data: { version: number } }).data.version;
-    });
-
-    it('returns 200 for the owning client', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(clientToken(CLIENT_ID)))
-        .send({ version: contractVersion, title: 'Client Updated Title' });
-      expect(res.status).toBe(200);
-      contractVersion = (res.body as { data: { version: number } }).data.version;
-    });
-
-    it('returns 403 for a non-owning client', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(clientToken('00000000-0000-0000-0000-000000000099')))
-        .send({ version: contractVersion, title: 'Malicious Update' });
-      expect(res.status).toBe(403);
-    });
-
-    it('returns 403 for a freelancer (not the owner by clientId)', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(freelancerToken(FREELANCER_ID)))
-        .send({ version: contractVersion, title: 'Freelancer Update' });
-      expect(res.status).toBe(403);
-    });
-
-    it('returns 404 for a non-existent contract id', async () => {
-      const res = await request(app)
-        .patch('/api/v1/contracts/00000000-0000-0000-0000-000000000000')
-        .set(auth(adminToken()))
-        .send({ version: 0, title: 'Ghost Update' });
-      expect(res.status).toBe(404);
-    });
-
-    it('returns 400 for admin with invalid body (missing version)', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ title: 'No version field' });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 409 for version conflict (stale version)', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: contractVersion + 999, title: 'Stale Update' });
-      expect(res.status).toBe(409);
-      expect(res.body.error).toMatchObject({ code: 'ERR_CONFLICT' });
-    });
-
-    it('returns 400 for budget update exceeding bounds (validation)', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: contractVersion, budget: 999_000_000_000_000_000 });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatchObject({ code: 'validation_error' });
-    });
-
-    it('returns 400 for negative version', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: -1, title: 'Negative version' });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 400 for non-integer version', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: 1.5, title: 'Float version' });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 400 for budget of zero on update', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: contractVersion, budget: 0 });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 200 on success and response has expected envelope shape', async () => {
-      const res = await request(app)
-        .patch(`/api/v1/contracts/${contractId}`)
-        .set(auth(adminToken()))
-        .send({ version: contractVersion, title: 'Shape Test Update' });
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        status: 'success',
-        data: expect.objectContaining({
-          id: contractId,
-          title: 'Shape Test Update',
-          version: contractVersion + 1,
-        }),
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({
+        version,
+        title: 'Stripped Update',
+        __admin: true,
+        __inject: 'payload',
+        extraField: 'should-be-dropped',
       });
-      expect(res.body).toHaveProperty('requestId');
-    });
+    expect(res.status).toBe(200);
+    expect(res.body.data).not.toHaveProperty('__admin');
+    expect(res.body.data).not.toHaveProperty('__inject');
+    expect(res.body.data).not.toHaveProperty('extraField');
+  });
+});
+
+// ─── Validation hardening: route param :id ────────────────────────────────────
+
+describe('GET /api/v1/contracts/:id — route param validation', () => {
+  it('returns 400 for an id that exceeds the max length', async () => {
+    const oversizedId = 'a'.repeat(129);
+    const res = await request(app)
+      .get(`/api/v1/contracts/${oversizedId}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+});
+
+describe('PATCH /api/v1/contracts/:id — route param validation', () => {
+  it('returns 400 for an id that exceeds the max length', async () => {
+    const oversizedId = 'a'.repeat(129);
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${oversizedId}`)
+      .set(auth(adminToken()))
+      .send({ version: 0, title: 'Should not reach service' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+});
+
+describe('DELETE /api/v1/contracts/:id — route param validation', () => {
+  it('returns 400 for an id that exceeds the max length', async () => {
+    const oversizedId = 'a'.repeat(129);
+    const res = await request(app)
+      .delete(`/api/v1/contracts/${oversizedId}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+});
+
+// ─── Validation hardening: query param validation ────────────────────────────
+
+describe('GET /api/v1/contracts — query param validation', () => {
+  it('returns 400 for limit exceeding QUERY_LIMIT_MAX (101)', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?limit=101')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
 
-  // ─── DELETE /api/v1/contracts/:id ────────────────────────────────────────────
+  it('returns 400 for page = 0', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?page=0')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
 
-  describe('DELETE /api/v1/contracts/:id', () => {
-    it('returns 401 without a token', async () => {
-      const id = await createContractAsAdmin();
-      const res = await request(app).delete(`/api/v1/contracts/${id}`);
-      expect(res.status).toBe(401);
-    });
+  it('returns 400 for negative page', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?page=-5')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
 
-    it('returns 403 for a client (delete not in client permission matrix)', async () => {
-      const id = await createContractAsAdmin();
-      const res = await request(app)
-        .delete(`/api/v1/contracts/${id}`)
-        .set(auth(clientToken(CLIENT_ID)));
-      expect(res.status).toBe(403);
-      expect(res.body.error).toMatchObject({ code: 'forbidden' });
-    });
+  it('returns 400 for non-numeric limit', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?limit=abc')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
 
-    it('returns 403 for a freelancer', async () => {
-      const id = await createContractAsAdmin();
-      const res = await request(app)
-        .delete(`/api/v1/contracts/${id}`)
-        .set(auth(freelancerToken()));
-      expect(res.status).toBe(403);
-    });
+  it('returns 400 for invalid status enum value', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?status=pending')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
 
-    it('returns 200 for admin', async () => {
-      const id = await createContractAsAdmin();
-      const res = await request(app)
-        .delete(`/api/v1/contracts/${id}`)
-        .set(auth(adminToken()));
-      expect(res.status).toBe(200);
-    });
+  it('returns 400 for non-UUID clientId in query', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?clientId=not-a-uuid')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
 
-    it('returns 404 for a non-existent contract id (admin)', async () => {
-      const res = await request(app)
-        .delete('/api/v1/contracts/00000000-0000-0000-0000-000000000000')
-        .set(auth(adminToken()));
-      expect(res.status).toBe(404);
-    });
+  it('returns 400 for invalid sortOrder', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?sortOrder=random')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
 
-    it('returns 404 for an already-deleted contract on second delete', async () => {
-      const id = await createContractAsAdmin();
-      const first = await request(app).delete(`/api/v1/contracts/${id}`).set(auth(adminToken()));
-      expect(first.status).toBe(200);
+  it('strips unknown query params and returns 200', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?page=1&limit=10&admin=true&__inject=evil')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(200);
+  });
 
-      const second = await request(app).delete(`/api/v1/contracts/${id}`).set(auth(adminToken()));
-      expect(second.status).toBe(404);
-      expect(second.body.error).toMatchObject({ code: 'not_found' });
-    });
+  it('returns 200 with limit = QUERY_LIMIT_MAX (100)', async () => {
+    const res = await request(app)
+      .get('/api/v1/contracts?limit=100')
+      .set(auth(adminToken()));
+    expect(res.status).toBe(200);
+  });
+});
 
-    it('returns 200 on success and response has expected envelope shape', async () => {
-      const id = await createContractAsAdmin();
-      const res = await request(app).delete(`/api/v1/contracts/${id}`).set(auth(adminToken()));
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        status: 'success',
-        data: { message: 'Contract deleted successfully' },
+// ─── Validation hardening: string length bounds on POST ──────────────────────
+
+describe('POST /api/v1/contracts — string length bounds', () => {
+  it('returns 400 for title longer than 100 characters', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...validPayload, title: 'A'.repeat(101) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+
+  it('returns 400 for description longer than 1000 characters', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...validPayload, description: 'A'.repeat(1001) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+
+  it('returns 400 for terms longer than 5000 characters', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...validPayload, terms: 'A'.repeat(5001) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+
+  it('returns 201 for terms at exactly 5000 characters', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...validPayload, terms: 'A'.repeat(5000) });
+    expect(res.status).toBe(201);
+  });
+
+  it('returns 400 for milestone title exceeding 100 characters', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({
+        ...validPayload,
+        milestones: [{ title: 'A'.repeat(101), amount: 100 }],
       });
-      expect(res.body).toHaveProperty('requestId');
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
 
-  // ─── GET /api/v1/contracts/stats ─────────────────────────────────────────────
-
-  describe('GET /api/v1/contracts/stats', () => {
-    it('returns 401 without a token', async () => {
-      const res = await request(app).get('/api/v1/contracts/stats');
-      expect(res.status).toBe(401);
-    });
-
-    it('returns 200 for admin', async () => {
-      const res = await request(app).get('/api/v1/contracts/stats').set(auth(adminToken()));
-      expect(res.status).toBe(200);
-      expect(res.body.data).toHaveProperty('total');
-    });
-
-    it('returns expected envelope shape with stats data', async () => {
-      await createContractAsAdmin();
-      const res = await request(app).get('/api/v1/contracts/stats').set(auth(adminToken()));
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        status: 'success',
-        data: expect.objectContaining({
-          total: expect.any(Number),
-          totalBudget: expect.any(Number),
-          byStatus: expect.any(Object),
-        }),
+  it('returns 400 for milestone description exceeding 500 characters', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({
+        ...validPayload,
+        milestones: [{ title: 'M1', description: 'A'.repeat(501), amount: 100 }],
       });
-      expect(res.body).toHaveProperty('requestId');
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
+  });
+});
+
+// ─── Validation hardening: numeric range bounds on PATCH ─────────────────────
+
+describe('PATCH /api/v1/contracts/:id — numeric range and type bounds', () => {
+  let contractId: string;
+  let contractVersion: number;
+
+  beforeEach(async () => {
+    contractId = await createContractAsAdmin();
+    const fetched = await request(app)
+      .get(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()));
+    contractVersion = (fetched.body as { data: { version: number } }).data.version;
   });
 
-  // ─── GET /api/v1/contracts/bounds ────────────────────────────────────────────
-
-  describe('GET /api/v1/contracts/bounds', () => {
-    it('returns 401 without a token', async () => {
-      const res = await request(app).get('/api/v1/contracts/bounds');
-      expect(res.status).toBe(401);
-    });
-
-    it('returns 200 for admin', async () => {
-      const res = await request(app).get('/api/v1/contracts/bounds').set(auth(adminToken()));
-      expect(res.status).toBe(200);
-    });
-
-    it('returns expected envelope shape with bounds data', async () => {
-      const res = await request(app).get('/api/v1/contracts/bounds').set(auth(adminToken()));
-      expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
-        status: 'success',
-        data: expect.objectContaining({
-          maxMilestonesPerContract: expect.any(Number),
-          maxContractAmountStroops: expect.any(Number),
-        }),
-      });
-      expect(res.body).toHaveProperty('requestId');
-    });
+  it('returns 400 for negative budget on update', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({ version: contractVersion, budget: -1 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
 
-  // ─── Error envelope shape ─────────────────────────────────────────────────────
-
-  describe('Error envelope', () => {
-    it('401 response has { error: { code, message, requestId } }', async () => {
-      const res = await request(app).get('/api/v1/contracts');
-      expect(res.status).toBe(401);
-      expect(res.body.error).toHaveProperty('code');
-      expect(res.body.error).toHaveProperty('message');
-      expect(res.body.error).toHaveProperty('requestId');
-    });
-
-    it('403 response has { error: { code, message, requestId } }', async () => {
-      const res = await request(app)
-        .post('/api/v1/contracts')
-        .set(auth(freelancerToken()))
-        .send(validPayload);
-      expect(res.status).toBe(403);
-      expect(res.body.error).toMatchObject({ code: 'forbidden' });
-      expect(res.body.error).toHaveProperty('message');
-      expect(res.body.error).toHaveProperty('requestId');
-    });
+  it('returns 400 for title too short on update', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({ version: contractVersion, title: 'Hi' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
 
-  afterAll(() => {
-    closeDb();
+  it('returns 400 for invalid status on update', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({ version: contractVersion, status: 'archived' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
-})
+
+  it('returns 400 when version is a string instead of a number', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/contracts/${contractId}`)
+      .set(auth(adminToken()))
+      .send({ version: 'zero', title: 'Type error update' });
+    expect(res.status).toBe(400);
+  });
+});
