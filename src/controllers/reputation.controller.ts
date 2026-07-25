@@ -3,6 +3,7 @@ import { ReputationService } from '../services/reputation.service';
 import { ForbiddenError, ConflictError, ValidationError, AppError } from '../errors/appError';
 import { AuthenticatedRequest } from '../auth/authenticate';
 import { isValidReputationRatingPayload } from './reputation.validation';
+import { isValidReputationBulkItem } from './reputation.validation';
 
 /**
  * @title Reputation Controller
@@ -74,6 +75,79 @@ export class ReputationController {
         ? (ReputationService as any).updateProfile(id, payload)
         : ReputationService.getProfile(id);
       res.status(200).json({ status: 'success', data: updatedProfile });
+    } catch (error) {
+      handleControllerError(error, res);
+    }
+  }
+
+  /**
+   * POST /api/v1/reputation/bulk
+   * Create multiple reputation ratings in a single request.
+   *
+   * Returns per-item results. HTTP 200 when all items succeed, 207 when some
+   * items fail. Individual item failures never prevent other items from being
+   * processed.
+   */
+  public static async createBulkRatings(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { items } = req.body as { items: unknown[] };
+      const requestId =
+        typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+
+      if (!Array.isArray(items) || items.length === 0) {
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: 'Request body must contain a non-empty items array',
+            requestId,
+          },
+        });
+        return;
+      }
+
+      const validItems: Array<{ reviewerId: string; targetId: string; rating: number; contextId: string; comment?: string }> = [];
+      const validationErrors: Array<{ index: number; error: { code: string; message: string } }> = [];
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (isValidReputationBulkItem(item)) {
+          validItems.push(item);
+        } else {
+          validationErrors.push({
+            index: i,
+            error: {
+              code: 'validation_error',
+              message: 'Invalid item: reviewerId, targetId, contextId are required, and rating must be a finite integer (1–5)',
+            },
+          });
+        }
+      }
+
+      const serviceResults = validItems.length > 0
+        ? ReputationService.createBulkRatings(validItems)
+        : [];
+
+      const allResults: Array<{ index: number; success: boolean; data?: any; error?: { code: string; message: string } }> = [];
+
+      let viIdx = 0;
+      let valErrIdx = 0;
+      for (let i = 0; i < items.length; i++) {
+        if (valErrIdx < validationErrors.length && validationErrors[valErrIdx].index === i) {
+          allResults.push({ index: i, success: false, error: validationErrors[valErrIdx].error });
+          valErrIdx++;
+        } else {
+          allResults.push(serviceResults[viIdx]);
+          viIdx++;
+        }
+      }
+
+      const failures = allResults.filter((r) => !r.success);
+      const statusCode = failures.length === 0 ? 200 : 207;
+
+      res.status(statusCode).json({
+        status: statusCode === 200 ? 'success' : 'partial_failure',
+        data: allResults,
+      });
     } catch (error) {
       handleControllerError(error, res);
     }
