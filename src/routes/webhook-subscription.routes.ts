@@ -86,10 +86,13 @@ router.get(
         eventType: filters.eventType as string | undefined,
         active: filters.active as boolean | undefined,
       };
-      const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
+      const page = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
       res.status(200).json({
         status: 'success',
         data: page.data.map(sanitizeSubscription),
+        nextCursor: page.nextCursor,
+        hasNextPage: page.hasNextPage,
+        limit: page.limit,
       });
     } catch (error) {
       next(error);

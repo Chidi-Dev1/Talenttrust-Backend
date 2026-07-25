@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
 import { CURSOR_DEFAULT_LIMIT } from '../contracts/cursor.types';
+import { parseLimit, resolveCursorQueryParam } from '../contracts/cursor.repository';
 import { NotFoundError } from '../errors/appError';
 import {
   CreateContractRequestDto,
@@ -32,6 +33,11 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
+      if (req.query.page === undefined && (req.query.cursor !== undefined || req.query.limit !== undefined)) {
+        await this.getContractsCursor(req, res, next);
+        return;
+      }
+
       const pagination = parsePaginationQuery(
         (req.query ?? {}) as Record<string, unknown>,
       );
@@ -55,6 +61,42 @@ export class ContractsController {
         total,
         totalPages: Math.ceil(total / limit),
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async getContractsCursor(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      let limit: number;
+      try {
+        limit = parseLimit(req.query.limit);
+      } catch (error) {
+        res.status(400).json({
+          status: 'error',
+          message: (error as Error).message,
+        });
+        return;
+      }
+
+      const cursor = resolveCursorQueryParam(req.query.cursor);
+      if (!cursor.ok) {
+        res.status(400).json({
+          status: 'error',
+          message: cursor.message,
+        });
+        return;
+      }
+
+      const page = await this.service.getContractsPage({
+        limit,
+        cursor: cursor.cursor,
+      });
+      res.status(200).json({ status: 'success', data: page });
     } catch (error) {
       next(error);
     }
@@ -147,6 +189,10 @@ export class ContractsController {
   public getBounds(_req: Request, res: Response): void {
     ok(res, CONTRACT_BOUNDS);
   }
+
+  public static getBounds(_req: Request, res: Response): void {
+    ok(res, CONTRACT_BOUNDS);
+  }
 }
 
 export { CURSOR_DEFAULT_LIMIT };
@@ -161,5 +207,6 @@ export function createContractsController(service: ContractsService) {
     deleteContract: controller.deleteContract.bind(controller),
     getContractStats: controller.getContractStats.bind(controller),
     getBounds: controller.getBounds.bind(controller),
+    getContractsCursor: controller.getContractsCursor.bind(controller),
   };
 }

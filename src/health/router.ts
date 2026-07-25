@@ -13,10 +13,17 @@
 
 import { Router, Request, Response } from "express";
 import { runHealthCheck } from "./checker";
-import { Probe, HealthResponse } from "./types";
+import { Probe, HealthResponse, ProbeResult } from "./types";
 import { logger as rootLogger } from "../logger";
 import { validateQuery } from "../middleware/validation";
 import { HealthQuerySchema } from "./validation";
+import type { MetricsServiceLike } from "../observability/metrics-service";
+
+export interface HealthRouterOptions {
+  probes?: Probe[];
+  metricsService?: MetricsServiceLike;
+  log?: Pick<typeof rootLogger, "info">;
+}
 
 /**
  * Build the health router.
@@ -100,5 +107,5 @@ function normalizeOptions(
   if (Array.isArray(input)) {
     return { probes: input };
   }
-  return { probes: input?.probes, metricsService: input?.metricsService, log: input?.log };
+  return { probes: input?.probes ?? [], metricsService: input?.metricsService, log: input?.log };
 }

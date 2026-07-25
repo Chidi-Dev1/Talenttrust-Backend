@@ -48,7 +48,7 @@ export class EnvSecret<T = string> implements Secret<T> {
    * **Security — transform error redaction guarantee**:
    * If the `transform` callback throws for any reason, the thrown error
    * message contains **only the environment-variable key name** — never the
-   * raw secret value, any substring of it, nor any message derived from the
+   * raw protected value, any substring of it, nor any message derived from the
    * original thrown value.
    *
    * This guarantee is unconditional:
@@ -60,7 +60,7 @@ export class EnvSecret<T = string> implements Secret<T> {
    *
    * The catch block intentionally uses the catch-all `catch {` form
    * (no binding) to make it impossible to accidentally reference the
-   * original error or the raw secret value.
+   * original error or the raw protected value.
    *
    * The resulting error message is safe to write to any log sink, including
    * `src/logger.ts`, without further redaction.
@@ -82,7 +82,7 @@ export class EnvSecret<T = string> implements Secret<T> {
       // secret value in the thrown error — a thrown parser error can echo its
       // input.  Only the key name is safe to surface here.
       throw new Error(
-        `Configuration Error: Failed to transform secret "${this.key}" — transform threw an error (details omitted to protect secret value)`
+        `Configuration Error: Failed to transform key "${this.key}" - transform threw an error (details omitted to protect value)`
       );
     }
   }
