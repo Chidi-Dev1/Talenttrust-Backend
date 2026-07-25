@@ -21,6 +21,12 @@ export interface WebhookRetryConfig {
   jitterFactor: number;
 }
 
+export interface HealthProbeConfig {
+  queueFailedThreshold: number;
+  queueBacklogThreshold: number;
+  queueProbeTimeoutMs: number;
+}
+
 export interface AppConfig {
   port: number;
   gracefulDegradationEnabled: boolean;
@@ -37,6 +43,7 @@ export interface AppConfig {
    * webhook and RPC failure modes can be tuned independently.
    */
   webhookCircuitBreaker: CircuitBreakerConfig;
+  healthProbes: HealthProbeConfig;
   idempotencyTtlMs: number;
   allowedAssets: string[];
 }
@@ -131,6 +138,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       failureThreshold: clamp(toNumber(env.WEBHOOK_CB_FAILURE_THRESHOLD, 5), 1, 100),
       successThreshold: clamp(toNumber(env.WEBHOOK_CB_SUCCESS_THRESHOLD, 1), 1, 20),
       timeoutMs: clamp(toNumber(env.WEBHOOK_CB_TIMEOUT_MS, 60_000), 1_000, 300_000),
+    },
+    healthProbes: {
+      queueFailedThreshold: clamp(toNumber(env.QUEUE_FAILED_THRESHOLD, 10), 0, 10_000),
+      queueBacklogThreshold: clamp(toNumber(env.QUEUE_BACKLOG_THRESHOLD, 100), 0, 1_000_000),
+      queueProbeTimeoutMs: clamp(toNumber(env.QUEUE_PROBE_TIMEOUT_MS, 3_000), 100, 30_000),
     },
     idempotencyTtlMs,
     allowedAssets: _parseAssets(env.ALLOWED_ASSETS),
