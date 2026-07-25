@@ -24,6 +24,8 @@
  * | RL_AUDIT_ABUSE_THRESHOLD   | 5          | Violations before hard block (audit)     |
  * | RL_AUDIT_INTEGRITY_MAX     | 10         | Max requests per window (audit integrity)|
  * | RL_AUDIT_INTEGRITY_WINDOW_MS | 60000    | Window duration in ms (audit integrity)  |
+ * | RL_HEALTH_MAX              | 60         | Max requests per window (health tier)    |
+ * | RL_HEALTH_WINDOW_MS        | 60000      | Window duration in ms (health)           |
  *
  * ## Tier Descriptions
  *
@@ -232,6 +234,30 @@ export const rateLimitConfig = {
     blockWindowMs: toMs(process.env.RL_DISPUTES_BLOCK_WINDOW_MS, 300_000),
     blockDurationMs: toMs(process.env.RL_DISPUTES_BLOCK_DURATION_MS, 600_000),
     maxBlockDurationMs: toMs(process.env.RL_DISPUTES_MAX_BLOCK_MS, 86_400_000),
+    sendHeaders: true,
+    ...sharedStore,
+  } satisfies RateLimiterConfig,
+
+  /**
+   * Health tier: /health/*, /health/live, /health/ready, /health/router.
+   *
+   * These endpoints are hit by load-balancers, orchestrators, and monitoring
+   * agents. The default of 60 req/min gives a scrape-every-second poller
+   * comfortable headroom while making a flood-level DDoS attack noticeably
+   * expensive. The key is derived from X-API-Key when present (for service
+   * clients) and falls back to IP.
+   *
+   * Tuning knobs:
+   *   RL_HEALTH_MAX        — max requests per window (default 60)
+   *   RL_HEALTH_WINDOW_MS  — window size in ms (default 60 000)
+   */
+  health: {
+    maxRequests: toCount(process.env.RL_HEALTH_MAX, 60),
+    windowMs: toMs(process.env.RL_HEALTH_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_HEALTH_ABUSE_THRESHOLD, 10),
+    blockWindowMs: toMs(process.env.RL_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_MAX_BLOCK_MS, 86_400_000),
     sendHeaders: true,
     ...sharedStore,
   } satisfies RateLimiterConfig,
