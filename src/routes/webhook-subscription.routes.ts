@@ -11,6 +11,7 @@ import {
   listWebhookSubscriptionsQuerySchema,
 } from '../modules/webhooks/dto/webhook-subscription.dto';
 import { AuthenticatedRequest } from '../lib/types';
+import { idempotencyMiddleware } from '../middleware/idempotency';
 import { validateWebhookUrl, findSubscriptionOrFail } from './webhook-subscription.validation';
 
 const router = Router();
@@ -37,6 +38,7 @@ router.post(
   requireAuth,
   requireRole('admin'),
   validateSchema(createWebhookSubscriptionSchema),
+  idempotencyMiddleware,
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { url } = req.body;
@@ -89,7 +91,7 @@ router.get(
       const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
       res.status(200).json({
         status: 'success',
-        data: page.data.map(sanitizeSubscription),
+        data: list.data.map(sanitizeSubscription),
       });
     } catch (error) {
       next(error);
@@ -132,6 +134,7 @@ router.patch(
   requireAuth,
   requireRole('admin'),
   validateSchema(updateWebhookSubscriptionSchema),
+  idempotencyMiddleware,
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { id } = req.params;
@@ -163,6 +166,7 @@ router.delete(
   requireAuth,
   requireRole('admin'),
   validateSchema(getWebhookSubscriptionSchema),
+  idempotencyMiddleware,
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { id } = req.params;

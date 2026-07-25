@@ -62,6 +62,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { createApp } from '../app';
 import { getDb, closeDb } from '../db/database';
+import { clearIdempotencyStore } from '../middleware/idempotency';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -107,6 +108,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   getDb().exec('DELETE FROM webhook_subscriptions');
+  clearIdempotencyStore();
 });
 
 afterAll(() => {
@@ -822,6 +824,103 @@ describe('DELETE /api/v1/webhook-subscriptions/:id', () => {
       .set(auth(adminToken()));
     expect(res.status).toBe(400);
     expect(res.body.error?.code).toBe('validation_error');
+  });
+});
+
+// =============================================================================
+// Idempotency (POST, PATCH, DELETE)
+// =============================================================================
+
+describe('Idempotency', () => {
+  const I_KEY = 'test-idempotency-key';
+
+  it('POST: exact replay returns original response and 201 without creating a new record', async () => {
+    const payload = validCreate({ url: 'https://example.com/idemp' });
+    const r1 = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY)
+      .send(payload);
+
+    expect(r1.status).toBe(201);
+    expect(r1.body.idempotencyHeader).toBeUndefined();
+    const id = r1.body.data.id;
+
+    const r2 = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY)
+      .send(payload);
+
+    expect(r2.status).toBe(200);
+    expect(r2.body.idempotencyHeader).toBe('replay-detected');
+    expect(r2.body.data.id).toBe(id);
+
+    // Verify only one was created
+    const list = await request(app).get(BASE).set(auth(adminToken()));
+    expect(list.body.data).toHaveLength(1);
+  });
+
+  it('POST: key reuse with different body returns 409 conflict', async () => {
+    const r1 = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY)
+      .send(validCreate({ url: 'https://example.com/idemp1' }));
+
+    expect(r1.status).toBe(201);
+
+    const r2 = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY)
+      .send(validCreate({ url: 'https://example.com/idemp2' }));
+
+    expect(r2.status).toBe(409);
+    expect(r2.body.error.code).toBe('idempotency_payload_conflict');
+  });
+
+  it('PATCH: exact replay returns original response', async () => {
+    const id = await createSub();
+
+    const payload = { active: false };
+    const r1 = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY)
+      .send(payload);
+
+    expect(r1.status).toBe(200);
+
+    const r2 = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY)
+      .send(payload);
+
+    expect(r2.status).toBe(200);
+    expect(r2.body.idempotencyHeader).toBe('replay-detected');
+  });
+
+  it('DELETE: exact replay returns original response (not 404)', async () => {
+    const id = await createSub();
+
+    const r1 = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY);
+
+    expect(r1.status).toBe(200);
+    expect(r1.body.data.deleted).toBe(true);
+
+    const r2 = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .set('Idempotency-Key', I_KEY);
+
+    expect(r2.status).toBe(200);
+    expect(r2.body.idempotencyHeader).toBe('replay-detected');
+    expect(r2.body.data.deleted).toBe(true);
   });
 });
 
