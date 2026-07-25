@@ -86,6 +86,20 @@ npx jest src/repositories/notificationRepository.test.ts
   construction. Only `EMAIL_PROVIDER=console` selects the console transport.
 - WebhookTransport reuses `WebhookService` which implements bounded retry and DLQ fallback.
 
+### WebhookTransport Id Scheme
+
+The webhook transport generates collision-resistant delivery ids using `crypto.randomUUID()`:
+
+```
+${userId}:${crypto.randomUUID()}
+```
+
+- **Prefix**: The `userId` prefix aids log correlation and debugging.
+- **Uniqueness**: The version-4 UUID provides 122 bits of entropy, guaranteeing uniqueness even for thousands of rapid successive sends to the same user within the same millisecond.
+- **One per send**: The id is generated once per `sendWebNotification` call and is stable for the lifetime of that send (retries reuse the same id).
+
+This replaces the previous `userId:Date.now()` scheme which could produce identical ids for two notifications to the same user within one millisecond, causing downstream idempotency/dedupe collisions.
+
 ## Security
 - Email `to` addresses are validated as one RFC-shaped recipient; malformed,
   multi-recipient, and header-injection (CR/LF) values are rejected before dispatch.
