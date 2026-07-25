@@ -40,6 +40,7 @@ function buildMockService(overrides?: Partial<MetricsServiceLike>): jest.Mocked<
   return {
     contentType: 'text/plain',
     trackHttpRequest: jest.fn(),
+    trackApiKeysRequest: jest.fn(),
     getMetrics: jest.fn().mockResolvedValue(''),
     recordHealthStatus: jest.fn(),
     recordWebhookDelivery: jest.fn(),
