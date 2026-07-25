@@ -481,6 +481,42 @@ describe('AuditService — convenience wrappers', () => {
       correlationId: 'trace-42',
     });
   });
+
+  it('logDisputeEvent: DISPUTE_CREATED uses INFO severity, resource="dispute"', () => {
+    service.logDisputeEvent('DISPUTE_CREATED', 'user-1', 'dispute-1', { reason: 'Test' });
+    expect(repo.appendedInputs[0]).toMatchObject({
+      action: 'DISPUTE_CREATED',
+      severity: 'INFO',
+      actor: 'user-1',
+      resource: 'dispute',
+      resourceId: 'dispute-1',
+      metadata: { reason: 'Test' },
+    });
+  });
+
+  it('logDisputeEvent: DISPUTE_UPDATED uses WARNING severity', () => {
+    service.logDisputeEvent('DISPUTE_UPDATED', 'admin-1', 'dispute-2', {});
+    expect(repo.appendedInputs[0].severity).toBe('WARNING');
+  });
+
+  it('logDisputeEvent: DISPUTE_DELETED uses INFO severity', () => {
+    service.logDisputeEvent('DISPUTE_DELETED', 'admin-1', 'dispute-3', {});
+    expect(repo.appendedInputs[0].severity).toBe('INFO');
+  });
+
+  it('logDisputeEvent propagates context (ipAddress, correlationId)', () => {
+    service.logDisputeEvent(
+      'DISPUTE_CREATED',
+      'user-1',
+      'dispute-1',
+      {},
+      { ipAddress: '10.0.0.1', correlationId: 'trace-dispute' },
+    );
+    expect(repo.appendedInputs[0]).toMatchObject({
+      ipAddress: '10.0.0.1',
+      correlationId: 'trace-dispute',
+    });
+  });
 });
 
 // ─── 5. Read-side delegation ────────────────────────────────────────────────

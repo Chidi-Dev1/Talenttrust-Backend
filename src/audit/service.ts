@@ -153,6 +153,29 @@ export class AuditService {
   }
 
   /**
+   * Convenience wrapper for dispute lifecycle events.
+   * DISPUTE_UPDATED is WARNING; others are INFO.
+   */
+  logDisputeEvent(
+    action: Extract<AuditAction, `DISPUTE_${string}`>,
+    actor: string,
+    disputeId: string,
+    metadata: Record<string, unknown> = {},
+    context: { ipAddress?: string; correlationId?: string } = {},
+  ): AuditEntry {
+    const severity: AuditSeverity = action === 'DISPUTE_UPDATED' ? 'WARNING' : 'INFO';
+    return this.log({
+      action,
+      severity,
+      actor,
+      resource: 'dispute',
+      resourceId: disputeId,
+      metadata,
+      ...context,
+    });
+  }
+
+  /**
    * Queries the audit log with optional filters.
    *
    * @param query - Filter and pagination options.
