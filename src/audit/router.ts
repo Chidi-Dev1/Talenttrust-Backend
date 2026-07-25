@@ -1,11 +1,13 @@
 /**
  * @module audit/router
- * @description REST endpoints for querying the audit log.
+ * @description REST endpoints for reading and appending to the audit log.
  *
  * Routes:
  *   GET  /api/v1/audit          - Query audit entries with optional filters
- *   GET  /api/v1/audit/:id      - Retrieve a single entry by ID
+ *   GET  /api/v1/audit/export   - Stream an NDJSON export for compliance
  *   GET  /api/v1/audit/integrity - Verify the hash chain integrity
+ *   GET  /api/v1/audit/:id      - Retrieve a single entry by ID
+ *   POST /api/v1/audit          - Append a new entry
  *
  * Security notes:
  * - In production these routes MUST be protected by authentication and
@@ -16,15 +18,18 @@
  *   `auditExport` tier via `exportMiddleware`, and `/integrity` additionally
  *   gets the stricter `auditIntegrity` tier via `integrityMiddleware` — see
  *   `rateLimitConfig` in `src/config/rateLimit.ts`.
+ * - Write bodies are validated and bounded by `./inputValidation` before they
+ *   reach the store; see that module for the enforced limits.
  */
 
 import { Router, Request, Response, type RequestHandler } from 'express';
 import { pipeline } from 'stream/promises';
 import { auditService, AuditService } from './service';
 import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
-import type { AuditAction, AuditQuery, AuditSeverity, CreateAuditEntryInput } from './types';
-import { decodeCursor } from './types';
+import type { AuditAction, AuditQuery, AuditSeverity } from './types';
+import { AUDIT_ACTIONS, AUDIT_SEVERITIES, decodeCursor } from './types';
 import { idempotencyMiddleware } from '../middleware/idempotency';
+import { readValidatedBody, validateCreateAuditEntry } from './inputValidation';
 
 export interface AuditRouterOptions {
   service?: AuditService;
@@ -40,17 +45,13 @@ export interface AuditRouterOptions {
   integrityMiddleware?: RequestHandler[];
 }
 
-const VALID_ACTIONS = new Set<AuditAction>([
-  'CONTRACT_CREATED', 'CONTRACT_UPDATED', 'CONTRACT_CANCELLED', 'CONTRACT_COMPLETED',
-  'PAYMENT_INITIATED', 'PAYMENT_RELEASED', 'PAYMENT_DISPUTED',
-  'REPUTATION_UPDATED',
-  'USER_CREATED', 'USER_UPDATED', 'USER_DELETED',
-  'AUTH_LOGIN', 'AUTH_LOGOUT', 'AUTH_FAILED',
-  'ADMIN_ACTION',
-  'ENDPOINT_ACCESS', 'ENDPOINT_MUTATION',
-]);
+// Derived from the canonical lists in `./types` so query filters accept exactly
+// the actions and severities that can be written. Previously these were spelled
+// out here and had drifted: DEPLOYMENT_PROMOTED / DEPLOYMENT_ROLLED_BACK were
+// writable but could not be filtered on.
+const VALID_ACTIONS = new Set<AuditAction>(AUDIT_ACTIONS);
 
-const VALID_SEVERITIES = new Set<AuditSeverity>(['INFO', 'WARNING', 'CRITICAL']);
+const VALID_SEVERITIES = new Set<AuditSeverity>(AUDIT_SEVERITIES);
 
 function parseOptionalIsoDate(
   value: string | undefined,
@@ -172,28 +173,37 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
 
   /**
    * POST /api/v1/audit
+   * Append a new entry to the audit log.
    *
-   * Write an audit entry with idempotency support.
-   * Accepts an Idempotency-Key header to prevent duplicate entries.
+   * The body is validated by the {@link validateCreateAuditEntry} middleware,
+   * which rejects unknown fields, wrong types, unbounded strings and oversized
+   * or over-nested metadata before anything reaches the store — entries are
+   * immutable and hash-chained, so an accepted mistake is permanent.
+   *
+   * Middleware order matters. Validation runs *before* `idempotencyMiddleware`
+   * because that middleware caches whatever the handler sends and replays it
+   * with a 200 on retry; letting a rejected body through would cache a 400 and
+   * replay it as a success. Rejected requests therefore never reach the
+   * idempotency layer, and a corrected retry under the same key still works.
+   *
+   * Accepts an `Idempotency-Key` header so a retried write is deduplicated
+   * rather than appended twice.
+   *
+   * @body {CreateAuditEntryInput} action, severity, actor, resource, resourceId,
+   *   optional metadata (defaults to `{}`), ipAddress and correlationId.
+   * @returns 201 - The created AuditEntry, including its hash chain fields.
+   * @returns 200 - The cached entry, when an Idempotency-Key is replayed.
+   * @returns 400 - `validation_error` envelope with one `details` entry per problem.
+   * @returns 409 - The Idempotency-Key was reused with a different payload.
    */
   router.post(
     '/',
-    idempotencyMiddleware,
     ...accessMiddleware,
-    (req: Request, res: Response): void => {
-      try {
-        const input = req.body as CreateAuditEntryInput;
-
-        if (!input.action || !input.severity || !input.actor || !input.resource || !input.resourceId) {
-          res.status(400).json({ error: 'Missing required fields: action, severity, actor, resource, resourceId' });
-          return;
-        }
-
-        const entry = service.log(input);
-        res.status(201).json(entry);
-      } catch (error) {
-        res.status(500).json({ error: (error as Error).message });
-      }
+    validateCreateAuditEntry,
+    idempotencyMiddleware,
+    (_req: Request, res: Response): void => {
+      const entry = service.log(readValidatedBody(res));
+      res.status(201).json(entry);
     },
   );
 

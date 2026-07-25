@@ -1205,7 +1205,12 @@ describe('POST /api/v1/audit — idempotent write', () => {
       .send({ action: 'CONTRACT_CREATED' })
       .expect(400);
 
-    expect(res.body.error).toContain('Missing required fields');
+    // The write path returns the project-standard structured envelope, with one
+    // coded detail per missing field — see `audit/inputValidation`.
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.map((detail: { field: string }) => detail.field)).toEqual(
+      expect.arrayContaining(['severity', 'actor', 'resource', 'resourceId']),
+    );
   });
 
   it('allows different Idempotency-Keys for independent entries', async () => {
