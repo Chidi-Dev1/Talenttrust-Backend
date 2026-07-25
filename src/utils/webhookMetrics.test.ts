@@ -7,7 +7,6 @@ import {
   incrementDlqOperation,
   incrementDlqReplay,
   webhookDlqRegistry,
-
 } from './webhookMetrics';
 
 describe('webhookMetrics DLQ counters', () => {

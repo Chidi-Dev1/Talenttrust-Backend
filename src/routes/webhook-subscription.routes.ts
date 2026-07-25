@@ -98,7 +98,9 @@ router.get(
       res.status(200).json({
         status: 'success',
         data: page.data.map(sanitizeSubscription),
-        });
+        nextCursor: page.nextCursor,
+        hasNextPage: page.hasNextPage,
+      });
     } catch (error) {
       next(error);
     }
