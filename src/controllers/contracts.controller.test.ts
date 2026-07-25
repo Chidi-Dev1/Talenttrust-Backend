@@ -8,6 +8,7 @@ const mockGetContractsPage = jest.fn();
 const mockUpdateContract = jest.fn();
 const mockDeleteContract = jest.fn();
 const mockGetContractStats = jest.fn();
+const mockGetContractHistory = jest.fn();
 
 jest.mock('../db/database', () => ({
   getDb: jest.fn().mockReturnValue({}),
@@ -26,6 +27,8 @@ jest.mock('../services/contracts.service', () => ({
     updateContract: mockUpdateContract,
     deleteContract: mockDeleteContract,
     getContractStats: mockGetContractStats,
+    getContractHistory: mockGetContractHistory,
+    getBounds: jest.fn().mockReturnValue(CONTRACT_BOUNDS),
   })),
 }));
 
@@ -57,6 +60,7 @@ describe('ContractsController', () => {
     mockUpdateContract.mockClear();
     mockDeleteContract.mockClear();
     mockGetContractStats.mockClear();
+    mockGetContractHistory.mockClear();
 
     const { ContractsService } = require('../services/contracts.service');
     controller = new ContractsController(new ContractsService());
@@ -673,6 +677,7 @@ describe('ContractsController', () => {
       expect(controller).toHaveProperty('deleteContract');
       expect(controller).toHaveProperty('getContractStats');
       expect(controller).toHaveProperty('getBounds');
+      expect(controller).toHaveProperty('getContractHistory');
     });
   });
 
@@ -885,6 +890,42 @@ describe('ContractsController', () => {
       mockGetContractStats.mockRejectedValue(mockError);
 
       await controller.getContractStats(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockNext).toHaveBeenCalledWith(mockError);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getContractHistory
+  // -------------------------------------------------------------------------
+
+  describe('getContractHistory', () => {
+    it('returns 200 with history data from service', async () => {
+      const historyData = [{ eventId: 'evt-1' }];
+      mockGetContractHistory.mockResolvedValue(historyData);
+      mockRequest.params = { id: 'contract-123' };
+
+      await controller.getContractHistory(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockGetContractHistory).toHaveBeenCalledWith('contract-123');
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.json).toHaveBeenCalledWith(historyData);
+    });
+
+    it('delegates errors to next()', async () => {
+      const mockError = new Error('History failed');
+      mockGetContractHistory.mockRejectedValue(mockError);
+      mockRequest.params = { id: 'contract-123' };
+
+      await controller.getContractHistory(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,

@@ -7,6 +7,7 @@ import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.type
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
+import { eventIngestionService } from '../events/registry';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -200,5 +201,13 @@ export class ContractsService {
       maxMilestones: MAX_MILESTONES_PER_CONTRACT,
       maxAmount: MAX_CONTRACT_AMOUNT_STROOPS,
     };
+  }
+
+  /**
+   * Retrieves contract event history by contract ID.
+   * @param id - UUID of the contract.
+   */
+  public async getContractHistory(id: string) {
+    return eventIngestionService.getContractHistory(id);
   }
 }

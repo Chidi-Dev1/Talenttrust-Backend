@@ -145,7 +145,20 @@ export class ContractsController {
   }
 
   public getBounds(_req: Request, res: Response): void {
-    ok(res, CONTRACT_BOUNDS);
+    ok(res, this.service.getBounds());
+  }
+
+  public async getContractHistory(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const history = await this.service.getContractHistory(req.params.id!);
+      res.status(200).json(history);
+    } catch (error) {
+      next(error);
+    }
   }
 }
 
@@ -161,5 +174,6 @@ export function createContractsController(service: ContractsService) {
     deleteContract: controller.deleteContract.bind(controller),
     getContractStats: controller.getContractStats.bind(controller),
     getBounds: controller.getBounds.bind(controller),
+    getContractHistory: controller.getContractHistory.bind(controller),
   };
 }

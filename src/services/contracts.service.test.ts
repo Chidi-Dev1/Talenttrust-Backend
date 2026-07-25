@@ -4,8 +4,14 @@ import { ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { InMemoryContractRepository } from '../repositories/contractRepository';
 import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
+import { eventIngestionService } from '../events/registry';
 
 jest.mock('./soroban.service');
+jest.mock('../events/registry', () => ({
+  eventIngestionService: {
+    getContractHistory: jest.fn(),
+  },
+}));
 
 describe('ContractsService', () => {
   let contractsService: ContractsService;
@@ -655,6 +661,18 @@ describe('ContractsService', () => {
 
       const contracts = await contractsService.getAllContracts();
       expect(contracts).toHaveLength(0);
+    });
+  });
+
+  describe('getContractHistory', () => {
+    it('delegates contract history retrieval to eventIngestionService', async () => {
+      const fakeHistory = [{ eventId: 'evt-1', contractId: 'contract-123' }];
+      (eventIngestionService.getContractHistory as jest.Mock).mockResolvedValueOnce(fakeHistory);
+
+      const result = await contractsService.getContractHistory('contract-123');
+
+      expect(eventIngestionService.getContractHistory).toHaveBeenCalledWith('contract-123');
+      expect(result).toBe(fakeHistory);
     });
   });
 });
