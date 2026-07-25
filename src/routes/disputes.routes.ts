@@ -22,6 +22,11 @@ import { Router, Request, Response } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import {
+  mapToCreateDisputeDto,
+  mapToUpdateDisputeDto,
+  mapToDisputeResponse
+} from '../modules/disputes/dto/dispute.dto';
 
 const router = Router();
 
@@ -50,12 +55,13 @@ router.get(
   '/:id',
   requirePermission('disputes', 'read'),
   (req: Request, res: Response) => {
+    const rawDispute = {
+      id: req.params.id,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
     res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        status: 'open',
-        createdAt: new Date().toISOString(),
-      },
+      dispute: mapToDisputeResponse(rawDispute),
     });
   },
 );
@@ -66,14 +72,15 @@ router.post(
   '/',
   requirePermission('disputes', 'create'),
   (req: Request, res: Response) => {
-    const body = req.body ?? {};
+    const dto = mapToCreateDisputeDto(req.body);
+    const rawDispute = {
+      id: `dispute-${Date.now()}`,
+      ...dto,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
     res.status(201).json({
-      dispute: {
-        id: `dispute-${Date.now()}`,
-        ...body,
-        status: 'open',
-        createdAt: new Date().toISOString(),
-      },
+      dispute: mapToDisputeResponse(rawDispute),
     });
   },
 );
@@ -84,13 +91,14 @@ router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
   (req: Request, res: Response) => {
-    const body = req.body ?? {};
+    const dto = mapToUpdateDisputeDto(req.body);
+    const rawDispute = {
+      id: req.params.id,
+      ...dto,
+      updatedAt: new Date().toISOString(),
+    };
     res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        ...body,
-        updatedAt: new Date().toISOString(),
-      },
+      dispute: mapToDisputeResponse(rawDispute),
     });
   },
 );
