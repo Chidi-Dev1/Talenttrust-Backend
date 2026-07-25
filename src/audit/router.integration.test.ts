@@ -26,6 +26,7 @@ import { AuditStore } from './store';
 import { AuditService } from './service';
 import { AuditExportService } from './exportService';
 import { createAuditRouter } from './router';
+import { IdempotencyStore } from './idempotency';
 import { requireAuth, requireRole } from '../middleware/authorization';
 import type { AuditEntry, CreateAuditEntryInput } from './types';
 import { encodeCursor, decodeCursor, type CursorData } from './types';
@@ -63,6 +64,7 @@ function buildApp(
   opts: {
     accessMiddleware?: RequestHandler[];
     exportMiddleware?: RequestHandler[];
+    idempotencyStore?: IdempotencyStore;
   } = {},
 ) {
   const service = new AuditService(store);
@@ -84,6 +86,7 @@ function buildApp(
       exportService: exportSvc,
       accessMiddleware: opts.accessMiddleware ?? [],
       exportMiddleware: opts.exportMiddleware ?? [],
+      idempotencyStore: opts.idempotencyStore,
     }),
   );
 
@@ -1104,5 +1107,237 @@ describe('GET /api/v1/audit — cursor pagination', () => {
     const res = await request(app).get('/api/v1/audit').expect(200);
     expect(res.body.count).toBe(1);
     expect(res.body.entries[0].actor).toBe('alice');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 12. POST /api/v1/audit — idempotent audit writes
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('POST /api/v1/audit — idempotent writes', () => {
+  let store: AuditStore;
+  let idempotencyStore: IdempotencyStore;
+
+  beforeEach(() => {
+    store = new AuditStore();
+    idempotencyStore = new IdempotencyStore({ maxSize: 1000, ttlMs: 86_400_000 });
+  });
+
+  const validPayload = {
+    action: 'CONTRACT_CREATED',
+    severity: 'INFO',
+    actor: 'user-abc',
+    resource: 'contract',
+    resourceId: 'contract-1',
+    metadata: { note: 'test' },
+  };
+
+  it('creates an entry and returns 201 on first write with a valid key', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'unique-key-1')
+      .send(validPayload)
+      .expect(201);
+
+    expect(res.body).toHaveProperty('id');
+    expect(res.body.action).toBe('CONTRACT_CREATED');
+    expect(res.body.severity).toBe('INFO');
+    expect(res.body.actor).toBe('user-abc');
+    expect(res.body.resource).toBe('contract');
+    expect(res.body.resourceId).toBe('contract-1');
+    expect(res.body).toHaveProperty('hash');
+    expect(res.body).toHaveProperty('previousHash');
+    expect(res.body).toHaveProperty('timestamp');
+    expect(Object.isFrozen(res.body)).toBe(false);
+  });
+
+  it('returns 200 on exact replay with the same key and body', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const first = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'replay-key')
+      .send(validPayload)
+      .expect(201);
+
+    const second = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'replay-key')
+      .send(validPayload)
+      .expect(200);
+
+    expect(second.body.id).toBe(first.body.id);
+    expect(second.body).toEqual(first.body);
+  });
+
+  it('returns 409 when same key is used with a different body', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'conflict-key')
+      .send(validPayload)
+      .expect(201);
+
+    const conflict = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'conflict-key')
+      .send({ ...validPayload, actor: 'different-actor' })
+      .expect(409);
+
+    expect(conflict.body.error).toMatch(/already used with a different request body/i);
+  });
+
+  it('returns 400 when Idempotency-Key header is missing', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .send(validPayload)
+      .expect(400);
+
+    expect(res.body.error).toMatch(/Idempotency-Key header is required/i);
+  });
+
+  it('returns 400 for an empty Idempotency-Key', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', '')
+      .send(validPayload)
+      .expect(400);
+
+    expect(res.body.error).toMatch(/Idempotency-Key must be a string/i);
+  });
+
+  it('returns 400 for an invalid action', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-bad-action')
+      .send({ ...validPayload, action: 'INVALID_ACTION' })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/Invalid action/i);
+  });
+
+  it('returns 400 for an invalid severity', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-bad-severity')
+      .send({ ...validPayload, severity: 'DEBUG' })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/Invalid severity/i);
+  });
+
+  it('returns 400 when actor is missing', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+    const { actor: _, ...noActor } = validPayload;
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-no-actor')
+      .send(noActor)
+      .expect(400);
+
+    expect(res.body.error).toMatch(/actor is required/i);
+  });
+
+  it('returns 400 when resource is missing', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+    const { resource: _, ...noResource } = validPayload;
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-no-resource')
+      .send(noResource)
+      .expect(400);
+
+    expect(res.body.error).toMatch(/resource is required/i);
+  });
+
+  it('returns 400 when resourceId is missing', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+    const { resourceId: _, ...noResourceId } = validPayload;
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-no-resourceId')
+      .send(noResourceId)
+      .expect(400);
+
+    expect(res.body.error).toMatch(/resourceId is required/i);
+  });
+
+  it('returns 400 when metadata is an array', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-bad-metadata')
+      .send({ ...validPayload, metadata: ['a', 'b'] })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/metadata must be a plain object/i);
+  });
+
+  it('returns 201 and persists after expiry when TTL has elapsed', async () => {
+    const shortTtlStore = new IdempotencyStore({ ttlMs: 10, maxSize: 100 });
+    const { app } = buildApp(store, { idempotencyStore: shortTtlStore });
+
+    await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'expiring-key')
+      .send(validPayload)
+      .expect(201);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'expiring-key')
+      .send(validPayload)
+      .expect(201);
+
+    expect(res.body.action).toBe('CONTRACT_CREATED');
+  });
+
+  it('multiple unique keys each create independent entries', async () => {
+    const { app } = buildApp(store, { idempotencyStore });
+
+    const res1 = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-a')
+      .send(validPayload)
+      .expect(201);
+
+    const res2 = await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'key-b')
+      .send({ ...validPayload, actor: 'user-xyz', resourceId: 'contract-2' })
+      .expect(201);
+
+    expect(res1.body.id).not.toBe(res2.body.id);
+    expect(store.count()).toBe(2);
+  });
+
+  it('respects access middleware — returns 401 when no auth token', async () => {
+    const { app } = buildApp(store, {
+      idempotencyStore,
+      accessMiddleware: [requireAuth],
+    });
+
+    await request(app)
+      .post('/api/v1/audit')
+      .set('Idempotency-Key', 'auth-key')
+      .send(validPayload)
+      .expect(401);
   });
 });
