@@ -11,6 +11,13 @@ import {
 
 describe('webhookMetrics DLQ counters', () => {
   describe('incrementDlqOperation', () => {
+    it('throws TypeError for invalid operation', () => {
+      expect(() => incrementDlqOperation('invalid' as any)).toThrow(TypeError);
+      expect(() => incrementDlqOperation('invalid' as any)).toThrow(
+        'Invalid DLQ operation',
+      );
+    });
+
     it('increments enqueue counter', async () => {
       incrementDlqOperation('enqueue');
 
@@ -70,6 +77,13 @@ describe('webhookMetrics DLQ counters', () => {
   });
 
   describe('incrementDlqReplay', () => {
+    it('throws TypeError for invalid replay outcome', () => {
+      expect(() => incrementDlqReplay('invalid' as any)).toThrow(TypeError);
+      expect(() => incrementDlqReplay('invalid' as any)).toThrow(
+        'Invalid DLQ replay outcome',
+      );
+    });
+
     it('increments success counter', async () => {
       incrementDlqReplay('success');
 
