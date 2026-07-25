@@ -20,6 +20,7 @@ import { AuthService } from '../services/auth.service';
 import { getDb } from '../db/database';
 import { requireAuth } from '../middleware/authorization';
 import { authRateLimitKeyFn } from '../auth/rateLimitKey';
+import idempotencyMiddleware from '../middleware/idempotency.middleware';
 import type { AuthenticatedRequest } from '../lib/types';
 
 const router = Router();
@@ -71,6 +72,7 @@ function authError(res: Response, status: number, code: string, message: string)
 router.post(
   '/login',
   authLimiter,
+  idempotencyMiddleware,
   validateSchema(loginSchema),
   async (req: Request, res: Response) => {
     try {
@@ -90,6 +92,7 @@ router.post(
 router.post(
   '/register',
   authLimiter,
+  idempotencyMiddleware,
   validateSchema(registerSchema),
   async (req: Request, res: Response) => {
     try {
@@ -115,6 +118,7 @@ router.post(
 router.post(
   '/refresh',
   authLimiter,
+  idempotencyMiddleware,
   validateSchema(refreshSchema),
   async (req: Request, res: Response) => {
     try {
@@ -131,6 +135,7 @@ router.post(
   '/logout',
   authLimiter,
   requireAuth,
+  idempotencyMiddleware,
   (req: Request, res: Response) => {
     const userId = (req as AuthenticatedRequest).user?.id;
     if (userId) {
