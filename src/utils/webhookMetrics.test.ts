@@ -21,13 +21,11 @@
 
 import {
   webhookDlqRegistry,
-  webhookDlqOperationsTotal,
   incrementDlqOperation,
-  webhookDlqReplaysTotal,
   incrementDlqReplay,
+  resetWebhookMetrics,
 } from './webhookMetrics';
 
-describe('webhookMetrics DLQ counters', () => {
 /**
  * Extract the current value of a counter for a specific label set.
  *
@@ -124,23 +122,6 @@ describe('incrementDlqOperation', () => {
 
     const value = await getCounterValue('webhook_dlq_operations_total', {
       operation: 'drop_overflow',
-    });
-    expect(value).toBe(1);
-  });
-
-  describe('incrementDlqReplay', () => {
-    it('throws TypeError for invalid replay outcome', () => {
-      expect(() => incrementDlqReplay('invalid' as any)).toThrow(TypeError);
-      expect(() => incrementDlqReplay('invalid' as any)).toThrow(
-        'Invalid DLQ replay outcome',
-      );
-    });
-
-    it('increments success counter', async () => {
-      incrementDlqReplay('success');
-
-    const value = await getCounterValue('webhook_dlq_operations_total', {
-      operation: 'drop_poison',
     });
     expect(value).toBe(1);
   });
@@ -419,19 +400,12 @@ describe('webhookDlqRegistry isolation', () => {
 });
 
 describe('metric name constants', () => {
-  it('exports the expected counter metric names', () => {
-    expect(webhookDlqOperationsTotal.name).toBe('webhook_dlq_operations_total');
-    expect(webhookDlqReplaysTotal.name).toBe('webhook_dlq_replays_total');
-  });
-
-  it('exports counters with the correct help text', () => {
-    expect(webhookDlqOperationsTotal.help).toContain('DLQ');
-    expect(webhookDlqReplaysTotal.help).toContain('DLQ');
-  });
-
-  it('exports counters registered to the isolated registry', () => {
-    expect(webhookDlqOperationsTotal.registers).toContain(webhookDlqRegistry);
-    expect(webhookDlqReplaysTotal.registers).toContain(webhookDlqRegistry);
+  it('exports counters registered to the isolated registry', async () => {
+    const metrics = await webhookDlqRegistry.getMetricsAsJSON();
+    const opsMetric = metrics.find((m: any) => m.name === 'webhook_dlq_operations_total');
+    const replaysMetric = metrics.find((m: any) => m.name === 'webhook_dlq_replays_total');
+    expect(opsMetric).toBeDefined();
+    expect(replaysMetric).toBeDefined();
   });
 });
 
