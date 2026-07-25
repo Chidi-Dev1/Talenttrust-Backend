@@ -19,6 +19,32 @@
 import * as crypto from 'crypto';
 import { ApiKey } from '../database/schema';
 import { database } from '../database';
+import { AuthCache } from './authCache';
+import { validateEnv } from '../config/env.schema';
+
+// Initialize cache with config-driven settings
+let authCache: AuthCache | null = null;
+
+/**
+ * Get or initialize the auth cache instance.
+ */
+export function getAuthCache(): AuthCache {
+  if (!authCache) {
+    const env = validateEnv();
+    authCache = new AuthCache({
+      ttlMs: env.AUTH_CACHE_TTL_MS,
+      maxEntries: env.AUTH_CACHE_MAX_ENTRIES,
+    });
+  }
+  return authCache;
+}
+
+/**
+ * Reset the auth cache instance (primarily for testing).
+ */
+export function resetAuthCache(): void {
+  authCache = null;
+}
 
 export interface ApiKeyInfo {
   id: string;
@@ -106,11 +132,11 @@ export function computeKeySelector(apiKey: string): string {
 export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: string; info: ApiKeyInfo }> {
   const apiKey = generateApiKey();
   const { salt, hash } = hashApiKey(apiKey);
-  
+
   // Store salt and hash together in the key_hash field
   const keyHash = `${salt}:${hash}`;
   const keySelector = computeKeySelector(apiKey);
-  
+
   const dbKey = await database.createApiKey({
     name: request.name,
     key_hash: keyHash,
@@ -120,6 +146,10 @@ export async function createApiKey(request: ApiKeyRequest): Promise<{ apiKey: st
     expires_at: request.expiresAt,
     is_active: true
   });
+
+  // Invalidate cache for this user's keys (conservative approach)
+  const cache = getAuthCache();
+  cache.invalidateByUserId(request.createdBy);
 
   return {
     apiKey,
@@ -184,6 +214,13 @@ export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null>
   // Compute the deterministic selector for O(1) indexed lookup
   const selector = computeKeySelector(apiKey);
 
+  // Check cache first
+  const cache = getAuthCache();
+  const cached = cache.get(selector);
+  if (cached) {
+    return cached;
+  }
+
   // Try indexed lookup first (fast path, O(1) via key_selector)
   let dbKey = await database.getApiKeyBySelector(selector);
   let pbkdf2Verified = false; // tracks whether the salted hash has already been verified
@@ -247,8 +284,8 @@ export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null>
     await database.deactivateApiKey(dbKey.id);
     return null;
   }
-  
-  return {
+
+  const result = {
     id: dbKey.id,
     name: dbKey.name,
     scope: dbKey.scope,
@@ -257,6 +294,11 @@ export async function validateApiKey(apiKey: string): Promise<ApiKeyInfo | null>
     expiresAt: dbKey.expires_at,
     isActive: dbKey.is_active
   };
+
+  // Cache the successful validation result
+  cache.set(selector, result);
+
+  return result;
 }
 
 /**
@@ -275,13 +317,20 @@ export async function rotateApiKey(keyId: string): Promise<{ apiKey: string; inf
   const { salt, hash } = hashApiKey(newApiKey);
   const keyHash = `${salt}:${hash}`;
   const keySelector = computeKeySelector(newApiKey);
-  
+
   const updatedKey = await database.rotateApiKey(keyId, keyHash, keySelector);
-  
+
   if (!updatedKey) {
     return null;
   }
-  
+
+  // Invalidate cache for the old selector and user's keys
+  const cache = getAuthCache();
+  if (existingKey.key_selector) {
+    cache.invalidate(existingKey.key_selector);
+  }
+  cache.invalidateByUserId(existingKey.created_by);
+
   return {
     apiKey: newApiKey,
     info: {
@@ -303,5 +352,21 @@ export async function rotateApiKey(keyId: string): Promise<{ apiKey: string; inf
  * @returns True if successful, false otherwise.
  */
 export async function deactivateApiKey(keyId: string): Promise<boolean> {
-  return await database.deactivateApiKey(keyId);
+  const existingKey = await database.getApiKeyById(keyId);
+  if (!existingKey) {
+    return false;
+  }
+
+  const result = await database.deactivateApiKey(keyId);
+
+  // Invalidate cache for this key and user's keys
+  if (result) {
+    const cache = getAuthCache();
+    if (existingKey.key_selector) {
+      cache.invalidate(existingKey.key_selector);
+    }
+    cache.invalidateByUserId(existingKey.created_by);
+  }
+
+  return result;
 }
