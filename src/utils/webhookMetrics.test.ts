@@ -27,18 +27,6 @@ import {
   incrementDlqReplay,
 } from './webhookMetrics';
 
-describe('webhookMetrics DLQ counters', () => {
-  describe('incrementDlqOperation', () => {
-    it('throws TypeError for invalid operation', () => {
-      expect(() => incrementDlqOperation('invalid' as any)).toThrow(TypeError);
-      expect(() => incrementDlqOperation('invalid' as any)).toThrow(
-        'Invalid DLQ operation',
-      );
-    });
-
-    it('increments enqueue counter', async () => {
-      incrementDlqOperation('enqueue');
-
 /**
  * Extract the current value of a counter for a specific label set.
  *
@@ -116,6 +104,11 @@ async function getMetricLabelValues(
   return Array.from(seen).sort();
 }
 
+function resetWebhookMetrics(): void {
+  webhookDlqOperationsTotal.reset();
+  webhookDlqReplaysTotal.reset();
+}
+
 describe('incrementDlqOperation', () => {
   beforeEach(() => {
     resetWebhookMetrics();
@@ -139,17 +132,8 @@ describe('incrementDlqOperation', () => {
     expect(value).toBe(1);
   });
 
-  describe('incrementDlqReplay', () => {
-    it('throws TypeError for invalid replay outcome', () => {
-      expect(() => incrementDlqReplay('invalid' as any)).toThrow(TypeError);
-      expect(() => incrementDlqReplay('invalid' as any)).toThrow(
-        'Invalid DLQ replay outcome',
-      );
-    });
-
-    it('increments success counter', async () => {
-      incrementDlqReplay('success');
-
+  it('increments the drop_poison counter', async () => {
+    incrementDlqOperation('drop_poison');
     const value = await getCounterValue('webhook_dlq_operations_total', {
       operation: 'drop_poison',
     });

@@ -99,7 +99,7 @@ const updateMilestoneSchema = z
     deadline: datetimeField.optional(),
     completed: z.boolean().default(false),
   })
-  .strip();
+  .strict();
 
 // Update contract schema with partial fields for PATCH and OCC version.
 // `.strict()` on both the body and each milestone rejects unrecognized
@@ -109,27 +109,6 @@ const updateMilestoneSchema = z
 // `validateContractBounds` in the service layer, which returns a 422
 // contract_bounds_error — an established, separately-tested contract this
 // schema must not shadow with an earlier 400.
-export const updateContractSchema = z.object({
-  body: z.object({
-    version: z.number().int().min(0),
-    title: z.string().min(5).max(100).optional(),
-    description: z.string().min(10).max(1000).optional(),
-    freelancerId: z.string().uuid().nullable().optional(),
-    clientId: z.string().uuid().optional(),
-    budget: z.number().positive().max(MAX_CONTRACT_AMOUNT_STROOPS).optional(),
-    deadline: z.string().datetime().nullable().optional(),
-    status: z.enum(['draft', 'active', 'completed', 'cancelled', 'disputed']).optional(),
-    terms: z.string().max(MAX_CONTRACT_TERMS_LENGTH).nullable().optional(),
-    milestones: z.array(z.object({
-      title: z.string().min(1).max(100),
-      description: z.string().min(1).max(500),
-      amount: z.number().positive().max(MAX_CONTRACT_AMOUNT_STROOPS),
-      deadline: z.string().datetime().optional(),
-      completed: z.boolean().default(false),
-    }).strict()).optional(),
-  }).strict(),
-});
-
 /**
  * Schema for the body of POST /api/v1/contracts.
  *
@@ -234,13 +213,13 @@ const updateContractBodySchema = z
       .optional(),
     milestones: z.array(updateMilestoneSchema).optional(),
   })
-  .strip();
+  .strict();
 
 export const updateContractSchema = z
   .object({
     body: updateContractBodySchema,
   })
-  .strip();
+  .strict();
 
 // ─── Route param schema ───────────────────────────────────────────────────────
 

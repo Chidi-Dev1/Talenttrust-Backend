@@ -534,6 +534,7 @@ describe('GET /api/v1/contracts', () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toMatchObject({ code: 'bad_request' });
     });
+  });
 
 afterAll(() => {
   closeDb();

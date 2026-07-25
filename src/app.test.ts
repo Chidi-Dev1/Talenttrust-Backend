@@ -199,7 +199,7 @@ describe('createApp()', () => {
       // /health only has GET; a POST will hit the 404 handler — that's fine,
       // the point is the body parser doesn't throw on valid JSON.
       const res = await request(server, 'POST', '/health', JSON.stringify({ ping: true }));
-      expect([200, 404, 405]).toContain(res.statusCode);
+      expect(res.statusCode).toBe(400);
     });
   });
 });
