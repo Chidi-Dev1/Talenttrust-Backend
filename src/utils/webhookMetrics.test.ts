@@ -27,16 +27,17 @@ import {
   incrementDlqReplay,
 } from './webhookMetrics';
 
-/**
- * Reset the isolated webhook DLQ registry between tests.
- *
- * prom-client retains counter state globally per-registry.  Clearing the
- * dedicated `webhookDlqRegistry` guarantees that each test starts from zero
- * without affecting any other metrics in the application.
- */
-function resetWebhookMetrics(): void {
-  webhookDlqRegistry.clear();
-}
+describe('webhookMetrics DLQ counters', () => {
+  describe('incrementDlqOperation', () => {
+    it('throws TypeError for invalid operation', () => {
+      expect(() => incrementDlqOperation('invalid' as any)).toThrow(TypeError);
+      expect(() => incrementDlqOperation('invalid' as any)).toThrow(
+        'Invalid DLQ operation',
+      );
+    });
+
+    it('increments enqueue counter', async () => {
+      incrementDlqOperation('enqueue');
 
 /**
  * Extract the current value of a counter for a specific label set.
@@ -138,8 +139,16 @@ describe('incrementDlqOperation', () => {
     expect(value).toBe(1);
   });
 
-  it('increments the drop_poison counter', async () => {
-    incrementDlqOperation('drop_poison');
+  describe('incrementDlqReplay', () => {
+    it('throws TypeError for invalid replay outcome', () => {
+      expect(() => incrementDlqReplay('invalid' as any)).toThrow(TypeError);
+      expect(() => incrementDlqReplay('invalid' as any)).toThrow(
+        'Invalid DLQ replay outcome',
+      );
+    });
+
+    it('increments success counter', async () => {
+      incrementDlqReplay('success');
 
     const value = await getCounterValue('webhook_dlq_operations_total', {
       operation: 'drop_poison',
