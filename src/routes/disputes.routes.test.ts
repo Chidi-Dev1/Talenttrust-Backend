@@ -24,6 +24,7 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
 import { RateLimitStore } from '../lib/rateLimitStore';
+import { clearIdempotencyStore } from '../middleware/idempotency';
 
 // ── Mock auth middleware — applied BEFORE we import the router ────────────
 // The disputes router imports requireAuth/requirePermission from this module,
@@ -474,6 +475,112 @@ describe('Disputes endpoints — rate limiting', () => {
         .get('/api/v1/disputes')
         .set('X-Forwarded-For', ip);
       expect(over.status).toBe(429);
+    });
+  });
+
+  // ── Idempotency ─────────────────────────────────────────────────────────
+
+  describe('idempotency', () => {
+    beforeEach(() => {
+      clearIdempotencyStore();
+    });
+
+    afterEach(() => {
+      clearIdempotencyStore();
+    });
+
+    it('processes first write and exact replay correctly for POST', async () => {
+      const app = buildApp();
+      const ip = '20.0.0.1';
+      const key = 'test-idem-key-1';
+      const body = { reason: 'test-idempotency' };
+
+      // First write
+      const res1 = await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key)
+        .send(body);
+      
+      expect(res1.status).toBe(201);
+      expect(res1.body.dispute).toBeDefined();
+      
+      // Exact replay
+      const res2 = await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key)
+        .send(body);
+      
+      expect(res2.status).toBe(200);
+      expect(res2.body.idempotencyHeader).toBe('replay-detected');
+      expect(res2.body.dispute.id).toBe(res1.body.dispute.id);
+    });
+
+    it('returns conflict for key reuse with different body for POST', async () => {
+      const app = buildApp();
+      const ip = '20.0.0.2';
+      const key = 'test-idem-key-2';
+
+      await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key)
+        .send({ reason: 'original' });
+      
+      const res = await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key)
+        .send({ reason: 'different' });
+      
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('idempotency_payload_conflict');
+    });
+
+    it('processes exact replay for PATCH', async () => {
+      const app = buildApp();
+      const ip = '20.0.0.3';
+      const key = 'test-idem-key-3';
+      const body = { status: 'resolved' };
+
+      const res1 = await request(app)
+        .patch('/api/v1/disputes/123')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key)
+        .send(body);
+      
+      expect(res1.status).toBe(200);
+      
+      const res2 = await request(app)
+        .patch('/api/v1/disputes/123')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key)
+        .send(body);
+      
+      expect(res2.status).toBe(200);
+      expect(res2.body.idempotencyHeader).toBe('replay-detected');
+    });
+
+    it('processes exact replay for DELETE', async () => {
+      const app = buildApp();
+      const ip = '20.0.0.4';
+      const key = 'test-idem-key-4';
+
+      const res1 = await request(app)
+        .delete('/api/v1/disputes/123')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key);
+      
+      expect(res1.status).toBe(200);
+      
+      const res2 = await request(app)
+        .delete('/api/v1/disputes/123')
+        .set('X-Forwarded-For', ip)
+        .set('Idempotency-Key', key);
+      
+      expect(res2.status).toBe(200);
+      expect(res2.body.idempotencyHeader).toBe('replay-detected');
     });
   });
 });

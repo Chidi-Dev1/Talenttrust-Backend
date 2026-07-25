@@ -22,6 +22,7 @@ import { Router, Request, Response } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { idempotencyMiddleware } from '../middleware/idempotency';
 
 const router = Router();
 
@@ -65,6 +66,7 @@ router.get(
 router.post(
   '/',
   requirePermission('disputes', 'create'),
+  idempotencyMiddleware,
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(201).json({
@@ -83,6 +85,7 @@ router.post(
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
+  idempotencyMiddleware,
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(200).json({
@@ -100,6 +103,7 @@ router.patch(
 router.delete(
   '/:id',
   requirePermission('disputes', 'delete'),
+  idempotencyMiddleware,
   (req: Request, res: Response) => {
     res.status(200).json({
       message: `Dispute ${req.params.id} deleted successfully`,
