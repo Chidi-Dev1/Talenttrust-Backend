@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 
 import { createContractsController } from '../controllers/contracts.controller';
+import { createContractsBulkController } from '../controllers/contracts-bulk.controller';
 import { ContractsService } from '../services/contracts.service';
 import { ContractRepository } from '../repositories/contractRepository';
 import { getDb } from '../db/database';
@@ -10,6 +11,7 @@ import {
   contractIdParamSchema,
   contractQuerySchema,
 } from '../modules/contracts/dto/contract.dto';
+import { bulkCreateContractsSchema } from '../modules/contracts/dto/bulk-operations.dto';
 import { validateUpdateContract } from '../modules/contracts/validation.middleware';
 import { eventIngestionService } from '../events/registry';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
@@ -111,7 +113,9 @@ function createContractsRouter(): Router {
   const router = Router();
   const db = getDb();
   const repo = new ContractRepository(db);
-  const controller = createContractsController(new ContractsService(repo));
+  const service = new ContractsService(repo);
+  const controller = createContractsController(service);
+  const bulkController = createContractsBulkController(service);
 
   /**
    * Resolves the owner (clientId) of a contract from the DB.
@@ -172,6 +176,26 @@ function createContractsRouter(): Router {
     contractCreateIdempotencyMiddleware(),
     validateSchema(createContractSchema),
     controller.createContract,
+  );
+
+  /**
+   * POST /api/v1/contracts/bulk
+   * Bulk create contracts endpoint.
+   * 
+   * Request: Array of contract creation payloads (each validated separately)
+   * Response: Per-item results with summary (always 200, check per-item status for failures)
+   * 
+   * - Each item is validated and processed independently
+   * - One item's failure does not affect other items
+   * - Batch size is capped at BULK_OPERATION_MAX_BATCH_SIZE (100)
+   * - Empty batch is rejected as a validation error
+   */
+  router.post(
+    '/bulk',
+    requireAuth,
+    requirePermission('contracts', 'create'),
+    validateSchema(bulkCreateContractsSchema),
+    bulkController.bulkCreateContracts,
   );
 
   // PATCH /:id — update an existing contract (owner or admin only)
