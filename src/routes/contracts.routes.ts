@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 
 import { createContractsController } from '../controllers/contracts.controller';
 import { ContractsService } from '../services/contracts.service';
+import { ContractCacheService, DEFAULT_CACHE_TTL_MS, DEFAULT_CACHE_SWR_MS, DEFAULT_CACHE_MAX_ENTRIES } from '../services/contractCache.service';
 import { ContractRepository } from '../repositories/contractRepository';
 import { getDb } from '../db/database';
 import { validateSchema } from '../middleware/validate.middleware';
@@ -111,7 +112,12 @@ function createContractsRouter(): Router {
   const router = Router();
   const db = getDb();
   const repo = new ContractRepository(db);
-  const controller = createContractsController(new ContractsService(repo));
+  const contractCache = new ContractCacheService({
+    ttlMs: parseInt(process.env['CONTRACT_CACHE_TTL_MS'] ?? '', 10) || DEFAULT_CACHE_TTL_MS,
+    swrMs: parseInt(process.env['CONTRACT_CACHE_SWR_MS'] ?? '', 10) || DEFAULT_CACHE_SWR_MS,
+    maxEntries: parseInt(process.env['CONTRACT_CACHE_MAX_ENTRIES'] ?? '', 10) || DEFAULT_CACHE_MAX_ENTRIES,
+  });
+  const controller = createContractsController(new ContractsService(repo, contractCache));
 
   /**
    * Resolves the owner (clientId) of a contract from the DB.

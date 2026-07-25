@@ -153,6 +153,30 @@ export class SWRCache {
   }
 
   /**
+   * Remove a single entry from the cache by key. Also cleans up any in-flight
+   * fetch promise for the same key so that a subsequent read triggers a fresh
+   * upstream fetch rather than coalescing onto the stale promise.
+   *
+   * This is safe to call on non-existent keys (no-op).
+   *
+   * @param key - The cache key to evict.
+   */
+  public invalidate(key: string): void {
+    this.cache.delete(key);
+    this.activeFetches.delete(key);
+  }
+
+  /**
+   * Evict every currently-cached entry and cancel any in-flight fetches.
+   * Use sparingly — prefer targeted {@link invalidate} when the set of affected
+   * keys is known.
+   */
+  public clear(): void {
+    this.cache.clear();
+    this.activeFetches.clear();
+  }
+
+  /**
    * Retrieve data from cache or upstream fetcher using SWR strategy.
    *
    * The SWR strategy follows these rules:

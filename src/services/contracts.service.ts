@@ -3,6 +3,7 @@ import { Contract } from '../db/types';
 import type { IContractRepository } from '../repositories/contractRepository';
 import { SorobanService } from './soroban.service';
 import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.types';
+import { ContractCacheService } from './contractCache.service';
 
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
@@ -16,10 +17,15 @@ import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflic
 export class ContractsService {
   private contractRepository: IContractRepository;
   private sorobanService: SorobanService;
+  private cache: ContractCacheService | null;
 
-  constructor(contractRepository: IContractRepository) {
+  constructor(
+    contractRepository: IContractRepository,
+    cache?: ContractCacheService,
+  ) {
     this.sorobanService = new SorobanService();
     this.contractRepository = contractRepository;
+    this.cache = cache ?? null;
   }
 
   /**
@@ -27,6 +33,9 @@ export class ContractsService {
    * @returns Array of contract metadata including version field.
    */
   public async getAllContracts(): Promise<Contract[]> {
+    if (this.cache) {
+      return this.cache.getAllContracts(() => this.contractRepository.findAll());
+    }
     return this.contractRepository.findAll();
   }
 
@@ -36,6 +45,9 @@ export class ContractsService {
    * @returns The contract or undefined if not found.
    */
   public async getContractById(id: string): Promise<Contract | undefined> {
+    if (this.cache) {
+      return this.cache.getContractById(id, () => this.contractRepository.findById(id));
+    }
     return this.contractRepository.findById(id);
   }
 
@@ -48,6 +60,9 @@ export class ContractsService {
   public async getContractsPage(
     input: CursorPaginationInput = {},
   ): Promise<CursorPage<Contract>> {
+    if (this.cache) {
+      return this.cache.getContractsPage(input, () => this.contractRepository.findPage(input));
+    }
     return this.contractRepository.findPage(input);
   }
 
@@ -95,6 +110,8 @@ export class ContractsService {
     } catch (error) {
       console.warn(`[ContractsService] Soroban prepareEscrow failed for contract ${newContract.id}:`, error);
     }
+
+    this.cache?.invalidateLists();
 
     return newContract;
   }
@@ -163,7 +180,12 @@ export class ContractsService {
     if (fields.budget !== undefined) updateFields.amount = fields.budget;
     if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
 
-    return this.contractRepository.updateWithVersion(id, updateFields, version);
+    const updated = await this.contractRepository.updateWithVersion(id, updateFields, version);
+
+    this.cache?.invalidateContract(id);
+    this.cache?.invalidateLists();
+
+    return updated;
   }
 
   /**
@@ -174,13 +196,29 @@ export class ContractsService {
     if (!deleted) {
       throw new NotFoundError(`Contract with id ${id} not found`);
     }
+
+    this.cache?.invalidateContract(id);
+    this.cache?.invalidateLists();
   }
 
   /**
    * Retrieves contract statistics.
    */
   public async getContractStats() {
-    const all = await this.getAllContracts();
+    if (this.cache) {
+      return this.cache.getContractStats(async () => {
+        const all = await this.contractRepository.findAll();
+        return {
+          total: all.length,
+          totalBudget: all.reduce((sum, c) => sum + c.amount, 0),
+          byStatus: all.reduce((acc, c) => {
+            acc[c.status] = (acc[c.status] || 0) + 1;
+            return acc;
+          }, {} as Record<string, number>),
+        };
+      });
+    }
+    const all = await this.contractRepository.findAll();
     const stats = {
       total: all.length,
       totalBudget: all.reduce((sum, c) => sum + c.amount, 0),
