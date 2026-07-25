@@ -22,9 +22,18 @@ import { Router, Request, Response, type RequestHandler } from 'express';
 import { pipeline } from 'stream/promises';
 import { auditService, AuditService } from './service';
 import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
-import type { AuditAction, AuditQuery, AuditSeverity, CreateAuditEntryInput } from './types';
+import type { AuditAction, AuditSeverity } from './types';
 import { decodeCursor } from './types';
 import { idempotencyMiddleware } from '../middleware/idempotency';
+import type { CreateAuditEntryRequestDto, AuditQueryParamsDto } from './dto/audit.dto';
+import {
+  toCreateAuditEntryInput,
+  toAuditQuery,
+  toAuditEntryResponseDto,
+  toAuditQueryResponseDto,
+  toAuditQueryCursorResponseDto,
+  toIntegrityReportResponseDto,
+} from './dto/audit.dto';
 
 export interface AuditRouterOptions {
   service?: AuditService;
@@ -52,55 +61,22 @@ const VALID_ACTIONS = new Set<AuditAction>([
 
 const VALID_SEVERITIES = new Set<AuditSeverity>(['INFO', 'WARNING', 'CRITICAL']);
 
-function parseOptionalIsoDate(
-  value: string | undefined,
-  fieldName: 'from' | 'to',
-): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    throw new Error(`Invalid ${fieldName} timestamp`);
-  }
-
-  return new Date(parsed).toISOString();
-}
-
-function parseOffset(value: string | undefined): number {
-  if (value === undefined) {
-    return 0;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error('Invalid offset');
-  }
-
-  return parsed;
-}
-
-function parseLimit(value: string | undefined, maxLimit: number, defaultLimit?: number): number | undefined {
-  if (value === undefined) {
-    return defaultLimit;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    throw new Error('Invalid limit');
-  }
-
-  return Math.min(parsed, maxLimit);
-}
-
-function parseAuditQuery(
+/**
+ * Extracts and validates the typed {@link AuditQueryParamsDto} from an Express
+ * request, then delegates coercions and ISO-date parsing to {@link toAuditQuery}.
+ *
+ * Action and severity allowlist checks are done here (before DTO conversion) so
+ * the DTO mapper can treat them as already-validated opaque strings.
+ *
+ * @throws {Error} When any query parameter fails validation (action, severity,
+ *                 limit, offset, from, to, or cursor).
+ */
+function parseAuditQueryDto(
   req: Request,
   options: { defaultLimit?: number; maxLimit: number },
-): { query: AuditQuery; limit?: number; offset: number } {
-  const {
-    action, severity, actor, resource, resourceId, cursor,
-  } = req.query as Record<string, string | undefined>;
+): ReturnType<typeof toAuditQuery> {
+  const raw = req.query as Record<string, string | undefined>;
+  const { action, severity } = raw;
 
   if (action && !VALID_ACTIONS.has(action as AuditAction)) {
     throw new Error(`Invalid action: ${action}`);
@@ -110,40 +86,33 @@ function parseAuditQuery(
     throw new Error(`Invalid severity: ${severity}`);
   }
 
-  const limit = parseLimit(req.query['limit'] as string | undefined, options.maxLimit, options.defaultLimit);
-  const offset = parseOffset(req.query['offset'] as string | undefined);
-  const from = parseOptionalIsoDate(req.query['from'] as string | undefined, 'from');
-  const to = parseOptionalIsoDate(req.query['to'] as string | undefined, 'to');
+  const dto: AuditQueryParamsDto = {
+    ...(action !== undefined && { action }),
+    ...(severity !== undefined && { severity }),
+    ...(raw['actor'] !== undefined && { actor: raw['actor'] }),
+    ...(raw['resource'] !== undefined && { resource: raw['resource'] }),
+    ...(raw['resourceId'] !== undefined && { resourceId: raw['resourceId'] }),
+    ...(raw['from'] !== undefined && { from: raw['from'] }),
+    ...(raw['to'] !== undefined && { to: raw['to'] }),
+    ...(raw['limit'] !== undefined && { limit: raw['limit'] }),
+    ...(raw['offset'] !== undefined && { offset: raw['offset'] }),
+    ...(raw['cursor'] !== undefined && { cursor: raw['cursor'] }),
+  };
 
-  // Validate cursor format if provided
-  if (cursor) {
+  // Validate cursor format before delegating — the DTO mapper doesn't decode it
+  if (dto.cursor) {
     try {
-      decodeCursor(cursor);
+      decodeCursor(dto.cursor);
     } catch (_error) {
       throw new Error('Invalid cursor format');
     }
   }
 
-  return {
-    query: {
-      ...(action && { action: action as AuditAction }),
-      ...(severity && { severity: severity as AuditSeverity }),
-      ...(actor && { actor }),
-      ...(resource && { resource }),
-      ...(resourceId && { resourceId }),
-      ...(from && { from }),
-      ...(to && { to }),
-      ...(limit !== undefined && { limit }),
-      offset,
-      ...(cursor && { cursor }),
-    },
-    limit,
-    offset,
-  };
+  return toAuditQuery(dto, options);
 }
 
 /**
- * Runs `parseAuditQuery` and, on failure, writes the shared 400 validation
+ * Runs `parseAuditQueryDto` and, on failure, writes the shared 400 validation
  * response directly instead of throwing. Used by every handler below that
  * accepts query filters, so the "parse, then reject with a 400 on the same
  * shape of error" preamble lives in one place instead of being repeated
@@ -153,9 +122,9 @@ function parseAuditQueryOrRespond(
   req: Request,
   res: Response,
   options: { defaultLimit?: number; maxLimit: number },
-): { query: AuditQuery; limit?: number; offset: number } | undefined {
+): ReturnType<typeof toAuditQuery> | undefined {
   try {
-    return parseAuditQuery(req, options);
+    return parseAuditQueryDto(req, options);
   } catch (error) {
     res.status(400).json({ error: (error as Error).message });
     return undefined;
@@ -182,15 +151,16 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
     ...accessMiddleware,
     (req: Request, res: Response): void => {
       try {
-        const input = req.body as CreateAuditEntryInput;
+        const dto = req.body as CreateAuditEntryRequestDto;
 
-        if (!input.action || !input.severity || !input.actor || !input.resource || !input.resourceId) {
+        if (!dto.action || !dto.severity || !dto.actor || !dto.resource || !dto.resourceId) {
           res.status(400).json({ error: 'Missing required fields: action, severity, actor, resource, resourceId' });
           return;
         }
 
+        const input = toCreateAuditEntryInput(dto);
         const entry = service.log(input);
-        res.status(201).json(entry);
+        res.status(201).json(toAuditEntryResponseDto(entry));
       } catch (error) {
         res.status(500).json({ error: (error as Error).message });
       }
@@ -208,18 +178,13 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
     // Use cursor-based pagination if cursor is provided, otherwise use legacy offset
     if (query.cursor) {
       const result = service.queryWithCursor(query);
-      res.json({ 
-        entries: result.entries, 
-        count: result.count, 
-        limit: result.limit,
-        nextCursor: result.nextCursor,
-      });
+      res.json(toAuditQueryCursorResponseDto(result));
     } else {
       // Legacy offset-based pagination for backward compatibility
       const limit = query.limit ?? 50;
       const offset = query.offset ?? 0;
       const entries = service.query(query);
-      res.json({ entries, count: entries.length, limit, offset });
+      res.json(toAuditQueryResponseDto(entries, limit, offset));
     }
   });
 
@@ -309,7 +274,7 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
   router.get('/integrity', ...accessMiddleware, ...integrityMiddleware, (_req: Request, res: Response): void => {
     const report = service.verifyIntegrity();
     const status = report.valid ? 200 : 409;
-    res.status(status).json(report);
+    res.status(status).json(toIntegrityReportResponseDto(report));
   });
 
 /**
@@ -322,7 +287,7 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
       res.status(404).json({ error: 'Audit entry not found' });
       return;
     }
-    res.json(entry);
+    res.json(toAuditEntryResponseDto(entry));
   });
 
   return router;
