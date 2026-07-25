@@ -37,6 +37,10 @@ import {
   incrementDlqReplay,
 } from "../utils/webhookMetrics";
 import { validateMetricsRequestBody } from "./metrics-validation-handler";
+import {
+  createMetricsIdempotencyMiddleware,
+  MetricsIdempotencyStore,
+} from "../middleware/metricsIdempotency";
 
 /**
  * Format a validation failure into the project's standard error envelope.
@@ -61,11 +65,16 @@ function validationErrorResponse(
  *
  * @param metricsService - The MetricsService instance used to record metrics.
  *   Pass a mock in tests.
+ * @param idempotencyStore - Optional store override for tests.
  */
 export function createMetricsRouter(
   metricsService: MetricsServiceLike,
+  idempotencyStore?: MetricsIdempotencyStore,
 ): Router {
   const router = Router();
+  const idempotency = createMetricsIdempotencyMiddleware(
+    idempotencyStore ? { store: idempotencyStore } : {},
+  );
 
   /**
    * POST /api/v1/metrics/webhook/delivery
@@ -73,7 +82,7 @@ export function createMetricsRouter(
    *
    * Body: { outcome: 'success' | 'failure' | 'dlq' }
    */
-  router.post("/webhook/delivery", (req: Request, res: Response) => {
+  router.post("/webhook/delivery", idempotency, (req: Request, res: Response) => {
     const validation = validateMetricsRequestBody(
       req,
       res,
@@ -103,7 +112,7 @@ export function createMetricsRouter(
    *
    * Body: { depth: number }  (integer, 0..10_000_000)
    */
-  router.post("/webhook/dlq-depth", (req: Request, res: Response) => {
+  router.post("/webhook/dlq-depth", idempotency, (req: Request, res: Response) => {
     const validation = validateMetricsRequestBody(
       req,
       res,
@@ -133,7 +142,7 @@ export function createMetricsRouter(
    *
    * Body: { status: 'up' | 'degraded' | 'down' }
    */
-  router.post("/health-status", (req: Request, res: Response) => {
+  router.post("/health-status", idempotency, (req: Request, res: Response) => {
     const validation = validateMetricsRequestBody(
       req,
       res,
@@ -163,7 +172,7 @@ export function createMetricsRouter(
    *
    * Body: { operation: 'enqueue' | 'drop_overflow' | 'drop_poison' }
    */
-  router.post("/dlq/operation", (req: Request, res: Response) => {
+  router.post("/dlq/operation", idempotency, (req: Request, res: Response) => {
     const validation = validateMetricsRequestBody(
       req,
       res,
@@ -193,7 +202,7 @@ export function createMetricsRouter(
    *
    * Body: { outcome: 'success' | 'failed' | 'idempotent_noop' | 'error' }
    */
-  router.post("/dlq/replay", (req: Request, res: Response) => {
+  router.post("/dlq/replay", idempotency, (req: Request, res: Response) => {
     const validation = validateMetricsRequestBody(
       req,
       res,
