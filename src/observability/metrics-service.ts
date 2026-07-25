@@ -271,7 +271,7 @@ function resolveHistogramBuckets(buckets: number[] | undefined): number[] {
   const result = validateHistogramBuckets(buckets);
   if (!result.valid) {
     console.warn(
-      `[MetricsService] Invalid histogramBuckets option (${result.reason}); falling back to defaults.`,
+      `[MetricsService] Invalid histogramBuckets option; falling back to defaults.`,
     );
     return [...DEFAULT_HISTOGRAM_BUCKETS];
   }
