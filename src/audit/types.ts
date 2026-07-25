@@ -29,7 +29,10 @@ export type AuditAction =
   | 'ENDPOINT_ACCESS'
   | 'ENDPOINT_MUTATION'
   | 'DEPLOYMENT_PROMOTED'
-  | 'DEPLOYMENT_ROLLED_BACK';
+  | 'DEPLOYMENT_ROLLED_BACK'
+  | 'MILESTONES_CREATED'
+  | 'MILESTONES_UPDATED'
+  | 'MILESTONES_DELETED';
 
 /** Severity level of the audit event. */
 export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL';

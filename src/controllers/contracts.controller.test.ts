@@ -36,12 +36,14 @@ describe('ContractsController', () => {
   let mockResponse: Partial<Response>;
   let mockNext: NextFunction;
   let controller: ContractsController;
+  let mockAuditService: { log: jest.Mock; query: jest.Mock; queryWithCursor: jest.Mock };
 
   beforeEach(() => {
     mockRequest = {
       body: { title: 'Test Contract' },
       query: {},
       params: {},
+      headers: {},
     };
     mockResponse = {
       status: jest.fn().mockReturnThis(),
@@ -58,8 +60,14 @@ describe('ContractsController', () => {
     mockDeleteContract.mockClear();
     mockGetContractStats.mockClear();
 
+    mockAuditService = {
+      log: jest.fn(),
+      query: jest.fn().mockReturnValue([]),
+      queryWithCursor: jest.fn().mockReturnValue({ entries: [], count: 0, limit: 20 }),
+    };
+
     const { ContractsService } = require('../services/contracts.service');
-    controller = new ContractsController(new ContractsService());
+    controller = new ContractsController(new ContractsService(), mockAuditService);
   });
 
   afterEach(() => {
@@ -521,6 +529,88 @@ describe('ContractsController', () => {
       );
       expect(mockNext).toHaveBeenCalledWith(mockError);
     });
+
+    // ─── Milestones audit trail (issue #858) ──────────────────────────────
+
+    it('records a MILESTONES_CREATED audit entry when the payload includes milestones', async () => {
+      const contract = { id: 'contract-1', status: 'draft' };
+      mockCreateContract.mockResolvedValue(contract);
+      mockRequest.body = {
+        title: 'Test Contract',
+        milestones: [{ title: 'Kickoff', description: 'Start', amount: 1000, completed: false }],
+      };
+      (mockRequest as unknown as { user: { id: string } }).user = { id: 'user-42' };
+
+      await controller.createContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).toHaveBeenCalledTimes(1);
+      const entry = mockAuditService.log.mock.calls[0][0];
+      expect(entry).toMatchObject({
+        action: 'MILESTONES_CREATED',
+        severity: 'INFO',
+        actor: 'user-42',
+        resource: 'milestones',
+        resourceId: 'contract-1',
+      });
+      expect(entry.metadata.before).toBeNull();
+      expect(entry.metadata.after).toMatchObject({ count: 1, totalAmount: 1000 });
+    });
+
+    it('falls back to actor "system" when the request has no authenticated user', async () => {
+      const contract = { id: 'contract-2', status: 'draft' };
+      mockCreateContract.mockResolvedValue(contract);
+      mockRequest.body = {
+        title: 'Test Contract',
+        milestones: [{ title: 'Kickoff', description: 'Start', amount: 100, completed: false }],
+      };
+
+      await controller.createContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ actor: 'system' }),
+      );
+    });
+
+    it('does not record an audit entry when the payload has no milestones', async () => {
+      const contract = { id: 'contract-3', status: 'draft' };
+      mockCreateContract.mockResolvedValue(contract);
+      mockRequest.body = { title: 'Test Contract' };
+
+      await controller.createContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).not.toHaveBeenCalled();
+    });
+
+    it('redacts secret-shaped values inside a milestone title before logging', async () => {
+      const contract = { id: 'contract-4', status: 'draft' };
+      mockCreateContract.mockResolvedValue(contract);
+      mockRequest.body = {
+        title: 'Test Contract',
+        milestones: [{ title: 'owner@example.com', description: 'x', amount: 100, completed: false }],
+      };
+
+      await controller.createContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      const entry = mockAuditService.log.mock.calls[0][0];
+      expect(entry.metadata.after.items[0].title).toBe('own***@example.com');
+    });
+
+    it('still returns 201 to the caller even if audit logging throws', async () => {
+      const contract = { id: 'contract-5', status: 'draft' };
+      mockCreateContract.mockResolvedValue(contract);
+      mockAuditService.log.mockImplementation(() => {
+        throw new Error('audit store unavailable');
+      });
+      mockRequest.body = {
+        title: 'Test Contract',
+        milestones: [{ title: 'Kickoff', description: 'Start', amount: 100, completed: false }],
+      };
+
+      await controller.createContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockResponse.status).toHaveBeenCalledWith(201);
+      expect(mockNext).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -565,6 +655,92 @@ describe('ContractsController', () => {
       );
       expect(mockNext).toHaveBeenCalledWith(error);
     });
+
+    // ─── Milestones audit trail (issue #858) ──────────────────────────────
+
+    it('does not record an audit entry when the patch does not touch milestones', async () => {
+      mockUpdateContract.mockResolvedValue({ id: 'abc', title: 'Updated' });
+      mockRequest.params = { id: 'abc' };
+      mockRequest.body = { version: 1, title: 'Updated' };
+
+      await controller.updateContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).not.toHaveBeenCalled();
+    });
+
+    it('records MILESTONES_CREATED when this is the first milestones write for the contract', async () => {
+      mockUpdateContract.mockResolvedValue({ id: 'abc', title: 'Updated' });
+      mockAuditService.query.mockReturnValue([]); // no prior milestones snapshot
+      mockRequest.params = { id: 'abc' };
+      mockRequest.body = {
+        version: 1,
+        milestones: [{ title: 'First MS', description: 'x', amount: 500, completed: false }],
+      };
+
+      await controller.updateContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'MILESTONES_CREATED', resourceId: 'abc' }),
+      );
+    });
+
+    it('records MILESTONES_UPDATED when milestones content changed relative to the last snapshot', async () => {
+      mockUpdateContract.mockResolvedValue({ id: 'abc', title: 'Updated' });
+      mockAuditService.query.mockReturnValue([
+        {
+          metadata: {
+            after: { count: 1, totalAmount: 100, truncated: false, items: [{ title: 'Old', amount: 100, completed: false }] },
+          },
+        },
+      ]);
+      mockRequest.params = { id: 'abc' };
+      mockRequest.body = {
+        version: 1,
+        milestones: [{ title: 'New', description: 'x', amount: 200, completed: false }],
+      };
+
+      await controller.updateContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      const entry = mockAuditService.log.mock.calls[0][0];
+      expect(entry.action).toBe('MILESTONES_UPDATED');
+      expect(entry.severity).toBe('INFO');
+      expect(entry.metadata.before.items[0].title).toBe('Old');
+      expect(entry.metadata.after.items[0].title).toBe('New');
+    });
+
+    it('records a WARNING-severity MILESTONES_DELETED entry when milestones are cleared to an empty array', async () => {
+      mockUpdateContract.mockResolvedValue({ id: 'abc', title: 'Updated' });
+      mockAuditService.query.mockReturnValue([
+        {
+          metadata: {
+            after: { count: 1, totalAmount: 100, truncated: false, items: [{ title: 'Old', amount: 100, completed: false }] },
+          },
+        },
+      ]);
+      mockRequest.params = { id: 'abc' };
+      mockRequest.body = { version: 1, milestones: [] };
+
+      await controller.updateContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'MILESTONES_DELETED', severity: 'WARNING' }),
+      );
+    });
+
+    it('does not record a no-op audit entry when the resubmitted milestones are unchanged', async () => {
+      const identical = { count: 1, totalAmount: 100, truncated: false, items: [{ title: 'Same', amount: 100, completed: false }] };
+      mockUpdateContract.mockResolvedValue({ id: 'abc', title: 'Updated' });
+      mockAuditService.query.mockReturnValue([{ metadata: { after: identical } }]);
+      mockRequest.params = { id: 'abc' };
+      mockRequest.body = {
+        version: 1,
+        milestones: [{ title: 'Same', description: 'x', amount: 100, completed: false }],
+      };
+
+      await controller.updateContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -592,6 +768,110 @@ describe('ContractsController', () => {
         mockResponse as Response,
         mockNext,
       );
+      expect(mockNext).toHaveBeenCalledWith(error);
+    });
+
+    // ─── Milestones audit trail (issue #858) ──────────────────────────────
+
+    it('records a MILESTONES_DELETED audit entry when the deleted contract had a recorded milestones snapshot', async () => {
+      mockDeleteContract.mockResolvedValue(undefined);
+      mockAuditService.query.mockReturnValue([
+        {
+          metadata: {
+            after: { count: 1, totalAmount: 100, truncated: false, items: [{ title: 'Old', amount: 100, completed: false }] },
+          },
+        },
+      ]);
+      mockRequest.params = { id: 'abc' };
+
+      await controller.deleteContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'MILESTONES_DELETED',
+          severity: 'WARNING',
+          resource: 'milestones',
+          resourceId: 'abc',
+        }),
+      );
+      const entry = mockAuditService.log.mock.calls[0][0];
+      expect(entry.metadata.after).toBeNull();
+    });
+
+    it('does not record an audit entry when the deleted contract never had a milestones snapshot', async () => {
+      mockDeleteContract.mockResolvedValue(undefined);
+      mockAuditService.query.mockReturnValue([]);
+      mockRequest.params = { id: 'abc' };
+
+      await controller.deleteContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).not.toHaveBeenCalled();
+    });
+
+    it('does not record an audit entry when contract deletion fails (404)', async () => {
+      mockDeleteContract.mockRejectedValue(new Error('not found'));
+      mockRequest.params = { id: 'abc' };
+
+      await controller.deleteContract(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.log).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getMilestonesAuditLog
+  // -------------------------------------------------------------------------
+
+  describe('getMilestonesAuditLog', () => {
+    it('returns 404 when the contract does not exist', async () => {
+      mockGetContractById.mockResolvedValue(undefined);
+      mockRequest.params = { id: 'ghost' };
+
+      await controller.getMilestonesAuditLog(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockNext).toHaveBeenCalled();
+      const err = (mockNext as jest.Mock).mock.calls[0][0];
+      expect(err.message).toMatch(/not found/i);
+    });
+
+    it('returns a bounded, cursor-paginated page of milestones audit entries newest-first', async () => {
+      mockGetContractById.mockResolvedValue({ id: 'abc' });
+      const older = { id: 'e1', timestamp: '2026-01-01T00:00:00.000Z' };
+      const newer = { id: 'e2', timestamp: '2026-01-02T00:00:00.000Z' };
+      mockAuditService.queryWithCursor.mockReturnValue({ entries: [older, newer], count: 2, limit: 20 });
+      mockRequest.params = { id: 'abc' };
+      mockRequest.query = {};
+
+      await controller.getMilestonesAuditLog(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.queryWithCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ resource: 'milestones', resourceId: 'abc', limit: 20 }),
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      const body = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(body.data.entries).toEqual([newer, older]);
+    });
+
+    it('honours a custom limit query parameter', async () => {
+      mockGetContractById.mockResolvedValue({ id: 'abc' });
+      mockAuditService.queryWithCursor.mockReturnValue({ entries: [], count: 0, limit: 5 });
+      mockRequest.params = { id: 'abc' };
+      mockRequest.query = { limit: '5' };
+
+      await controller.getMilestonesAuditLog(mockRequest as Request, mockResponse as Response, mockNext);
+
+      expect(mockAuditService.queryWithCursor).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 5 }),
+      );
+    });
+
+    it('delegates repository errors to next()', async () => {
+      const error = new Error('boom');
+      mockGetContractById.mockRejectedValue(error);
+      mockRequest.params = { id: 'abc' };
+
+      await controller.getMilestonesAuditLog(mockRequest as Request, mockResponse as Response, mockNext);
+
       expect(mockNext).toHaveBeenCalledWith(error);
     });
   });
