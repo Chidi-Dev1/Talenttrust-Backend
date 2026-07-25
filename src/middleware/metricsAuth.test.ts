@@ -16,6 +16,8 @@ import express, { Request, Response } from "express";
 import request from "supertest";
 import { metricsAuthMiddleware } from "./metricsAuth";
 
+
+
 function buildApp() {
   const app = express();
   app.get("/metrics", metricsAuthMiddleware, (_req: Request, res: Response) => {

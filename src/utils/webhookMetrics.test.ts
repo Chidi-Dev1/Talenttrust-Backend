@@ -55,6 +55,13 @@ describe('webhookMetrics DLQ counters', () => {
     });
   });
 
+  describe('incrementDlqOperation error handling', () => {
+    it('throws TypeError for invalid operation', () => {
+      expect(() => incrementDlqOperation('invalid' as any)).toThrow(TypeError);
+      expect(() => incrementDlqOperation('invalid' as any)).toThrow('Invalid DLQ operation');
+    });
+  });
+
   describe('incrementDlqReplay', () => {
     it('increments success counter', async () => {
       incrementDlqReplay('success');
@@ -105,6 +112,13 @@ describe('webhookMetrics DLQ counters', () => {
       expect(() => incrementDlqReplay('invalid_outcome' as any)).toThrow(
         'Invalid DLQ replay outcome',
       );
+    });
+  });
+
+  describe('incrementDlqReplay error handling', () => {
+    it('throws TypeError for invalid outcome', () => {
+      expect(() => incrementDlqReplay('invalid' as any)).toThrow(TypeError);
+      expect(() => incrementDlqReplay('invalid' as any)).toThrow('Invalid DLQ replay outcome');
     });
   });
 });
