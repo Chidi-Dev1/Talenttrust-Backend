@@ -237,6 +237,21 @@ export const rateLimitConfig = {
   } satisfies RateLimiterConfig,
 
   /**
+   * Webhooks API tier: webhook subscription endpoints
+   * Moderate limit to deter abuse of the webhook management API.
+   */
+  webhooksApi: {
+    maxRequests: toCount(process.env.RL_WEBHOOKS_MAX, 100),
+    windowMs: toMs(process.env.RL_WEBHOOKS_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_WEBHOOKS_ABUSE_THRESHOLD, 5),
+    blockWindowMs: toMs(process.env.RL_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_MAX_BLOCK_MS, 86_400_000),
+    sendHeaders: true,
+    ...sharedStore,
+  } satisfies RateLimiterConfig,
+
+  /**
    * Webhook token bucket configuration for rate limiting outbound webhook deliveries.
    */
   webhook: {

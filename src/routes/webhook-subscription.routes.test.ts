@@ -56,6 +56,9 @@
 // Set env vars before any module import so singletons pick them up
 process.env.JWT_SECRET = 'webhook-routes-test-secret';
 process.env.DB_PATH = ':memory:';
+process.env.RL_WEBHOOKS_MAX = '10';
+process.env.RL_WEBHOOKS_WINDOW_MS = '1000'; // 1 second window for fast tests
+process.env.RL_WEBHOOKS_ABUSE_THRESHOLD = '2'; // block after 2 violations
 
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
@@ -63,6 +66,7 @@ import crypto from 'crypto';
 import { createApp } from '../app';
 import { getDb, closeDb } from '../db/database';
 import { clearIdempotencyStore } from '../middleware/idempotency';
+import { rateLimitStore } from '../config/rateLimit';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -109,6 +113,7 @@ beforeAll(() => {
 beforeEach(() => {
   getDb().exec('DELETE FROM webhook_subscriptions');
   clearIdempotencyStore();
+  rateLimitStore.clear();
 });
 
 afterAll(() => {
@@ -1019,3 +1024,37 @@ describe('Security and envelope contracts', () => {
     expect([400, 404]).toContain(res.status);
   });
 });
+
+// =============================================================================
+// Rate Limiting
+// =============================================================================
+
+describe('Rate Limiting', () => {
+  it('enforces per-client rate limit and recovers after window resets', async () => {
+    const apiKey = crypto.randomUUID();
+    const headers = {
+      ...auth(adminToken()),
+      'X-API-Key': apiKey,
+    };
+
+    // 1. Make requests up to the limit (max = 10)
+    for (let i = 0; i < 10; i++) {
+      const res = await request(app).get(BASE).set(headers);
+      expect(res.status).toBe(200);
+      expect(res.header['x-ratelimit-remaining']).toBeDefined();
+    }
+
+    // 2. Next request should be rate limited (at-limit/over-limit 429)
+    const res429 = await request(app).get(BASE).set(headers);
+    expect(res429.status).toBe(429);
+    expect(res429.body.error?.code).toBe('rate_limited');
+    expect(res429.header['retry-after']).toBeDefined();
+
+    // 3. Wait for the window to reset (> 1000ms)
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    // 4. Request should succeed again
+    const resRecovered = await request(app).get(BASE).set(headers);
+    expect(resRecovered.status).toBe(200);
+  });
+});
