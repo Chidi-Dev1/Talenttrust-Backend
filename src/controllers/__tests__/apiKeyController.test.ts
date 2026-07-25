@@ -7,6 +7,7 @@ import request from 'supertest';
 import { createApp } from '../../app';
 import { createToken } from '../../auth/authenticate';
 import { database } from '../../database';
+import { defaultIdempotencyStore } from '../../db/idempotencyStore';
 
 describe('API Key Controller', () => {
   let app: any;
@@ -14,6 +15,7 @@ describe('API Key Controller', () => {
 
   beforeEach(async () => {
     await database.clearDatabase();
+    defaultIdempotencyStore.clear();
     app = createApp();
     userToken = createToken('test-user', 'admin');
   });
@@ -342,6 +344,69 @@ describe('API Key Controller', () => {
         .delete(`/api/v1/api-keys/${keyId}`);
 
       expect(response.status).toBe(401);
+    });
+  });
+
+  describe('Idempotency-Key support', () => {
+    it('creates an API key on the first write', async () => {
+      const response = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .set('Idempotency-Key', 'idempotency-create-1')
+        .send({
+          name: 'Idempotent Key',
+          scope: ['contracts:read'],
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.apiKey).toMatch(/^[a-f0-9]{64}$/);
+      expect(response.body.info.name).toBe('Idempotent Key');
+    });
+
+    it('replays the original response on an exact retry', async () => {
+      const payload = {
+        name: 'Idempotent Key',
+        scope: ['contracts:read'],
+      };
+
+      const first = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .set('Idempotency-Key', 'idempotency-create-2')
+        .send(payload);
+
+      const replay = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .set('Idempotency-Key', 'idempotency-create-2')
+        .send(payload);
+
+      expect(replay.status).toBe(first.status);
+      expect(replay.body).toEqual(first.body);
+      expect(replay.headers['idempotency-replayed']).toBe('true');
+    });
+
+    it('returns 409 when the key is reused with a different body', async () => {
+      await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .set('Idempotency-Key', 'idempotency-conflict')
+        .send({
+          name: 'First',
+          scope: ['contracts:read'],
+        });
+
+      const conflict = await request(app)
+        .post('/api/v1/api-keys')
+        .set('Authorization', `Bearer ${userToken}`)
+        .set('Idempotency-Key', 'idempotency-conflict')
+        .send({
+          name: 'Second',
+          scope: ['contracts:read'],
+        });
+
+      expect(conflict.status).toBe(409);
+      expect(conflict.body.error?.code).toBe('conflict');
     });
   });
 });

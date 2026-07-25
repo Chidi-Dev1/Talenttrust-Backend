@@ -16,6 +16,7 @@ import {
   rotateApiKeyController,
   deactivateApiKeyController
 } from '../controllers/apiKeyController';
+import { apiKeysIdempotencyMiddleware } from '../middleware/apiKeysIdempotency';
 
 const router = Router();
 
@@ -51,6 +52,7 @@ router.post(
   '/api-keys',
   authenticateMiddleware,
   requirePermission('api-keys', 'create'),
+  apiKeysIdempotencyMiddleware(),
   createApiKeyController
 );
 
@@ -144,6 +146,7 @@ router.post(
   '/api-keys/:id/rotate',
   authenticateMiddleware,
   requirePermission('api-keys', 'update'),
+  apiKeysIdempotencyMiddleware(),
   rotateApiKeyController
 );
 
@@ -161,6 +164,7 @@ router.delete(
   '/api-keys/:id',
   authenticateMiddleware,
   requirePermission('api-keys', 'delete'),
+  apiKeysIdempotencyMiddleware(),
   deactivateApiKeyController
 );
 
