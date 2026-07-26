@@ -222,6 +222,22 @@ export const rateLimitConfig = {
   } satisfies RateLimiterConfig,
 
   /**
+   * Milestones tier: contract/milestone CRUD operations.
+   * Per-client rate limiting using API key if available, otherwise IP.
+   * Default: 60 requests per minute (~1 req/s).
+   */
+  milestones: {
+    maxRequests: toCount(process.env.RL_MILESTONES_MAX, 60),
+    windowMs: toMs(process.env.RL_MILESTONES_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_ABUSE_THRESHOLD, 5),
+    blockWindowMs: toMs(process.env.RL_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_MAX_BLOCK_MS, 86_400_000),
+    sendHeaders: true,
+    ...sharedStore,
+  } satisfies RateLimiterConfig,
+
+  /**
    * Disputes tier: dispute creation, resolution, and management.
    * Write-heavy endpoints with moderate limits (~5 req/s).
    */
