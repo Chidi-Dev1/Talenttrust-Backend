@@ -13,36 +13,28 @@
  * - In production these routes MUST be protected by authentication and
  *   role-based authorisation (admin/auditor roles only).
  * - Query parameters are validated and clamped to prevent abuse.
- * - All routes are rate-limited per client (issue #746): `accessMiddleware`
- *   carries the general `audit` tier, `/export` additionally gets the
- *   `auditExport` tier via `exportMiddleware`, and `/integrity` additionally
- *   gets the stricter `auditIntegrity` tier via `integrityMiddleware` — see
- *   `rateLimitConfig` in `src/config/rateLimit.ts`.
- * - Write bodies are validated and bounded by `./inputValidation` before they
- *   reach the store; see that module for the enforced limits.
+ * - The integrity endpoint should be rate-limited to prevent DoS on large logs.
+ *
+ * POST /api/v1/audit — Idempotent audit write
+ * - Accepts Idempotency-Key header for idempotent writes.
+ * - Replays the original response on key reuse; returns 409 on body mismatch.
+ * - Keys expire after 24 hours; store is bounded to 1000 entries.
  */
 
 import { Router, Request, Response, type RequestHandler } from 'express';
 import { pipeline } from 'stream/promises';
 import { auditService, AuditService } from './service';
 import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
-import type { AuditAction, AuditQuery, AuditSeverity } from './types';
-import { AUDIT_ACTIONS, AUDIT_SEVERITIES, decodeCursor } from './types';
-import { idempotencyMiddleware } from '../middleware/idempotency';
-import { readValidatedBody, validateCreateAuditEntry } from './inputValidation';
+import { idempotencyStore, hashIdempotencyInput } from './idempotency';
+import type { AuditAction, AuditQuery, AuditSeverity, CreateAuditEntryInput } from './types';
+import { decodeCursor } from './types';
 
 export interface AuditRouterOptions {
   service?: AuditService;
   exportService?: AuditExportService;
   accessMiddleware?: RequestHandler[];
   exportMiddleware?: RequestHandler[];
-  /**
-   * Middleware applied only to `GET /integrity`, in addition to
-   * `accessMiddleware`. Verifying the hash chain walks the entire audit
-   * log, so this endpoint gets its own (tighter) rate limiter — see
-   * `rateLimitConfig.auditIntegrity` in `src/config/rateLimit.ts`.
-   */
-  integrityMiddleware?: RequestHandler[];
+  idempotencyStore?: typeof idempotencyStore;
 }
 
 // Derived from the canonical lists in `./types` so query filters accept exactly
@@ -129,43 +121,7 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
   const exportService = options.exportService ?? auditExportService;
   const accessMiddleware = options.accessMiddleware ?? [];
   const exportMiddleware = options.exportMiddleware ?? [];
-  const integrityMiddleware = options.integrityMiddleware ?? [];
-
-  /**
-   * POST /api/v1/audit
-   * Append a new entry to the audit log.
-   *
-   * The body is validated by the {@link validateCreateAuditEntry} middleware,
-   * which rejects unknown fields, wrong types, unbounded strings and oversized
-   * or over-nested metadata before anything reaches the store — entries are
-   * immutable and hash-chained, so an accepted mistake is permanent.
-   *
-   * Middleware order matters. Validation runs *before* `idempotencyMiddleware`
-   * because that middleware caches whatever the handler sends and replays it
-   * with a 200 on retry; letting a rejected body through would cache a 400 and
-   * replay it as a success. Rejected requests therefore never reach the
-   * idempotency layer, and a corrected retry under the same key still works.
-   *
-   * Accepts an `Idempotency-Key` header so a retried write is deduplicated
-   * rather than appended twice.
-   *
-   * @body {CreateAuditEntryInput} action, severity, actor, resource, resourceId,
-   *   optional metadata (defaults to `{}`), ipAddress and correlationId.
-   * @returns 201 - The created AuditEntry, including its hash chain fields.
-   * @returns 200 - The cached entry, when an Idempotency-Key is replayed.
-   * @returns 400 - `validation_error` envelope with one `details` entry per problem.
-   * @returns 409 - The Idempotency-Key was reused with a different payload.
-   */
-  router.post(
-    '/',
-    ...accessMiddleware,
-    validateCreateAuditEntry,
-    idempotencyMiddleware,
-    (_req: Request, res: Response): void => {
-      const entry = service.log(readValidatedBody(res));
-      res.status(201).json(entry);
-    },
-  );
+  const store = options.idempotencyStore ?? idempotencyStore;
 
   router.get('/', ...accessMiddleware, (req: Request, res: Response): void => {
     const parsed = parseAuditQueryOrRespond(req, res, { defaultLimit: 50, maxLimit: 100 });
@@ -264,6 +220,106 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
         await exportResult.cleanup();
       }
     }
+  });
+
+/**
+ * POST /api/v1/audit
+ * Idempotent audit write. Accepts an Idempotency-Key header to prevent
+ * duplicate entries from retried requests.
+ *
+ * On first write with a given key: creates the entry and returns 201.
+ * On replay (same key, same body): returns 200 with the original entry.
+ * On conflict (same key, different body): returns 409.
+ *
+ * Idempotency keys expire after 24 hours. The store is bounded to 1000 entries.
+ */
+  router.post('/', ...accessMiddleware, (req: Request, res: Response): void => {
+    const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+
+    if (idempotencyKey === undefined || idempotencyKey === null) {
+      res.status(400).json({ error: 'Idempotency-Key header is required' });
+      return;
+    }
+
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 1 || idempotencyKey.length > 128) {
+      res.status(400).json({ error: 'Idempotency-Key must be a string between 1 and 128 characters' });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+
+    if (!body || typeof body !== 'object') {
+      res.status(400).json({ error: 'Request body is required' });
+      return;
+    }
+
+    const action = body['action'];
+    const severity = body['severity'];
+    const actor = body['actor'];
+    const resource = body['resource'];
+    const resourceId = body['resourceId'];
+    const metadata = body['metadata'] ?? {};
+
+    if (!VALID_ACTIONS.has(action as AuditAction)) {
+      res.status(400).json({ error: `Invalid action: ${String(action)}` });
+      return;
+    }
+
+    if (!VALID_SEVERITIES.has(severity as AuditSeverity)) {
+      res.status(400).json({ error: `Invalid severity: ${String(severity)}` });
+      return;
+    }
+
+    if (typeof actor !== 'string' || actor.length === 0) {
+      res.status(400).json({ error: 'actor is required and must be a non-empty string' });
+      return;
+    }
+
+    if (typeof resource !== 'string' || resource.length === 0) {
+      res.status(400).json({ error: 'resource is required and must be a non-empty string' });
+      return;
+    }
+
+    if (typeof resourceId !== 'string' || resourceId.length === 0) {
+      res.status(400).json({ error: 'resourceId is required and must be a non-empty string' });
+      return;
+    }
+
+    if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+      res.status(400).json({ error: 'metadata must be a plain object' });
+      return;
+    }
+
+    const input: CreateAuditEntryInput = {
+      action: action as AuditAction,
+      severity: severity as AuditSeverity,
+      actor,
+      resource,
+      resourceId,
+      metadata: metadata as Record<string, unknown>,
+      ipAddress: req.ip ?? req.socket?.remoteAddress,
+      correlationId: typeof res.locals['requestId'] === 'string'
+        ? res.locals['requestId']
+        : (req.headers['x-correlation-id'] as string | undefined),
+    };
+
+    const existing = store.get(idempotencyKey);
+
+    if (existing) {
+      const currentHash = hashIdempotencyInput(input);
+
+      if (existing.bodyHash !== currentHash) {
+        res.status(409).json({ error: 'Idempotency-Key already used with a different request body' });
+        return;
+      }
+
+      res.status(200).json(existing.response);
+      return;
+    }
+
+    const entry = service.log(input);
+    store.set(idempotencyKey, input, entry);
+    res.status(201).json(entry);
   });
 
 /**
