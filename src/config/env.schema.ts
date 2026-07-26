@@ -307,25 +307,36 @@ export const envSchema = z.object({
 
   SENDGRID_API_KEY: z.string().optional(),
 
-  // Auth Cache Configuration
-  AUTH_CACHE_TTL_MS: z.string()
-    .default('5000')
-    .transform((val) => parseInt(val, 10))
-    .pipe(z.number().int().positive('AUTH_CACHE_TTL_MS must be greater than 0').max(300_000)),
-  AUTH_CACHE_MAX_ENTRIES: z.string()
-    .default('1000')
-    .transform((val) => parseInt(val, 10))
-    .pipe(z.number().int().positive('AUTH_CACHE_MAX_ENTRIES must be greater than 0').max(100_000)),
-
-  // Audit Cache Configuration
-  AUDIT_CACHE_TTL_MS: z.string()
-    .default('10000')
-    .transform((val) => parseInt(val, 10))
-    .pipe(z.number().int().positive('AUDIT_CACHE_TTL_MS must be greater than 0').max(300_000)),
-  AUDIT_CACHE_MAX_ENTRIES: z.string()
-    .default('500')
-    .transform((val) => parseInt(val, 10))
-    .pipe(z.number().int().positive('AUDIT_CACHE_MAX_ENTRIES must be greater than 0').max(100_000)),
+  // ── Retention Policy Overrides ────────────────────────────────────────────
+  // JSON object mapping DataEntityType → RetentionPeriod.
+  // Example: '{"contract":"2y","transaction":"1y","audit_log":"indefinite"}'
+  // Overrides are merged on top of built-in defaults at startup.
+  // Values below the per-entity legal minimum are rejected at startup.
+  RETENTION_OVERRIDES: z.string()
+    .optional()
+    .refine((val) => {
+      if (val === undefined || val === '') return true;
+      try {
+        const parsed = JSON.parse(val);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+        const validEntityTypes = ['contract', 'user_profile', 'transaction', 'audit_log', 'document', 'message'];
+        const validPeriods = ['30d', '90d', '6m', '1y', '2y', 'indefinite'];
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!validEntityTypes.includes(key)) return false;
+          if (!validPeriods.includes(value as string)) return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    }, {
+      message: 'RETENTION_OVERRIDES must be a JSON object mapping DataEntityType (contract|user_profile|transaction|audit_log|document|message) to RetentionPeriod (30d|90d|6m|1y|2y|indefinite)',
+    })
+    .transform((val) => {
+      if (val === undefined || val === '') return undefined;
+      return JSON.parse(val) as Record<string, string>;
+    })
+    .pipe(z.record(z.string(), z.string()).optional()),
 }).superRefine((obj, ctx) => {
   const requireForEmailProvider = (field: keyof typeof obj, message: string): void => {
     if (!obj[field]) {
