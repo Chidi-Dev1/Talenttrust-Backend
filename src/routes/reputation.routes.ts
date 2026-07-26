@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { ReputationController } from '../controllers/reputation.controller';
 import { registry } from '../docs/openapi-registry';
-import { updateReputationSchema, bulkReputationSchema } from '../modules/reputation/dto/reputation.dto';
+import {
+  updateReputationSchema,
+  reputationParamsSchema,
+} from '../modules/reputation/dto/reputation.dto';
 import { validateSchema } from '../middleware/validate.middleware';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { requireAuth, requirePermission } from '../middleware/authorization';
@@ -92,8 +95,12 @@ registry.registerPath({
 
 // GET /api/v1/reputation/:id - Retrieve reputation for a freelancer
 // All authenticated roles (admin, client, freelancer) may read reviews.
-// Supports optional cursor-based pagination via ?cursor=&limit= query params.
-router.get('/:id', requirePermission('reviews', 'read'), ReputationController.getProfile);
+router.get(
+  '/:id',
+  requirePermission('reviews', 'read'),
+  validateSchema(z.object({ params: reputationParamsSchema })),
+  ReputationController.getProfile
+);
 
 /**
  * POST /api/v1/reputation/:id/rate
@@ -143,31 +150,13 @@ registry.registerPath({
   }
 });
 
-export function createReputationRouter(
-  options: ReputationObservabilityOptions = {},
-): Router {
-  const router = Router();
-
-  // Run before auth and validation so 401/400 responses are observable too.
-  router.use(createReputationObservabilityMiddleware(options));
-  router.use(requireAuth);
-
-  // GET /api/v1/reputation/:id - Retrieve reputation for a freelancer
-  // All authenticated roles (admin, client, freelancer) may read reviews.
-  router.get('/:id', requirePermission('reviews', 'read'), ReputationController.getProfile);
-
-  // PUT /api/v1/reputation/:id - Submit a reputation review for a freelancer.
-  // Requires 'reviews.create' permission — granted to admin, client, freelancer.
-  router.put(
-    '/:id',
-    requirePermission('reviews', 'create'),
-    validateSchema(z.object({ body: updateReputationSchema, params: z.object({ id: z.string().min(1) }) })),
-    ReputationController.createRating
-  );
-
-  return router;
-}
-
-const router = createReputationRouter();
+// PUT /api/v1/reputation/:id - Submit a reputation review for a freelancer.
+// Requires 'reviews.create' permission — granted to admin, client, freelancer.
+router.put(
+  '/:id',
+  requirePermission('reviews', 'create'),
+  validateSchema(z.object({ body: updateReputationSchema, params: reputationParamsSchema })),
+  ReputationController.createRating
+);
 
 export default router;
