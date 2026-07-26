@@ -17,10 +17,58 @@ const adminToken = jwt.sign(
 const adminAuth = { Authorization: `Bearer ${adminToken}` };
 
 describe('API integration (smoke)', () => {
-  it('GET /health is public', async () => {
-    const res = await request(app).get('/health');
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: 'ok', service: 'talenttrust-backend' });
+  describe('health endpoint', () => {
+    it('returns a successful health response', async () => {
+      const res = await request(app).get('/health');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        status: 'ok',
+        service: 'talenttrust-backend',
+      });
+    });
+
+    it('returns a not-found error for an unknown health path', async () => {
+      const res = await request(app).get('/health/unknown');
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({
+        error: expect.objectContaining({
+          code: 'not_found',
+          message: expect.any(String),
+          requestId: expect.any(String),
+        }),
+      });
+    });
+
+    it('returns a validation error envelope for malformed JSON input', async () => {
+      const res = await request(app)
+        .get('/health')
+        .set('Content-Type', 'application/json')
+        .send('{');
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        error: expect.objectContaining({
+          code: 'invalid_json',
+          message: expect.any(String),
+          requestId: expect.any(String),
+        }),
+      });
+    });
+
+    it('returns the same successful response when health is requested repeatedly', async () => {
+      const first = await request(app).get('/health');
+      const second = await request(app).get('/health');
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.body).toEqual(first.body);
+      expect(second.body).toEqual({
+        status: 'ok',
+        service: 'talenttrust-backend',
+      });
+    });
   });
 
   it('GET /api/v1/contracts returns success', async () => {
