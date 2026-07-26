@@ -60,7 +60,8 @@ const AUDIT_ACTIONS = [
   'AUTH_LOGIN', 'AUTH_LOGOUT', 'AUTH_FAILED',
   'ADMIN_ACTION',
   'ENDPOINT_ACCESS', 'ENDPOINT_MUTATION',
-] as const satisfies readonly AuditAction[];
+  'DISPUTE_CREATED', 'DISPUTE_UPDATED', 'DISPUTE_DELETED',
+]);
 
 const AUDIT_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const satisfies readonly AuditSeverity[];
 
