@@ -503,3 +503,6 @@ describe('label cardinality guard', () => {
     expect(labelNames).toHaveLength(1);
   });
 });
+});
+});
+});

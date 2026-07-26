@@ -200,6 +200,36 @@ describe('Milestone success paths', () => {
       .send({ version, milestones: [{ title: 'Updated MS', description: 'Revised', amount: 200 }] });
     expect(patch.status).toBe(200);
   });
+
+  it('returns compressed response when response is above threshold and Accept-Encoding is gzip', async () => {
+    // Generate a large payload by fetching multiple contracts
+    const promises = Array.from({ length: 15 }).map((_, i) =>
+      request(app)
+        .post('/api/v1/contracts')
+        .set({ ...auth(clientToken(CLIENT_ID)), 'Idempotency-Key': randomUUID() })
+        .send({ ...basePayload, title: `Title ${i}`, description: 'A very long description '.repeat(20) })
+    );
+    await Promise.all(promises);
+
+    const res = await request(app)
+      .get('/api/v1/contracts?limit=20')
+      .set({ ...auth(adminToken()), 'Accept-Encoding': 'gzip' });
+      
+    expect(res.status).toBe(200);
+    expect(res.headers['content-encoding']).toBe('gzip');
+  });
+
+  it('returns uncompressed response when response is below threshold', async () => {
+    const milestones = [
+      { title: 'Small MS', description: 'Tiny', amount: 100 }
+    ];
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID(), 'Accept-Encoding': 'gzip' })
+      .send({ ...basePayload, milestones });
+    expect(res.status).toBe(201);
+    expect(res.headers['content-encoding']).toBeUndefined();
+  });
 });
 
 // ─── Not-found paths ──────────────────────────────────────────────────────────

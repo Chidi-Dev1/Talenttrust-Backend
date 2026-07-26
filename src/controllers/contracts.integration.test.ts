@@ -815,3 +815,4 @@ describe('PATCH /api/v1/contracts/:id — numeric range and type bounds', () => 
     expect(res.status).toBe(400);
   });
 });
+});
