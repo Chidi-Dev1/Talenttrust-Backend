@@ -206,7 +206,7 @@ describe('EnvSecret — transform error redaction', () => {
         caught = e;
       }
       expect((caught as Error).message).toMatch(
-        /Configuration Error: Failed to transform key/
+        /Configuration Error: Failed to transform credential/
       );
       expect((caught as Error).message).toMatch(/details omitted/);
     });

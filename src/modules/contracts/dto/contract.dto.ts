@@ -101,6 +101,14 @@ const updateMilestoneSchema = z
   })
   .strict();
 
+// Update contract schema with partial fields for PATCH and OCC version.
+// `.strict()` on both the body and each milestone rejects unrecognized
+// fields (400 validation_error) instead of silently dropping them — this is
+// the write path used to initiate/resolve disputes via `status`.
+// Milestone *count* is intentionally left unbounded here: it's enforced by
+// `validateContractBounds` in the service layer, which returns a 422
+// contract_bounds_error — an established, separately-tested contract this
+// schema must not shadow with an earlier 400.
 /**
  * Schema for the body of POST /api/v1/contracts.
  *

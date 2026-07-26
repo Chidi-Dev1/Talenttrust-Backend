@@ -61,16 +61,17 @@
     "zod": "^3.23.8"
   },
   "overrides": {
+    "brace-expansion": "5.0.8",
     "uuid": "^14.0.0",
     "fast-uri": "^3.1.2",
     "autocannon": {
-      "uuid": "^9.0.0"
+      "uuid": "^11.1.1"
     },
     "hyperid": {
-      "uuid": "^9.0.0"
+      "uuid": "^11.1.1"
     },
     "bullmq": {
-      "uuid": "^9.0.0"
+      "uuid": "^11.1.1"
     }
   },
   "devDependencies": {

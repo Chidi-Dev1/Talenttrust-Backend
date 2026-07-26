@@ -23,8 +23,9 @@
 
 import { Router, Request, Response } from "express";
 import { runHealthCheck } from "./checker";
-import { Probe, ProbeResult, PaginatedHealthResponse } from "./types";
-import { logger as rootLogger } from "../logger";
+import { Probe, HealthResponse, ProbeResult } from "./types";
+import { logger as rootLogger, Logger } from "../logger";
+import type { MetricsServiceLike } from "../observability/metrics-service";
 import { validateQuery } from "../middleware/validation";
 import { HealthQuerySchema, DEFAULT_HEALTH_PAGE_SIZE } from "./validation";
 import {
@@ -51,6 +52,12 @@ export interface HealthRouterOptions {
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
+
+export interface HealthRouterOptions {
+  probes?: Probe[];
+  metricsService?: Pick<MetricsServiceLike, "recordHealthStatus">;
+  log?: Pick<Logger, "info">;
+}
 
 /**
  * Build the health router.
@@ -175,8 +182,11 @@ export function buildHealthRouter(
  */
 function normalizeOptions(
   input: Probe[] | HealthRouterOptions | undefined,
-): Required<Pick<HealthRouterOptions, "probes">> &
-  Pick<HealthRouterOptions, "metricsService" | "log"> {
+): {
+  probes?: Probe[];
+  metricsService?: Pick<MetricsServiceLike, "recordHealthStatus">;
+  log?: Pick<Logger, "info">;
+} {
   if (Array.isArray(input)) {
     return { probes: input };
   }

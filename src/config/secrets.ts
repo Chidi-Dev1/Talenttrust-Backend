@@ -82,7 +82,7 @@ export class EnvSecret<T = string> implements Secret<T> {
       // secret value in the thrown error — a thrown parser error can echo its
       // input.  Only the key name is safe to surface here.
       throw new Error(
-        `Configuration Error: Failed to transform key "${this.key}" - transform threw an error (details omitted to protect value)`
+        `Configuration Error: Failed to transform credential "${this.key}" — details omitted`
       );
     }
   }

@@ -7,6 +7,7 @@
 import { recordQueueOverflow, recordThrottled } from './webhookMetrics';
 import Redis from 'ioredis';
 import { RateLimitStore } from './lib/rateLimitStore';
+import type { TokenBucketEntry } from './lib/rateLimitStore';
 import { loadWebhookTokenBucketConfig } from './config/rateLimit';
 
 /**
@@ -338,7 +339,7 @@ export class TokenBucketLimiter {
   private readonly refillRatePerSec: number;
   private readonly maxQueueDepth: number;
   private readonly store: BucketStore;
-  private readonly legacyStore?: RateLimitStore;
+  private readonly rateLimitStore?: RateLimitStore;
   private readonly queues = new Map<string, Array<() => void>>();
   /** Active drain timers keyed by provider id. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -348,10 +349,15 @@ export class TokenBucketLimiter {
     this.refillRatePerSec = config.refillRatePerSec;
     this.maxQueueDepth = config.maxQueueDepth;
     if (store instanceof RateLimitStore) {
-      this.legacyStore = store;
+      this.rateLimitStore = store;
       this.store = new InMemoryBucketStore(store);
     } else {
-      this.store = store ?? createBucketStore();
+      const bucketStore = store ?? new InMemoryBucketStore();
+      this.store = bucketStore;
+      this.rateLimitStore =
+        bucketStore instanceof InMemoryBucketStore
+          ? bucketStore.underlyingStore
+          : undefined;
     }
   }
 
@@ -462,16 +468,31 @@ export class TokenBucketLimiter {
     this.timers.set(providerId, timer);
   }
 
-  private async drain(providerId: string): Promise<void> {
+  private drain(providerId: string): void {
     const queue = this.queues.get(providerId);
     if (!queue || queue.length === 0) return;
 
     while (queue.length > 0) {
-      const consumed = await this.store.consumeToken(
+      const consumed = this.store.consumeToken(
         providerId,
         this.capacity,
         this.refillRatePerSec,
       );
+      if (consumed instanceof Promise) {
+        void consumed
+          .then((didConsume) => {
+            if (didConsume) {
+              const resolve = queue.shift();
+              this.syncLegacyStoreQueue(providerId, queue);
+              resolve?.();
+            }
+            if (queue.length > 0) this.scheduleDrain(providerId);
+          })
+          .catch(() => {
+            if (queue.length > 0) this.scheduleDrain(providerId);
+          });
+        return;
+      }
       if (!consumed) break;
 
       const resolve = queue.shift();

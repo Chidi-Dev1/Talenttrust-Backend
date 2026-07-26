@@ -33,6 +33,7 @@ import {
   HealthStatusInputSchema,
   DlqOperationInputSchema,
   DlqReplayInputSchema,
+  MetricsValidationFailure,
 } from "../observability/metrics-validation";
 import type { MetricsValidationFailure } from "../observability/metrics-validation";
 import { MetricsServiceLike } from "../observability/metrics-service";

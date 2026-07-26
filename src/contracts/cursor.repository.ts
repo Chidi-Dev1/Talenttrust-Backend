@@ -125,7 +125,7 @@ export interface CursorQueryError {
  *   otherwise `{ ok: false, message }` with the same message `decodeCursor` throws.
  */
 export function resolveCursorQueryParam(rawCursor: unknown): CursorQueryOk | CursorQueryError {
-  if (rawCursor !== undefined && typeof rawCursor === 'string' && rawCursor.length > 0) {
+  if (rawCursor !== undefined && rawCursor !== '' && typeof rawCursor === 'string') {
     try {
       decodeCursor(rawCursor);
     } catch (err) {

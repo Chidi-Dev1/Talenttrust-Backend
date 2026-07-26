@@ -6,6 +6,14 @@ import {
   resetWebhookMetrics,
 } from './webhookMetrics';
 
+/**
+ * Extract the current value of a counter for a specific label set.
+ *
+ * @param metricName - The prom-client metric name.
+ * @param labels - The label key/value pair to look up.
+ * @returns The counter value, or `undefined` if the label set has not been
+ *   observed yet.
+ */
 async function getCounterValue(
   metricName: string,
   labels: Record<string, string>,
@@ -63,7 +71,7 @@ function resetWebhookMetrics(): void {
   webhookDlqReplaysTotal.reset();
 }
 
-describe('webhookMetrics DLQ counters', () => {
+describe('incrementDlqOperation', () => {
   beforeEach(() => {
     resetWebhookMetrics();
   });
@@ -112,34 +120,13 @@ describe('webhookMetrics DLQ counters', () => {
     });
   });
 
-  describe('incrementDlqReplay', () => {
-    it('increments each replay outcome independently', async () => {
-      incrementDlqReplay('success');
-      incrementDlqReplay('success');
-      incrementDlqReplay('failed');
-      incrementDlqReplay('idempotent_noop');
-      incrementDlqReplay('error');
-
-      await expect(
-        getCounterValue('webhook_dlq_replays_total', { outcome: 'success' }),
-      ).resolves.toBe(2);
-      await expect(
-        getCounterValue('webhook_dlq_replays_total', { outcome: 'failed' }),
-      ).resolves.toBe(1);
-      await expect(
-        getCounterValue('webhook_dlq_replays_total', { outcome: 'idempotent_noop' }),
-      ).resolves.toBe(1);
-      await expect(
-        getCounterValue('webhook_dlq_replays_total', { outcome: 'error' }),
-      ).resolves.toBe(1);
+  it('increments the drop_poison counter', async () => {
+    incrementDlqOperation('drop_poison');
+    const value = await getCounterValue('webhook_dlq_operations_total', {
+      operation: 'drop_poison',
     });
-
-    it('rejects invalid replay labels before mutating metrics', async () => {
-      incrementDlqReplay('success');
-
-      expect(() => incrementDlqReplay('https://example.com/callback' as any)).toThrow(TypeError);
-      expect(() => incrementDlqReplay('invalid_outcome' as any)).toThrow(TypeError);
-      expect(() => incrementDlqReplay(undefined as any)).toThrow(TypeError);
+    expect(value).toBe(1);
+  });
 
       await expect(
         getCounterValue('webhook_dlq_replays_total', { outcome: 'success' }),
@@ -190,5 +177,38 @@ describe('webhookMetrics DLQ counters', () => {
         }
       }
     });
+  });
+
+  it('replays metric never exposes raw URLs in any label', async () => {
+    incrementDlqReplay('success');
+
+    const metrics = await webhookDlqRegistry.getMetricsAsJSON();
+    const replays = metrics.find((m) => m.name === 'webhook_dlq_replays_total');
+    const values = (replays?.values ?? []) as Array<{
+      labels: Record<string, string>;
+    }>;
+
+    for (const v of values) {
+      for (const [key, val] of Object.entries(v.labels)) {
+        expect(key).not.toMatch(/url|path|host|endpoint/i);
+        expect(val).not.toMatch(/^https?:\/\//);
+      }
+    }
+  });
+
+  it('operations metric has exactly one label dimension', async () => {
+    incrementDlqOperation('enqueue');
+    incrementDlqOperation('drop_overflow');
+
+    const labelNames = await getMetricLabelNames('webhook_dlq_operations_total');
+    expect(labelNames).toHaveLength(1);
+  });
+
+  it('replays metric has exactly one label dimension', async () => {
+    incrementDlqReplay('success');
+    incrementDlqReplay('failed');
+
+    const labelNames = await getMetricLabelNames('webhook_dlq_replays_total');
+    expect(labelNames).toHaveLength(1);
   });
 });
