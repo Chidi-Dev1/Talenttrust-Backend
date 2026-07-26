@@ -236,6 +236,7 @@ All sensitive metadata fields (`password`, `token`, `secret`, `credential`, `api
 
 ## Documentation
 
+- [Reputation Operations Runbook](docs/runbook-reputation.md)
 - [Backend Notification Services](./docs/backend/notifications.md)
 - [Outbound Notification Subsystem (channels, transports, persistence)](docs/email-notifications.md)
 - [Event Ingestion Idempotency](docs/EVENT_INGESTION_IDEMPOTENCY.md)
