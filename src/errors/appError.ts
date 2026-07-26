@@ -17,6 +17,7 @@ export const APP_ERROR_CODES = {
   CONFLICT: 'conflict',
   CONTRACT_METADATA_MISMATCH: 'contract_metadata_mismatch',
   VALIDATION_ERROR: 'validation_error',
+  RESPONSE_CONTRACT_ERROR: 'response_contract_error',
 } as const;
 
 export interface ErrorPayload {
@@ -119,6 +120,20 @@ export class ConflictError extends AppError {
 export class ContractMetadataMismatchError extends AppError {
   constructor(message = 'Contract metadata mismatch') {
     super(400, APP_ERROR_CODES.CONTRACT_METADATA_MISMATCH, message, false);
+  }
+}
+
+/**
+ * Thrown when an outgoing response payload fails its declared schema.
+ *
+ * @remarks Indicates a server-side bug (e.g. a persisted record drifting
+ * from the public contract) rather than a client mistake, so it maps to a
+ * 500 and `expose: false` keeps the raw Zod detail out of the client
+ * response — it is still logged server-side by the global error handler.
+ */
+export class ResponseContractError extends AppError {
+  constructor(message = 'Response failed schema validation') {
+    super(500, APP_ERROR_CODES.RESPONSE_CONTRACT_ERROR, message, false);
   }
 }
 

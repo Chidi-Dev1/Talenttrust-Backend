@@ -308,6 +308,85 @@ describe('ContractsController', () => {
   });
 
   // -------------------------------------------------------------------------
+  // getContracts — legacy offset path (page param present)
+  // -------------------------------------------------------------------------
+
+  describe('getContracts — legacy offset path', () => {
+    it('returns 200 with contracts list when no pagination params', async () => {
+      mockGetAllContracts.mockResolvedValue([]);
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'success',
+        data: [],
+        meta: expect.any(Object),
+      }));
+    });
+
+    it('returns 200 with paginated legacy metadata when page+limit provided', async () => {
+      const makeContract = (id: string, title: string) => ({
+        id,
+        title,
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 0,
+      });
+      const contracts = [
+        makeContract('1', 'A'),
+        makeContract('2', 'B'),
+        makeContract('3', 'C'),
+      ];
+      mockGetAllContracts.mockResolvedValue(contracts);
+      mockRequest.query = { page: '1', limit: '2' };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+      const callArg = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(callArg.status).toBe('success');
+      expect(callArg.data).toHaveLength(2);
+      expect(callArg.data[0].id).toBe('1');
+      expect(callArg.data[1].id).toBe('2');
+      expect(callArg.meta).toMatchObject({ page: 1, limit: 2, total: 3, totalPages: 2 });
+    });
+
+    it('returns 400 for invalid page parameter in legacy mode', async () => {
+      mockRequest.query = { page: '-1' };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 400 for invalid limit parameter in legacy mode', async () => {
+      mockRequest.query = { page: '1', limit: 'abc' };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // getContracts — error propagation
   // -------------------------------------------------------------------------
 
@@ -407,7 +486,16 @@ describe('ContractsController', () => {
 
   describe('getContractById', () => {
     it('returns 200 with contract data', async () => {
-      const contract = { id: 'abc', title: 'Test' };
+      const contract = {
+        id: 'abc',
+        title: 'Test',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 0,
+      };
       mockGetContractById.mockResolvedValue(contract);
       mockRequest.params = { id: 'abc' };
       await controller.getContractById(
@@ -441,7 +529,16 @@ describe('ContractsController', () => {
 
   describe('createContract', () => {
     it('returns 201 on success', async () => {
-      const contract = { id: 'abc', status: 'PENDING' };
+      const contract = {
+        id: 'abc',
+        title: 'Test',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'draft',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 0,
+      };
       mockCreateContract.mockResolvedValue(contract);
       await controller.createContract(
         mockRequest as Request,
@@ -577,7 +674,16 @@ describe('ContractsController', () => {
 
   describe('updateContract', () => {
     it('returns 200 on success', async () => {
-      const updated = { id: 'abc', title: 'Updated' };
+      const updated = {
+        id: 'abc',
+        title: 'Updated',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 1,
+      };
       mockUpdateContract.mockResolvedValue(updated);
       mockRequest.params = { id: 'abc' };
       await controller.updateContract(
@@ -1004,7 +1110,16 @@ describe('ContractsController', () => {
 
   describe('updateContract', () => {
     it('returns 200 on success', async () => {
-      const updatedContract = { id: 'abc', title: 'Updated', version: 1 };
+      const updatedContract = {
+        id: 'abc',
+        title: 'Updated',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 1,
+      };
       mockRequest.params = { id: 'abc' };
       mockRequest.body = { version: 0, title: 'Updated' };
       mockUpdateContract.mockResolvedValue(updatedContract);

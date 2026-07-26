@@ -3,6 +3,7 @@ import type {
   CreateContractDto,
   UpdateContractDto,
 } from './contract.dto';
+import { assertResponseSchema, contractResponseSchema } from './contract-response.dto';
 
 export interface ContractMilestoneDto {
   title: string;
@@ -99,18 +100,29 @@ export function toUpdateContractDto(
   };
 }
 
-/** Maps a persistence model into the stable public contract representation. */
+/**
+ * Maps a persistence model into the stable public contract representation.
+ *
+ * The mapped payload is validated against `contractResponseSchema` before
+ * being returned, so a persistence-layer bug that drifts the domain shape
+ * away from the public contract fails as a structured `response_contract_error`
+ * (500) instead of silently changing the API's outgoing shape.
+ */
 export function toContractResponseDto(contract: Contract): ContractResponseDto {
-  return {
-    id: contract.id,
-    title: contract.title,
-    clientId: contract.clientId,
-    freelancerId: contract.freelancerId,
-    amount: contract.amount,
-    status: contract.status,
-    createdAt: contract.createdAt,
-    version: contract.version,
-  };
+  return assertResponseSchema<ContractResponseDto>(
+    contractResponseSchema,
+    {
+      id: contract.id,
+      title: contract.title,
+      clientId: contract.clientId,
+      freelancerId: contract.freelancerId,
+      amount: contract.amount,
+      status: contract.status,
+      createdAt: contract.createdAt,
+      version: contract.version,
+    },
+    'Contract',
+  );
 }
 
 /**

@@ -12,7 +12,15 @@ import {
   toCreateContractDto,
   toUpdateContractDto,
 } from '../modules/contracts/dto/contracts-boundary.dto';
-import { BulkMilestoneOperationDto } from '../modules/contracts/dto/contract.dto';
+import {
+  assertResponseSchema,
+  contractBoundsResponseSchema,
+  contractStatsResponseSchema,
+  deleteContractResponseSchema,
+  ContractBoundsResponse,
+  ContractStatsResponse,
+  DeleteContractResponse,
+} from '../modules/contracts/dto/contract-response.dto';
 import { ContractsService } from '../services/contracts.service';
 import { WebhookService } from '../services/webhook.service';
 import { fail, ok } from '../utils/apiResponse';
@@ -340,9 +348,15 @@ export class ContractsController {
     log.info('contracts.deleteContract: start', { ...ctx, contractId: id });
 
     try {
-      await this.service.deleteContract(id, correlationId);
-      log.info('contracts.deleteContract: success', { ...ctx, contractId: id });
-      ok(res, { message: 'Contract deleted successfully' });
+      await this.service.deleteContract(req.params.id!);
+      ok(
+        res,
+        assertResponseSchema<DeleteContractResponse>(
+          deleteContractResponseSchema,
+          { message: 'Contract deleted successfully' },
+          'DeleteContract',
+        ),
+      );
     } catch (error) {
       log.error('contracts.deleteContract: error', { ...ctx, contractId: id, err: error as Error });
       next(error);
@@ -360,8 +374,14 @@ export class ContractsController {
 
     try {
       const stats = await this.service.getContractStats();
-      log.info('contracts.getContractStats: success', { ...ctx, total: stats.total });
-      ok(res, stats);
+      ok(
+        res,
+        assertResponseSchema<ContractStatsResponse>(
+          contractStatsResponseSchema,
+          stats,
+          'ContractStats',
+        ),
+      );
     } catch (error) {
       if (error instanceof ContractBoundsError) {
         fail(res, 'contract_bounds_error', error.message, 422);
@@ -373,77 +393,14 @@ export class ContractsController {
   }
 
   public getBounds(_req: Request, res: Response): void {
-    ok(res, this.service.getBounds());
-  }
-
-  public async getContractHistory(
-    req: Request,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    try {
-      const history = await this.service.getContractHistory(req.params.id!);
-      res.status(200).json(history);
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  public getBounds(req: Request, res: Response): void {
-    ContractsController.getBounds(req, res);
-  }
-
-  /**
-   * GET /:id/milestones/audit-log — bounded, cursor-paginated read view of
-   * the MILESTONES_* audit entries recorded for a single contract, newest
-   * first. Reuses the audit store's own pagination bound (1–100 per page,
-   * default 20) rather than introducing a second limit policy.
-   */
-  public async getMilestonesAuditLog(
-    req: ContractRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    try {
-      const contract = await this.service.getContractById(req.params.id!);
-      if (!contract) {
-        throw new NotFoundError('The requested resource was not found');
-      }
-
-      const rawLimit = req.query?.['limit'];
-      const limit =
-        typeof rawLimit === 'string' && rawLimit.trim() !== '' && Number.isFinite(Number(rawLimit))
-          ? Number(rawLimit)
-          : 20;
-      const cursor = typeof req.query?.['cursor'] === 'string' ? req.query['cursor'] : undefined;
-
-      const page = this.auditService.queryWithCursor({
-        resource: 'milestones',
-        resourceId: req.params.id!,
-        limit,
-        ...(cursor !== undefined && { cursor }),
-      });
-
-      // Newest-first for a "what happened, most recent first" review view;
-      // the store returns entries in insertion (oldest-first) order.
-      ok(res, { ...page, entries: [...page.entries].reverse() });
-    } catch (error) {
-      next(error);
-    }
-  }
-
-  /** @deprecated Use getContracts (unified cursor/offset handler) instead. */
-  public async getContractsCursor(
-    req: Request,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    return this.getContracts(req, res, next);
-  }
-
-  /** Static variant used in route registrations that don't have an instance. */
-  static getBounds(_req: Request, res: Response): void {
-    ok(res, CONTRACT_BOUNDS);
+    ok(
+      res,
+      assertResponseSchema<ContractBoundsResponse>(
+        contractBoundsResponseSchema,
+        CONTRACT_BOUNDS,
+        'ContractBounds',
+      ),
+    );
   }
 }
 

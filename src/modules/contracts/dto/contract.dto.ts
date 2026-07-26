@@ -82,8 +82,8 @@ const createMilestoneSchema = z
 /**
  * Milestone sub-schema used inside updateContractSchema.
  * description is required (not optional) to keep create/update consistent.
- * `.strict()` rejects unrecognized fields (400 validation_error) instead of
- * silently dropping them — see validation.middleware.test.ts.
+ * `.strict()` rejects unknown keys rather than silently dropping them —
+ * consistent with the body-level `.strict()` on updateContractBodySchema.
  */
 const updateMilestoneSchema = z
   .object({
@@ -161,13 +161,15 @@ export const createContractSchema = z
  * Schema for the body of PATCH /api/v1/contracts/:id.
  *
  * All fields are optional except `version` (OCC requirement).
- * `.strict()` rejects undeclared keys with a 400 validation_error instead of
- * silently dropping them — this is the write path used to initiate/resolve
- * disputes via `status`, so silently ignoring a typo'd field would be
- * surprising. Milestone *count* is intentionally left unbounded here: it's
- * enforced by `validateContractBounds` in the service layer, which returns a
- * 422 contract_bounds_error — an established, separately-tested contract
- * this schema must not shadow with an earlier 400.
+ *
+ * `.strict()` on both this body and each milestone rejects unrecognized
+ * fields (400 validation_error) instead of silently dropping them — this is
+ * the write path used to initiate/resolve disputes via `status`, so a typo'd
+ * or unexpected field should surface as an error rather than be ignored.
+ * Milestone *count* is intentionally left unbounded here: it's enforced by
+ * `validateContractBounds` in the service layer, which returns a 422
+ * contract_bounds_error — an established, separately-tested contract this
+ * schema must not shadow with an earlier 400.
  */
 const updateContractBodySchema = z
   .object({

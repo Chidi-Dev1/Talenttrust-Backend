@@ -1,4 +1,5 @@
 import type { Contract } from '../../../db/types';
+import { ResponseContractError } from '../../../errors/appError';
 import {
   CreateContractRequestDto,
   UpdateContractRequestDto,
@@ -106,5 +107,42 @@ describe('contracts boundary DTO mappings', () => {
 
   it('omits every missing optional update field', () => {
     expect(toUpdateContractDto({ version: 4 })).toEqual({ version: 4 });
+  });
+
+  it('throws a ResponseContractError when the domain record is missing a required field', () => {
+    // Simulates a corrupted/incomplete persistence record reaching the
+    // boundary mapper — this must fail loudly (500) rather than silently
+    // return a malformed public payload.
+    const malformedContract = {
+      id: 'contract-1',
+      title: 'Build a typed boundary',
+      clientId: 'client-1',
+      // freelancerId missing
+      amount: 2_000,
+      status: 'active',
+      createdAt: '2026-07-25T10:00:00.000Z',
+      version: 3,
+    } as unknown as Contract;
+
+    expect(() => toContractResponseDto(malformedContract)).toThrow(
+      ResponseContractError,
+    );
+  });
+
+  it('throws a ResponseContractError when the domain record has an invalid status', () => {
+    const malformedContract = {
+      id: 'contract-1',
+      title: 'Build a typed boundary',
+      clientId: 'client-1',
+      freelancerId: 'freelancer-1',
+      amount: 2_000,
+      status: 'PENDING',
+      createdAt: '2026-07-25T10:00:00.000Z',
+      version: 3,
+    } as unknown as Contract;
+
+    expect(() => toContractResponseDto(malformedContract)).toThrow(
+      ResponseContractError,
+    );
   });
 });
