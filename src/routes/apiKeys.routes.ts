@@ -6,9 +6,11 @@
  * since they are used to manage API keys themselves.
  */
 
-import { Router } from 'express';
+import { Request, Router } from 'express';
 import { authenticateMiddleware } from '../auth/authenticate';
 import { requirePermission } from '../auth/middleware';
+import { rateLimitConfig } from '../config/rateLimit';
+import { createRateLimiter } from '../middleware/rateLimiter';
 import {
   createApiKeyController,
   listApiKeysController,
@@ -18,6 +20,29 @@ import {
 } from '../controllers/apiKeyController';
 
 const router = Router();
+
+/**
+ * Scope limits to the presented API key when one is available, otherwise to
+ * the client IP. Prefixes keep the two identifier namespaces distinct. Raw
+ * identifiers are hashed by RateLimitStore before they are retained.
+ */
+export function apiKeysRateLimitKey(req: Request): string {
+  const apiKeyHeader = req.headers['x-api-key'];
+  const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+
+  if (typeof apiKey === 'string' && apiKey.trim().length > 0) {
+    return `api-key:${apiKey.trim()}`;
+  }
+
+  return `ip:${req.ip ?? req.socket?.remoteAddress ?? 'unknown'}`;
+}
+
+const apiKeysRateLimiter = createRateLimiter({
+  ...rateLimitConfig.apiKeys,
+  keyFn: apiKeysRateLimitKey,
+});
+
+router.use(apiKeysRateLimiter);
 
 /**
  * @route   POST /api/v1/api-keys

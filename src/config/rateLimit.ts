@@ -24,6 +24,8 @@
  * | RL_AUDIT_ABUSE_THRESHOLD   | 5          | Violations before hard block (audit)     |
  * | RL_AUDIT_INTEGRITY_MAX     | 10         | Max requests per window (audit integrity)|
  * | RL_AUDIT_INTEGRITY_WINDOW_MS | 60000    | Window duration in ms (audit integrity)  |
+ * | RL_API_KEYS_MAX            | 60         | API-key endpoint requests per window     |
+ * | RL_API_KEYS_WINDOW_MS      | 60000      | API-key endpoint window duration         |
  *
  * ## Tier Descriptions
  *
@@ -93,6 +95,7 @@ function toCount(value: string | undefined, fallback: number): number {
 }
 
 export const rateLimitStore = new RateLimitStore({ sweepIntervalMs: 60_000 });
+export const apiKeysRateLimitStore = new RateLimitStore({ sweepIntervalMs: 60_000 });
 
 const sharedStore = { store: rateLimitStore };
 
@@ -234,6 +237,22 @@ export const rateLimitConfig = {
     maxBlockDurationMs: toMs(process.env.RL_DISPUTES_MAX_BLOCK_MS, 86_400_000),
     sendHeaders: true,
     ...sharedStore,
+  } satisfies RateLimiterConfig,
+
+  /**
+   * API-key management endpoints. This store is intentionally isolated from
+   * the general tiers so requests to unrelated routes cannot consume this
+   * endpoint's allowance.
+   */
+  apiKeys: {
+    maxRequests: toCount(process.env.RL_API_KEYS_MAX, 60),
+    windowMs: toMs(process.env.RL_API_KEYS_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_API_KEYS_ABUSE_THRESHOLD, 5),
+    blockWindowMs: toMs(process.env.RL_API_KEYS_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_API_KEYS_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_API_KEYS_MAX_BLOCK_MS, 86_400_000),
+    sendHeaders: true,
+    store: apiKeysRateLimitStore,
   } satisfies RateLimiterConfig,
 
   /**
