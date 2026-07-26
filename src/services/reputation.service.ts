@@ -39,15 +39,28 @@ export function computeWeightedReputationScore(
 
   const nowTime = now.getTime();
 
+  // Guard: clamp negative lambda to 0 (disallow inverted decay)
+  const safeLambda = Math.max(0, lambda);
+
   for (const ratingEntry of ratings) {
     // Parse createdAt ISO string to Date
     const createdAtTime = new Date(ratingEntry.createdAt).getTime();
-    
+
+    // Guard: skip entries with unparseable createdAt (malformed date strings)
+    if (isNaN(createdAtTime)) {
+      continue;
+    }
+
+    // Guard: skip entries with non-finite rating values (NaN, Infinity)
+    if (typeof ratingEntry.rating !== 'number' || !isFinite(ratingEntry.rating)) {
+      continue;
+    }
+
     // Compute age in days, clamping to 0 minimum (defense against future timestamps)
     const ageInDays = Math.max(0, (nowTime - createdAtTime) / (1000 * 60 * 60 * 24));
     
     // Compute exponential decay weight
-    const weight = Math.exp(-lambda * ageInDays);
+    const weight = Math.exp(-safeLambda * ageInDays);
     
     // Accumulate weighted sum and total weight
     weightedSum += ratingEntry.rating * weight;
