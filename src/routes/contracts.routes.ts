@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import compression from 'compression';
 
 import { createContractsController } from '../controllers/contracts.controller';
+import { createContractsBulkController } from '../controllers/contracts-bulk.controller';
 import { ContractsService } from '../services/contracts.service';
 import { ContractCacheService, DEFAULT_CACHE_TTL_MS, DEFAULT_CACHE_SWR_MS, DEFAULT_CACHE_MAX_ENTRIES } from '../services/contractCache.service';
 import { ContractRepository } from '../repositories/contractRepository';
@@ -13,6 +14,7 @@ import {
   contractQuerySchema,
   bulkMilestonesSchema,
 } from '../modules/contracts/dto/contract.dto';
+import { bulkCreateContractsSchema } from '../modules/contracts/dto/bulk-operations.dto';
 import { validateUpdateContract } from '../modules/contracts/validation.middleware';
 import { eventIngestionService } from '../events/registry';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
@@ -122,16 +124,9 @@ function createContractsRouter(): Router {
 
   const db = getDb();
   const repo = new ContractRepository(db);
-  const baseService = new ContractsService(repo);
-  
-  // Wrap the service with caching and invalidation logic
-  const cacheConfig = loadCacheConfig();
-  const cachedService = createCachedContractsService(baseService, {
-    ...cacheConfig,
-    metricsService,
-  });
-  
-  const controller = createContractsController(cachedService);
+  const service = new ContractsService(repo);
+  const controller = createContractsController(service);
+  const bulkController = createContractsBulkController(service);
 
   /**
    * Resolves the owner (clientId) of a contract from the DB.
@@ -194,15 +189,24 @@ function createContractsRouter(): Router {
     controller.createContract,
   );
 
-  // POST /bulk — batch milestone operations (create/update/delete contracts with milestones)
-  // Each item in the batch is processed independently; partial failures are reported per-item.
-  /** @permission contracts:create — admin, client */
+  /**
+   * POST /api/v1/contracts/bulk
+   * Bulk create contracts endpoint.
+   * 
+   * Request: Array of contract creation payloads (each validated separately)
+   * Response: Per-item results with summary (always 200, check per-item status for failures)
+   * 
+   * - Each item is validated and processed independently
+   * - One item's failure does not affect other items
+   * - Batch size is capped at BULK_OPERATION_MAX_BATCH_SIZE (100)
+   * - Empty batch is rejected as a validation error
+   */
   router.post(
     '/bulk',
     requireAuth,
     requirePermission('contracts', 'create'),
-    validateSchema(bulkMilestonesSchema),
-    controller.bulkMilestones,
+    validateSchema(bulkCreateContractsSchema),
+    bulkController.bulkCreateContracts,
   );
 
   // PATCH /:id — update an existing contract (owner or admin only)
