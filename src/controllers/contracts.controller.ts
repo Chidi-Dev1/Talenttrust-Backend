@@ -9,6 +9,15 @@ import {
   toCreateContractDto,
   toUpdateContractDto,
 } from '../modules/contracts/dto/contracts-boundary.dto';
+import {
+  assertResponseSchema,
+  contractBoundsResponseSchema,
+  contractStatsResponseSchema,
+  deleteContractResponseSchema,
+  ContractBoundsResponse,
+  ContractStatsResponse,
+  DeleteContractResponse,
+} from '../modules/contracts/dto/contract-response.dto';
 import { ContractsService } from '../services/contracts.service';
 import { fail, ok } from '../utils/apiResponse';
 import { applyPagination, parsePaginationQuery } from '../utils/pagination';
@@ -122,7 +131,14 @@ export class ContractsController {
   ): Promise<void> {
     try {
       await this.service.deleteContract(req.params.id!);
-      ok(res, { message: 'Contract deleted successfully' });
+      ok(
+        res,
+        assertResponseSchema<DeleteContractResponse>(
+          deleteContractResponseSchema,
+          { message: 'Contract deleted successfully' },
+          'DeleteContract',
+        ),
+      );
     } catch (error) {
       next(error);
     }
@@ -134,7 +150,15 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      ok(res, await this.service.getContractStats());
+      const stats = await this.service.getContractStats();
+      ok(
+        res,
+        assertResponseSchema<ContractStatsResponse>(
+          contractStatsResponseSchema,
+          stats,
+          'ContractStats',
+        ),
+      );
     } catch (error) {
       if (error instanceof ContractBoundsError) {
         fail(res, 'contract_bounds_error', error.message, 422);
@@ -145,7 +169,14 @@ export class ContractsController {
   }
 
   public getBounds(_req: Request, res: Response): void {
-    ok(res, CONTRACT_BOUNDS);
+    ok(
+      res,
+      assertResponseSchema<ContractBoundsResponse>(
+        contractBoundsResponseSchema,
+        CONTRACT_BOUNDS,
+        'ContractBounds',
+      ),
+    );
   }
 }
 
