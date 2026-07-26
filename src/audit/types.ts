@@ -9,30 +9,44 @@
  * - Sensitive payloads are stored as opaque strings; callers must sanitise PII before logging.
  */
 
+/**
+ * Every audited action, as a runtime value list.
+ *
+ * This is the single source of truth: {@link AuditAction} is derived from it,
+ * and both the request-body validator (`audit/inputValidation`) and the query
+ * filter validator (`audit/router`) validate against this same array, so a new
+ * action can never be accepted by one path and rejected by the other.
+ */
+export const AUDIT_ACTIONS = [
+  'CONTRACT_CREATED',
+  'CONTRACT_UPDATED',
+  'CONTRACT_CANCELLED',
+  'CONTRACT_COMPLETED',
+  'PAYMENT_INITIATED',
+  'PAYMENT_RELEASED',
+  'PAYMENT_DISPUTED',
+  'REPUTATION_UPDATED',
+  'USER_CREATED',
+  'USER_UPDATED',
+  'USER_DELETED',
+  'AUTH_LOGIN',
+  'AUTH_LOGOUT',
+  'AUTH_FAILED',
+  'ADMIN_ACTION',
+  'ENDPOINT_ACCESS',
+  'ENDPOINT_MUTATION',
+  'DEPLOYMENT_PROMOTED',
+  'DEPLOYMENT_ROLLED_BACK',
+] as const;
+
 /** Categories of sensitive state changes that must be audited. */
-export type AuditAction =
-  | 'CONTRACT_CREATED'
-  | 'CONTRACT_UPDATED'
-  | 'CONTRACT_CANCELLED'
-  | 'CONTRACT_COMPLETED'
-  | 'PAYMENT_INITIATED'
-  | 'PAYMENT_RELEASED'
-  | 'PAYMENT_DISPUTED'
-  | 'REPUTATION_UPDATED'
-  | 'USER_CREATED'
-  | 'USER_UPDATED'
-  | 'USER_DELETED'
-  | 'AUTH_LOGIN'
-  | 'AUTH_LOGOUT'
-  | 'AUTH_FAILED'
-  | 'ADMIN_ACTION'
-  | 'ENDPOINT_ACCESS'
-  | 'ENDPOINT_MUTATION'
-  | 'DEPLOYMENT_PROMOTED'
-  | 'DEPLOYMENT_ROLLED_BACK';
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+/** Every audit severity, as a runtime value list. See {@link AUDIT_ACTIONS}. */
+export const AUDIT_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const;
 
 /** Severity level of the audit event. */
-export type AuditSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+export type AuditSeverity = (typeof AUDIT_SEVERITIES)[number];
 
 /**
  * An immutable audit log entry.

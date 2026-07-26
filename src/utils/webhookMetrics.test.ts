@@ -27,6 +27,22 @@ import {
 } from './webhookMetrics';
 
 /**
+ * Reset the isolated webhook DLQ registry between tests.
+ *
+ * prom-client retains counter state globally per-registry. Resetting the
+ * dedicated `webhookDlqRegistry` guarantees that each test starts from zero
+ * without affecting any other metrics in the application.
+ *
+ * `resetMetrics()` zeroes the recorded values but keeps the counters
+ * registered. `clear()` would unregister them instead — the counters are
+ * created once at module load, so they could never be re-registered and every
+ * later lookup would find no metric at all.
+ */
+function resetWebhookMetrics(): void {
+  webhookDlqRegistry.resetMetrics();
+}
+
+/**
  * Extract the current value of a counter for a specific label set.
  *
  * @param metricName - The prom-client metric name.
@@ -122,6 +138,15 @@ describe('incrementDlqOperation', () => {
 
     const value = await getCounterValue('webhook_dlq_operations_total', {
       operation: 'drop_overflow',
+    });
+    expect(value).toBe(1);
+  });
+
+  it('increments the drop_poison counter', async () => {
+    incrementDlqOperation('drop_poison');
+
+    const value = await getCounterValue('webhook_dlq_operations_total', {
+      operation: 'drop_poison',
     });
     expect(value).toBe(1);
   });
@@ -399,13 +424,35 @@ describe('webhookDlqRegistry isolation', () => {
   });
 });
 
+/**
+ * prom-client populates these fields on every counter at construction time but
+ * omits them from its published type definitions, so they are read through an
+ * explicit shape rather than an inline `any`.
+ */
+interface CounterDescriptor {
+  name: string;
+  help: string;
+  registers: unknown[];
+}
+
+function describeCounter(counter: unknown): CounterDescriptor {
+  return counter as CounterDescriptor;
+}
+
 describe('metric name constants', () => {
-  it('exports counters registered to the isolated registry', async () => {
-    const metrics = await webhookDlqRegistry.getMetricsAsJSON();
-    const opsMetric = metrics.find((m: any) => m.name === 'webhook_dlq_operations_total');
-    const replaysMetric = metrics.find((m: any) => m.name === 'webhook_dlq_replays_total');
-    expect(opsMetric).toBeDefined();
-    expect(replaysMetric).toBeDefined();
+  it('exports the expected counter metric names', () => {
+    expect(describeCounter(webhookDlqOperationsTotal).name).toBe('webhook_dlq_operations_total');
+    expect(describeCounter(webhookDlqReplaysTotal).name).toBe('webhook_dlq_replays_total');
+  });
+
+  it('exports counters with the correct help text', () => {
+    expect(describeCounter(webhookDlqOperationsTotal).help).toContain('DLQ');
+    expect(describeCounter(webhookDlqReplaysTotal).help).toContain('DLQ');
+  });
+
+  it('exports counters registered to the isolated registry', () => {
+    expect(describeCounter(webhookDlqOperationsTotal).registers).toContain(webhookDlqRegistry);
+    expect(describeCounter(webhookDlqReplaysTotal).registers).toContain(webhookDlqRegistry);
   });
 });
 
