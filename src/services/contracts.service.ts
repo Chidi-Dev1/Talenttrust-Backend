@@ -5,15 +5,9 @@ import { SorobanService } from './soroban.service';
 import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.types';
 import { ContractCacheService } from './contractCache.service';
 
-import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
-import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
-import { auditService } from '../audit/service';
-import { redactBody } from '../audit/redact';
-import type { AuditAction } from '../audit/types';
-
-/** Actor recorded when a mutation has no authenticated caller attached (tests, internal callers). */
-const UNKNOWN_ACTOR = 'system';
+import { NotFoundError, MissingVersionError, InvalidVersionError } from '../errors/appError';
+import { MilestonesService } from './milestones.service';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -23,7 +17,7 @@ const UNKNOWN_ACTOR = 'system';
 export class ContractsService {
   private contractRepository: IContractRepository;
   private sorobanService: SorobanService;
-  private cache: ContractCacheService | null;
+  private milestonesService: MilestonesService;
 
   constructor(
     contractRepository: IContractRepository,
@@ -31,7 +25,7 @@ export class ContractsService {
   ) {
     this.sorobanService = new SorobanService();
     this.contractRepository = contractRepository;
-    this.cache = cache ?? null;
+    this.milestonesService = new MilestonesService();
   }
 
   /**
@@ -79,28 +73,8 @@ export class ContractsService {
    * @returns The newly created contract object.
    * @throws ContractBoundsError if budget or milestone totals exceed policy limits.
    */
-  public async createContract(data: CreateContractDto, actorId?: string): Promise<Contract> {
-    const boundsCheck = validateContractBounds(data.budget, data.milestones);
-    if (!boundsCheck.valid) {
-      throw new ContractBoundsError(boundsCheck.error);
-    }
-
-    // Enforce that the sum of milestone amounts does not exceed the contract
-    // budget. `validateContractBounds` only guards the absolute policy cap
-    // (MAX_CONTRACT_AMOUNT_STROOPS); the per-contract budget is the tighter,
-    // caller-supplied limit that milestone payouts must never overrun.
-    if (data.milestones && data.milestones.length > 0) {
-      const totalMilestoneAmount = data.milestones.reduce(
-        (sum, milestone) => sum + milestone.amount,
-        0,
-      );
-      if (totalMilestoneAmount > data.budget) {
-        throw new ContractBoundsError(
-          `Total milestone amount exceeds maximum contract amount ` +
-            `(milestones total ${totalMilestoneAmount} exceeds budget of ${data.budget})`,
-        );
-      }
-    }
+  public async createContract(data: CreateContractDto): Promise<Contract> {
+    this.milestonesService.validateMilestonesAgainstBudget(data.budget, data.milestones);
 
     const newContract = await this.contractRepository.create({
       title: data.title,
@@ -179,10 +153,7 @@ export class ContractsService {
     const milestones = fields.milestones;
     if (budget !== undefined || milestones !== undefined) {
       // Fall back to 0 if budget is absent so the bounds check can still run on milestones alone
-      const boundsCheck = validateContractBounds(budget ?? 0, milestones);
-      if (!boundsCheck.valid) {
-        throw new ContractBoundsError(boundsCheck.error);
-      }
+      this.milestonesService.validateBounds(budget ?? 0, milestones);
     }
 
     const updateFields: Partial<Contract> = {};
