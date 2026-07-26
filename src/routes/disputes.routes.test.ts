@@ -35,9 +35,21 @@ jest.mock('../middleware/authorization', () => ({
 }));
 
 // Import the actual disputes router AFTER the mock is registered
-import disputesRouter from './disputes.routes';
+import {
+  createDisputesRouter,
+  createDisputesObservabilityMiddleware,
+} from './disputes.routes';
+import { Logger, LogRecord } from '../logger';
+import { MetricsService } from '../observability/metrics-service';
+import { Registry } from 'prom-client';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+const silentLogger = new Logger();
+jest.spyOn(silentLogger as any, 'log').mockImplementation(() => undefined);
+
+/** Shared router for rate-limit tests (matches production singleton wiring). */
+const disputesRouter = createDisputesRouter({ log: silentLogger });
 
 function buildApp() {
   const app = express();
@@ -475,5 +487,377 @@ describe('Disputes endpoints — rate limiting', () => {
         .set('X-Forwarded-For', ip);
       expect(over.status).toBe(429);
     });
+  });
+});
+
+// ── Issue #743: Structured metrics and logging ─────────────────────────────
+
+function createSpyLogger(): { logger: Logger; records: LogRecord[] } {
+  const records: LogRecord[] = [];
+  const logger = new Logger();
+  jest.spyOn(logger as any, 'log').mockImplementation(
+    (_level: string, message: string, extra: Record<string, unknown> = {}) => {
+      records.push({
+        timestamp: new Date().toISOString(),
+        level: _level as any,
+        message,
+        service: 'talenttrust-backend',
+        ...extra,
+      });
+    },
+  );
+  return { logger, records };
+}
+
+describe('Disputes endpoints — observability', () => {
+  it('records success metrics and structured log on 200', async () => {
+    const register = new Registry();
+    const metricsService = new MetricsService('test', register);
+    const { logger, records } = createSpyLogger();
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/disputes',
+      createDisputesRouter({ metricsService, log: logger }),
+    );
+
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '20.0.0.1');
+
+    expect(res.status).toBe(200);
+
+    const metricsText = await metricsService.getMetrics();
+    expect(metricsText).toContain('disputes_requests_total');
+    expect(metricsText).toContain('disputes_request_duration_seconds');
+    expect(metricsText).toContain('error_cause="success"');
+
+    const log = records.find((r) => r.message === 'disputes_request');
+    expect(log).toBeDefined();
+    expect(log!.statusCode).toBe(200);
+    expect(log!.errorCause).toBe('success');
+    expect(typeof log!.durationMs).toBe('number');
+    expect(log!.route).toBe('/api/v1/disputes');
+    // No PII / body leakage
+    expect(log).not.toHaveProperty('body');
+    expect(JSON.stringify(log)).not.toMatch(/@/);
+  });
+
+  it('labels client errors as 4xx_client_error', async () => {
+    const register = new Registry();
+    const metricsService = new MetricsService('test', register);
+    const { logger, records } = createSpyLogger();
+    const app = express();
+    app.use(
+      '/api/v1/disputes',
+      createDisputesObservabilityMiddleware({ metricsService, log: logger }),
+    );
+    app.get('/api/v1/disputes', (_req, res) => {
+      res.status(400).json({ error: { code: 'bad_request', message: 'invalid' } });
+    });
+
+    const res = await request(app).get('/api/v1/disputes');
+    expect(res.status).toBe(400);
+
+    const metricsText = await metricsService.getMetrics();
+    expect(metricsText).toContain('error_cause="4xx_client_error"');
+    expect(metricsText).toContain('status_code="400"');
+
+    const log = records.find((r) => r.message === 'disputes_request');
+    expect(log).toBeDefined();
+    expect(log!.errorCause).toBe('4xx_client_error');
+    expect(log!.statusCode).toBe(400);
+  });
+
+  it('labels server errors as 5xx_server_error via observability middleware', async () => {
+    const register = new Registry();
+    const metricsService = new MetricsService('test', register);
+    const { logger, records } = createSpyLogger();
+    const app = express();
+    app.use(
+      '/api/v1/disputes',
+      createDisputesObservabilityMiddleware({ metricsService, log: logger }),
+    );
+    app.get('/api/v1/disputes', (_req, res) => {
+      res.status(500).json({ error: { code: 'internal_error', message: 'boom' } });
+    });
+
+    const res = await request(app).get('/api/v1/disputes');
+    expect(res.status).toBe(500);
+
+    const metricsText = await metricsService.getMetrics();
+    expect(metricsText).toContain('error_cause="5xx_server_error"');
+    expect(metricsText).toContain('status_code="500"');
+
+    const log = records.find((r) => r.message === 'disputes_request');
+    expect(log).toBeDefined();
+    expect(log!.errorCause).toBe('5xx_server_error');
+    expect(log!.statusCode).toBe(500);
+    expect(Number.isFinite(log!.durationMs as number)).toBe(true);
+  });
+
+  it('does not record metrics when no metricsService is supplied', async () => {
+    const { logger, records } = createSpyLogger();
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/disputes', createDisputesRouter({ log: logger }));
+
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '20.0.0.3');
+    expect(res.status).toBe(200);
+
+    const log = records.find((r) => r.message === 'disputes_request');
+    expect(log).toBeDefined();
+    expect(log!.errorCause).toBe('success');
+  });
+
+  it('uses Express route templates (never concrete dispute IDs) in metrics', async () => {
+    const register = new Registry();
+    const metricsService = new MetricsService('test', register);
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/disputes',
+      createDisputesRouter({ metricsService, log: silentLogger }),
+    );
+
+    await request(app)
+      .get('/api/v1/disputes/user-secret-id-999')
+      .set('X-Forwarded-For', '20.0.0.4');
+
+    const metricsText = await metricsService.getMetrics();
+    expect(metricsText).toContain('/api/v1/disputes/:id');
+    expect(metricsText).not.toContain('user-secret-id-999');
+  });
+
+  it('exposes disputes metrics via MetricsService.getMetrics (metrics endpoint)', async () => {
+    const register = new Registry();
+    const metricsService = new MetricsService('test', register);
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/disputes',
+      createDisputesRouter({ metricsService, log: silentLogger }),
+    );
+
+    await request(app)
+      .post('/api/v1/disputes')
+      .set('X-Forwarded-For', '20.0.0.5')
+      .send({ reason: 'late payment' });
+
+    const text = await metricsService.getMetrics();
+    expect(text).toMatch(/# TYPE disputes_requests_total counter/);
+    expect(text).toMatch(/# TYPE disputes_request_duration_seconds histogram/);
+    expect(text).toContain('method="POST"');
+    expect(text).toContain('status_code="201"');
+  });
+
+  it('accepts createDisputesRouter() with default options', async () => {
+    const { setWriteRecordImpl } = require('../logger');
+    setWriteRecordImpl(() => undefined);
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/disputes', createDisputesRouter());
+
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '20.0.0.6');
+    expect(res.status).toBe(200);
+
+    // Restore default writer
+    setWriteRecordImpl((record: { level: string }) => {
+      const line = JSON.stringify(record);
+      if (record.level === 'error') process.stderr.write(line + '\n');
+      else process.stdout.write(line + '\n');
+    });
+  });
+
+  it('formats RegExp and array Express route paths without leaking IDs', async () => {
+    const recordDisputesRequest = jest.fn();
+    const { logger } = createSpyLogger();
+    const mw = createDisputesObservabilityMiddleware({
+      metricsService: { recordDisputesRequest },
+      log: logger,
+    });
+
+    const finishRegex = new (require('events').EventEmitter)();
+    (finishRegex as any).statusCode = 200;
+    (finishRegex as any).locals = {};
+    mw(
+      {
+        method: 'GET',
+        baseUrl: '/api/v1/disputes',
+        route: { path: /^\/custom$/ },
+      } as any,
+      finishRegex as any,
+      () => undefined,
+    );
+    finishRegex.emit('finish');
+    expect(recordDisputesRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: expect.stringContaining('/api/v1/disputes'),
+        errorCause: 'success',
+      }),
+    );
+
+    recordDisputesRequest.mockClear();
+    const finishArray = new (require('events').EventEmitter)();
+    (finishArray as any).statusCode = 200;
+    (finishArray as any).locals = {};
+    mw(
+      {
+        method: 'GET',
+        baseUrl: 'api/v1/disputes', // missing leading slash → normalized
+        route: { path: ['/:id', null] },
+      } as any,
+      finishArray as any,
+      () => undefined,
+    );
+    finishArray.emit('finish');
+    expect(recordDisputesRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: '/api/v1/disputes/:id',
+      }),
+    );
+
+    recordDisputesRequest.mockClear();
+    const finishEmptyArray = new (require('events').EventEmitter)();
+    (finishEmptyArray as any).statusCode = 503;
+    (finishEmptyArray as any).locals = {};
+    mw(
+      {
+        method: 'GET',
+        baseUrl: '',
+        route: { path: [null, undefined] },
+      } as any,
+      finishEmptyArray as any,
+      () => undefined,
+    );
+    finishEmptyArray.emit('finish');
+    expect(recordDisputesRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: '/api/v1/disputes',
+        errorCause: '5xx_server_error',
+      }),
+    );
+  });
+
+  it('uses request-scoped logger from res.locals when present', async () => {
+    const { logger, records } = createSpyLogger();
+    const mw = createDisputesObservabilityMiddleware({});
+    const { EventEmitter } = require('events');
+    const res = new EventEmitter();
+    res.statusCode = 200;
+    res.locals = { log: logger };
+    mw(
+      { method: 'DELETE', baseUrl: '/api/v1/disputes', route: { path: '/' } } as any,
+      res as any,
+      () => undefined,
+    );
+    res.emit('finish');
+    expect(records.find((r) => r.message === 'disputes_request')).toBeDefined();
+  });
+
+  it('falls back to "/" when baseUrl and route path normalize empty', async () => {
+    const recordDisputesRequest = jest.fn();
+    const { logger } = createSpyLogger();
+    const mw = createDisputesObservabilityMiddleware({
+      metricsService: { recordDisputesRequest },
+      log: logger,
+    });
+    const { EventEmitter } = require('events');
+    const res = new EventEmitter();
+    res.statusCode = 204;
+    res.locals = {};
+    mw(
+      { method: 'GET', baseUrl: '/', route: { path: '/' } } as any,
+      res as any,
+      () => undefined,
+    );
+    res.emit('finish');
+    expect(recordDisputesRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ route: '/', errorCause: 'success' }),
+    );
+  });
+
+  it('covers PATCH and DELETE handlers', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use('/api/v1/disputes', createDisputesRouter({ log: silentLogger }));
+
+    const patchRes = await request(app)
+      .patch('/api/v1/disputes/d-1')
+      .set('X-Forwarded-For', '21.0.0.1')
+      .send({ status: 'resolved' });
+    expect(patchRes.status).toBe(200);
+
+    const deleteRes = await request(app)
+      .delete('/api/v1/disputes/d-1')
+      .set('X-Forwarded-For', '21.0.0.2');
+    expect(deleteRes.status).toBe(200);
+  });
+
+  it('accepts createDisputesObservabilityMiddleware() with default options', async () => {
+    const { setWriteRecordImpl } = require('../logger');
+    setWriteRecordImpl(() => undefined);
+
+    const app = express();
+    app.use(createDisputesObservabilityMiddleware());
+    app.get('/x', (_req, res) => res.status(200).end());
+
+    const res = await request(app).get('/x');
+    expect(res.status).toBe(200);
+
+    setWriteRecordImpl((record: { level: string }) => {
+      const line = JSON.stringify(record);
+      if (record.level === 'error') process.stderr.write(line + '\n');
+      else process.stdout.write(line + '\n');
+    });
+  });
+
+  it('uses mount baseUrl when no Express route matched (e.g. early 429)', async () => {
+    const recordDisputesRequest = jest.fn();
+    const { logger } = createSpyLogger();
+    const mw = createDisputesObservabilityMiddleware({
+      metricsService: { recordDisputesRequest },
+      log: logger,
+    });
+    const { EventEmitter } = require('events');
+    const res = new EventEmitter();
+    res.statusCode = 429;
+    res.locals = {};
+    mw(
+      { method: 'GET', baseUrl: '/api/v1/disputes', route: undefined } as any,
+      res as any,
+      () => undefined,
+    );
+    res.emit('finish');
+    expect(recordDisputesRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: '/api/v1/disputes',
+        errorCause: '4xx_client_error',
+        statusCode: 429,
+      }),
+    );
+  });
+
+  it('handles POST/PATCH with empty body via ?? fallback', async () => {
+    const app = express();
+    // No json parser → req.body is undefined
+    app.use('/api/v1/disputes', createDisputesRouter({ log: silentLogger }));
+
+    const postRes = await request(app)
+      .post('/api/v1/disputes')
+      .set('X-Forwarded-For', '21.0.0.3')
+      .set('Content-Type', 'application/json');
+    expect(postRes.status).toBe(201);
+
+    const patchRes = await request(app)
+      .patch('/api/v1/disputes/x')
+      .set('X-Forwarded-For', '21.0.0.4')
+      .set('Content-Type', 'application/json');
+    expect(patchRes.status).toBe(200);
   });
 });

@@ -10,8 +10,10 @@ import {
 import { ServiceStatus } from './types';
 import {
   assertDlqDepth,
+  assertDisputesErrorCause,
   assertServiceStatus,
   assertWebhookOutcome,
+  DisputesErrorCause,
   WebhookOutcome as ValidatedWebhookOutcome,
 } from './metrics-validation';
 import { DEFAULT_HISTOGRAM_BUCKETS, validateHistogramBuckets } from './observability-config';
@@ -36,7 +38,17 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'webhook_dlq_depth',
   'webhook_rate_limit_tokens',
   'webhook_rate_limit_queue_depth',
+  'disputes_requests_total',
+  'disputes_request_duration_seconds',
 ] as const;
+
+export interface DisputesRequestMetricInput {
+  method: string;
+  route: string;
+  statusCode: number;
+  errorCause: DisputesErrorCause;
+  durationSeconds: number;
+}
 
 export interface MetricsServiceLike {
   contentType: string;
@@ -45,6 +57,7 @@ export interface MetricsServiceLike {
   recordHealthStatus: (status: ServiceStatus) => void;
   recordWebhookDelivery: (outcome: WebhookOutcome) => void;
   setWebhookDlqDepth: (depth: number) => void;
+  recordDisputesRequest: (input: DisputesRequestMetricInput) => void;
   startRateLimitMetricsSampling?: (limiter: any, intervalMs?: number) => void;
   stopRateLimitMetricsSampling?: () => void;
 }
@@ -91,6 +104,10 @@ export class MetricsService implements MetricsServiceLike {
   private readonly webhookRateLimitTokens: Gauge;
 
   private readonly webhookRateLimitQueueDepth: Gauge;
+
+  private readonly disputesRequestsTotal: Counter;
+
+  private readonly disputesRequestDurationSeconds: Histogram;
 
   private readonly httpRouteLabelLimit: number;
 
@@ -166,6 +183,21 @@ export class MetricsService implements MetricsServiceLike {
       labelNames: ['provider_id'],
       registers: [this.register],
     });
+
+    this.disputesRequestsTotal = new Counter({
+      name: 'disputes_requests_total',
+      help: 'Total disputes API requests by method, route, status, and error cause.',
+      labelNames: ['method', 'route', 'status_code', 'error_cause'],
+      registers: [this.register],
+    });
+
+    this.disputesRequestDurationSeconds = new Histogram({
+      name: 'disputes_request_duration_seconds',
+      help: 'Duration of disputes API requests in seconds.',
+      labelNames: ['method', 'route', 'status_code', 'error_cause'],
+      buckets: resolvedBuckets,
+      registers: [this.register],
+    });
   }
 
   trackHttpRequest(req: Request, res: Response, next: NextFunction): void {
@@ -208,6 +240,27 @@ export class MetricsService implements MetricsServiceLike {
     // large values that would indicate a bug or injection attempt.
     const validated = assertDlqDepth(depth);
     this.webhookDlqDepth.set(validated);
+  }
+
+  /**
+   * Record a disputes API request observation (counter + duration histogram).
+   * Labels are bounded: route must be an Express template, error_cause a finite enum.
+   */
+  recordDisputesRequest(input: DisputesRequestMetricInput): void {
+    const errorCause = assertDisputesErrorCause(input.errorCause);
+    const duration =
+      Number.isFinite(input.durationSeconds) && input.durationSeconds >= 0
+        ? input.durationSeconds
+        : 0;
+    const labels = {
+      method: input.method,
+      route: this.boundRouteLabel(input.route || UNMATCHED_ROUTE_LABEL),
+      status_code: String(input.statusCode),
+      error_cause: errorCause,
+    };
+
+    this.disputesRequestsTotal.inc(labels);
+    this.disputesRequestDurationSeconds.observe(labels, duration);
   }
 
   startRateLimitMetricsSampling(limiter: any, intervalMs: number = 10000): void {

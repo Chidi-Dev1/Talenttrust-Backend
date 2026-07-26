@@ -221,6 +221,151 @@ describe('MetricsService — health status gauge', () => {
   });
 });
 
+describe('MetricsService — disputes request metrics', () => {
+  it('increments disputes_requests_total with success error_cause', async () => {
+    const { service, register } = makeService();
+
+    service.recordDisputesRequest({
+      method: 'GET',
+      route: '/api/v1/disputes',
+      statusCode: 200,
+      errorCause: 'success',
+      durationSeconds: 0.012,
+    });
+
+    const json = await register.getMetricsAsJSON();
+    const counter = json.find((m) => m.name === 'disputes_requests_total');
+    expect(counter).toBeDefined();
+    const value = (counter!.values as any[]).find(
+      (v) =>
+        v.labels.error_cause === 'success' &&
+        v.labels.status_code === '200' &&
+        v.labels.route === '/api/v1/disputes',
+    );
+    expect(value?.value).toBe(1);
+  });
+
+  it('records 4xx_client_error and 5xx_server_error labels', async () => {
+    const { service, register } = makeService();
+
+    service.recordDisputesRequest({
+      method: 'GET',
+      route: '/api/v1/disputes',
+      statusCode: 429,
+      errorCause: '4xx_client_error',
+      durationSeconds: 0.001,
+    });
+    service.recordDisputesRequest({
+      method: 'POST',
+      route: '/api/v1/disputes',
+      statusCode: 500,
+      errorCause: '5xx_server_error',
+      durationSeconds: 0.05,
+    });
+
+    const json = await register.getMetricsAsJSON();
+    const counter = json.find((m) => m.name === 'disputes_requests_total');
+    const labels = ((counter?.values ?? []) as any[]).map((v) => v.labels.error_cause);
+    expect(labels).toEqual(expect.arrayContaining(['4xx_client_error', '5xx_server_error']));
+  });
+
+  it('observes disputes_request_duration_seconds histogram', async () => {
+    const { service, register } = makeService();
+
+    service.recordDisputesRequest({
+      method: 'GET',
+      route: '/api/v1/disputes/:id',
+      statusCode: 200,
+      errorCause: 'success',
+      durationSeconds: 0.2,
+    });
+
+    const text = await service.getMetrics();
+    expect(text).toContain('disputes_request_duration_seconds');
+    expect(text).toContain('disputes_requests_total');
+
+    const json = await register.getMetricsAsJSON();
+    const histogram = json.find((m) => m.name === 'disputes_request_duration_seconds');
+    expect(histogram).toBeDefined();
+    const count = (histogram!.values as any[]).find(
+      (v) =>
+        v.metricName === 'disputes_request_duration_seconds_count' ||
+        v.labels?.le === undefined && v.value === 1,
+    );
+    // At least one observation was recorded (count or sum present).
+    expect((histogram!.values as any[]).length).toBeGreaterThan(0);
+    expect(count || (histogram!.values as any[])[0]).toBeDefined();
+  });
+
+  it('rejects invalid error_cause values', () => {
+    const { service } = makeService();
+    expect(() =>
+      service.recordDisputesRequest({
+        method: 'GET',
+        route: '/api/v1/disputes',
+        statusCode: 200,
+        errorCause: 'timeout' as any,
+        durationSeconds: 0.01,
+      }),
+    ).toThrow(TypeError);
+  });
+
+  it('treats non-finite durations as zero', async () => {
+    const { service, register } = makeService();
+
+    service.recordDisputesRequest({
+      method: 'GET',
+      route: '/api/v1/disputes',
+      statusCode: 200,
+      errorCause: 'success',
+      durationSeconds: Number.NaN,
+    });
+
+    const json = await register.getMetricsAsJSON();
+    const histogram = json.find((m) => m.name === 'disputes_request_duration_seconds');
+    const sum = (histogram!.values as any[]).find(
+      (v) => v.metricName === 'disputes_request_duration_seconds_sum',
+    );
+    expect(sum?.value ?? 0).toBe(0);
+  });
+
+  it('treats negative durations as zero', async () => {
+    const { service, register } = makeService();
+
+    service.recordDisputesRequest({
+      method: 'GET',
+      route: '/api/v1/disputes',
+      statusCode: 200,
+      errorCause: 'success',
+      durationSeconds: -1,
+    });
+
+    const json = await register.getMetricsAsJSON();
+    const histogram = json.find((m) => m.name === 'disputes_request_duration_seconds');
+    const sum = (histogram!.values as any[]).find(
+      (v) => v.metricName === 'disputes_request_duration_seconds_sum',
+    );
+    expect(sum?.value ?? 0).toBe(0);
+  });
+
+  it('bounds empty route labels to unmatched', async () => {
+    const { service, register } = makeService();
+
+    service.recordDisputesRequest({
+      method: 'GET',
+      route: '',
+      statusCode: 200,
+      errorCause: 'success',
+      durationSeconds: 0.01,
+    });
+
+    const json = await register.getMetricsAsJSON();
+    const counter = json.find((m) => m.name === 'disputes_requests_total');
+    const value = (counter!.values as any[]).find((v) => v.labels.route === 'unmatched');
+    expect(value?.value).toBe(1);
+  });
+});
+
 describe('MetricsService — rate limit sampling', () => {
   it('starts rate limit metrics sampling', () => {
     const { service } = makeService();

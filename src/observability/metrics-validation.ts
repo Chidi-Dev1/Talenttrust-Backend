@@ -223,3 +223,56 @@ export function assertServiceStatus(value: unknown): ServiceStatus {
   }
   return result.data;
 }
+
+// ---------------------------------------------------------------------------
+// Disputes request metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Finite set of error-cause labels for disputes request metrics.
+ * Mapped from HTTP status codes — never from raw error messages.
+ */
+export const DISPUTES_ERROR_CAUSES = [
+  'success',
+  '4xx_client_error',
+  '5xx_server_error',
+  'unknown',
+] as const;
+export type DisputesErrorCause = (typeof DISPUTES_ERROR_CAUSES)[number];
+
+export const DisputesErrorCauseSchema = z.enum(DISPUTES_ERROR_CAUSES, {
+  errorMap: () => ({
+    message: `error_cause must be one of: ${DISPUTES_ERROR_CAUSES.join(', ')}`,
+  }),
+});
+
+/**
+ * Map an HTTP status code to a cardinality-safe disputes error-cause label.
+ */
+export function mapDisputesErrorCause(statusCode: number): DisputesErrorCause {
+  if (statusCode >= 200 && statusCode < 300) {
+    return 'success';
+  }
+  if (statusCode >= 400 && statusCode < 500) {
+    return '4xx_client_error';
+  }
+  if (statusCode >= 500 && statusCode < 600) {
+    return '5xx_server_error';
+  }
+  return 'unknown';
+}
+
+/**
+ * Validate a disputes error-cause label at runtime.
+ * Throws a TypeError for unknown values.
+ */
+export function assertDisputesErrorCause(value: unknown): DisputesErrorCause {
+  const result = DisputesErrorCauseSchema.safeParse(value);
+  if (!result.success) {
+    throw new TypeError(
+      `Invalid disputes error_cause: ${JSON.stringify(value)}. ` +
+        `Must be one of: ${DISPUTES_ERROR_CAUSES.join(', ')}`,
+    );
+  }
+  return result.data;
+}
