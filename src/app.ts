@@ -24,8 +24,7 @@ import apiKeysRouter from './routes/apiKeys.routes';
 
 import contractsModuleRouter from './routes/contracts.routes';
 import eventsRouter from './routes/events.routes';
-import disputesRouter from './routes/disputes.routes';
-import { createMetricsRouter, createMetricsScrapeHandler } from './routes/metrics.routes';
+import { createMetricsRouter } from './routes/metrics.routes';
 import { metricsAuthMiddleware } from './middleware/metricsAuth';
 
 import reputationRouter, { createReputationRouter } from './routes/reputation.routes';
@@ -107,7 +106,6 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/v1/admin/deploy', deployRouter);
   app.use('/api/v1/webhook-subscriptions', webhookSubscriptionRouter);
   app.use('/api/v1/metrics', metricsAuthMiddleware, createMetricsRouter(metricsService));
-  app.get('/metrics', metricsAuthMiddleware, createMetricsScrapeHandler(metricsService));
 
   if (includeTerminalHandlers) {
     attachTerminalHandlers(app);

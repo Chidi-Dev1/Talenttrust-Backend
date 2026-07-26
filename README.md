@@ -481,15 +481,6 @@ All configuration is managed through `src/config/` and validated at startup usin
 
 ## API Endpoints
 
-- `GET /health` - Health check
-- `GET /api/v1/contracts` - Get contracts
-- `GET /api/v1/reputation/:id` - Get freelancer reputation profile
-- `PUT /api/v1/reputation/:id` - Update freelancer reputation profile
-
-See [docs/backend/reputation-api.md](docs/backend/reputation-api.md) for detailed Reputation API info.
-
-## API Endpoints
-
 ### Health Check
 
 The service exposes a comprehensive health check endpoint at `GET /health` that aggregates dependency probes.
@@ -586,35 +577,6 @@ or resource identifiers. Unmatched requests are recorded as `unmatched`.
 labels retained by `http_requests_total` and `http_request_duration_seconds`.
 After the cap is reached, newly observed route templates are recorded as
 `other`, while existing route labels, `method`, and `status_code` remain intact.
-
-### Contracts
-- `GET /api/v1/contracts` - List contracts (placeholder)
-
-### Contract Metadata
-- `POST /api/v1/contracts/:contractId/metadata` - Create metadata
-- `GET /api/v1/contracts/:contractId/metadata` - List metadata with pagination
-- `GET /api/v1/contracts/:contractId/metadata/:id` - Get single metadata
-- `PATCH /api/v1/contracts/:contractId/metadata/:id` - Update metadata
-- `DELETE /api/v1/contracts/:contractId/metadata/:id` - Delete metadata
-
-See [docs/backend/contract-metadata-api.md](docs/backend/contract-metadata-api.md) for detailed API documentation.
-
-## Authentication
-
-The API uses Bearer token authentication. Include the token in the Authorization header:
-
-```
-Authorization: Bearer <your-auth-token>
-```
-
-Demo tokens for testing:
-- `demo-admin-token` - Admin user with full access
-- `demo-user-token` - Regular user with limited access
-
-## API Endpoints
-
-### Health Check
-- `GET /health` - Service health status
 
 ### Contracts
 - `GET /api/v1/contracts` - List contracts (placeholder)

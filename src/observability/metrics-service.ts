@@ -14,7 +14,6 @@ import {
   assertWebhookOutcome,
   WebhookOutcome as ValidatedWebhookOutcome,
 } from './metrics-validation';
-import { DEFAULT_HISTOGRAM_BUCKETS, validateHistogramBuckets } from './observability-config';
 
 /**
  * Re-exported from metrics-validation to preserve existing import paths.
