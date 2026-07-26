@@ -23,7 +23,9 @@
  *  - Numeric values are bounded to prevent gauge/counter corruption.
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response } from "express";
+import { createRateLimiter } from "../middleware/rateLimiter";
+import { validateEnv } from "../config/env.schema";
 import {
   validateMetricsInput,
   WebhookDeliveryInputSchema,
@@ -37,24 +39,6 @@ import { MetricsServiceLike } from '../observability/metrics-service';
 import { incrementDlqOperation, incrementDlqReplay } from '../utils/webhookMetrics';
 
 /**
- * Format a validation failure into the project's standard error envelope.
- */
-function validationErrorResponse(
-  res: Response,
-  failure: MetricsValidationFailure,
-  requestId?: string,
-): Response {
-  return res.status(400).json({
-    error: {
-      code: failure.code,
-      message: 'Request validation failed',
-      requestId: requestId ?? res.locals.requestId ?? 'unknown',
-      details: failure.issues,
-    },
-  });
-}
-
-/**
  * Create the metrics write router.
  *
  * @param metricsService - The MetricsService instance used to record metrics.
@@ -62,6 +46,35 @@ function validationErrorResponse(
  */
 export function createMetricsRouter(metricsService: MetricsServiceLike): Router {
   const router = Router();
+  
+  let config;
+  try {
+    config = validateEnv();
+  } catch {
+    // Fallback for tests if env is not fully valid
+    config = { 
+      METRICS_RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.METRICS_RATE_LIMIT_MAX_REQUESTS || '100', 10), 
+      METRICS_RATE_LIMIT_WINDOW_MS: parseInt(process.env.METRICS_RATE_LIMIT_WINDOW_MS || '60000', 10) 
+    };
+  }
+
+  const metricsRateLimiter = createRateLimiter({
+    maxRequests: config.METRICS_RATE_LIMIT_MAX_REQUESTS,
+    windowMs: config.METRICS_RATE_LIMIT_WINDOW_MS,
+    keyFn: (req) => {
+      const authHeader = req.get("authorization");
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        return authHeader.substring(7);
+      }
+      const xff = req.headers["x-forwarded-for"];
+      if (xff) {
+        return Array.isArray(xff) ? xff[0] : xff.split(",")[0].trim();
+      }
+      return req.ip ?? req.socket?.remoteAddress ?? "unknown";
+    },
+  });
+
+  router.use(metricsRateLimiter);
 
   /**
    * POST /api/v1/metrics/webhook/delivery
