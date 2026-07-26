@@ -6,30 +6,36 @@
  * authorization. A sliding-window rate limiter (sensitive-tier) is applied
  * to every route to prevent abuse and accidental overload.
  *
- * @route GET    /api/v1/disputes       - List disputes
- * @route GET    /api/v1/disputes/:id   - Get a single dispute
- * @route POST   /api/v1/disputes       - Create a new dispute
- * @route PATCH  /api/v1/disputes/:id   - Update a dispute
- * @route DELETE /api/v1/disputes/:id   - Delete a dispute
+ * @route GET    /api/v1/disputes           - List disputes
+ * @route GET    /api/v1/disputes/:id       - Get a single dispute
+ * @route POST   /api/v1/disputes           - Create a new dispute
+ * @route PATCH  /api/v1/disputes/:id       - Update a dispute
+ * @route DELETE /api/v1/disputes/:id       - Delete a dispute
+ * @route POST   /api/v1/disputes/batch     - Bulk update disputes (issue #812)
  *
  * @security
  *  - All routes require a valid JWT (Bearer token).
  *  - Rate limiting returns 429 with Retry-After header when exceeded.
  *  - Abuse guard hard-blocks repeat offenders.
+ *  - Bulk endpoint respects per-item authorization (one item's failure does not affect others).
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import { validateRequest, validateParams, validateQuery } from '../middleware/validate.middleware';
+import { validateSchema } from '../middleware/validate.middleware';
 import {
-  createDisputeSchema,
-  updateDisputeSchema,
-  disputeParamsSchema,
-  listDisputesQuerySchema,
-} from './disputes.validation';
-import { features } from '../config/features';
+  batchDisputeRequestSchema,
+  batchDisputeResponseSchema,
+  DisputeStatus,
+} from '../modules/disputes/dto/dispute.dto';
+import {
+  disputesService,
+  DisputeError,
+  DisputeRecord,
+} from '../services/disputes.service';
+import { logger } from '../logger';
 
 const router = Router();
 
@@ -56,6 +62,13 @@ router.use(disputesLimiter);
 // ── Authentication — all disputes routes require a valid JWT ──────────────────
 router.use(requireAuth);
 
+// Initialize demo data on first load
+let initialized = false;
+if (!initialized) {
+  disputesService.seedDemoDisputes();
+  initialized = true;
+}
+
 // ── GET / — list disputes ─────────────────────────────────────────────────────
 /** @permission disputes:list — admin, auditor, client (ownOnly), freelancer (ownOnly) */
 router.get(
@@ -74,13 +87,31 @@ router.get(
   requirePermission('disputes', 'read'),
   validateParams(disputeParamsSchema),
   (req: Request, res: Response) => {
-    res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        status: 'open',
-        createdAt: new Date().toISOString(),
-      },
-    });
+    try {
+      const dispute = disputesService.getDisputeById(req.params.id);
+      res.status(200).json({
+        dispute: {
+          id: dispute.id,
+          contractId: dispute.contractId,
+          status: dispute.status,
+          resolution: dispute.resolution,
+          createdAt: dispute.createdAt.toISOString(),
+          updatedAt: dispute.updatedAt.toISOString(),
+        },
+      });
+    } catch (err) {
+      if (err instanceof DisputeError && err.statusCode === 404) {
+        res.status(404).json({
+          error: {
+            code: err.code,
+            message: err.message,
+            requestId: res.locals.requestId ?? 'unknown',
+          },
+        });
+      } else {
+        throw err;
+      }
+    }
   },
 );
 
@@ -104,20 +135,36 @@ router.post(
 );
 
 // ── PATCH /:id — update a dispute ────────────────────────────────────────────
-/** @permission disputes:update — admin, client (ownOnly) */
+/** @permission disputes:update — admin only */
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
-  validateRequest(updateDisputeSchema),
-  (req: Request, res: Response) => {
-    const body = req.body ?? {};
-    res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        ...body,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+  async (req: Request, res: Response, next) => {
+    try {
+      const dispute = await disputesService.updateDispute(req.params.id, req.body);
+      res.status(200).json({
+        dispute: {
+          id: dispute.id,
+          contractId: dispute.contractId,
+          status: dispute.status,
+          resolution: dispute.resolution,
+          createdAt: dispute.createdAt.toISOString(),
+          updatedAt: dispute.updatedAt.toISOString(),
+        },
+      });
+    } catch (err) {
+      if (err instanceof DisputeError) {
+        res.status(err.statusCode).json({
+          error: {
+            code: err.code,
+            message: err.message,
+            requestId: res.locals.requestId ?? 'unknown',
+          },
+        });
+      } else {
+        next(err);
+      }
+    }
   },
 );
 
@@ -130,6 +177,179 @@ router.delete(
     res.status(200).json({
       message: `Dispute ${req.params.id} deleted successfully`,
     });
+  },
+);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// BULK ENDPOINT — Issue #812
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ── POST /batch — bulk update disputes ────────────────────────────────────────
+ *
+ * @description
+ * Accepts an array of dispute update operations and processes each independently.
+ * Each item is validated and processed in isolation — one item's failure does not
+ * affect others, and does not trigger partial side effects.
+ *
+ * @request
+ * ```
+ * POST /api/v1/disputes/batch
+ * Content-Type: application/json
+ *
+ * {
+ *   "operations": [
+ *     {
+ *       "id": "dispute-001",
+ *       "status": "resolved",
+ *       "resolution": "Evidence reviewed; parties agree"
+ *     },
+ *     {
+ *       "id": "dispute-002",
+ *       "status": "escalated",
+ *       "resolution": "Requires admin review"
+ *     }
+ *   ]
+ * }
+ * ```
+ *
+ * @response 200
+ * ```
+ * {
+ *   "results": [
+ *     {
+ *       "index": 0,
+ *       "success": true,
+ *       "dispute": {
+ *         "id": "dispute-001",
+ *         "contractId": "contract-001",
+ *         "status": "resolved",
+ *         "resolution": "Evidence reviewed; parties agree",
+ *         "createdAt": "2025-01-01T00:00:00Z",
+ *         "updatedAt": "2025-01-02T12:34:56Z"
+ *       }
+ *     },
+ *     {
+ *       "index": 1,
+ *       "success": false,
+ *       "error": {
+ *         "code": "invalid_state_transition",
+ *         "message": "Invalid state transition from under_review to under_review"
+ *       }
+ *     }
+ *   ],
+ *   "summary": {
+ *     "total": 2,
+ *     "succeeded": 1,
+ *     "failed": 1
+ *   }
+ * }
+ * ```
+ *
+ * @errors
+ * - 400 Bad Request: Empty batch, exceeds cap (50), or invalid schema
+ * - 401 Unauthorized: Missing/invalid authentication
+ * - 403 Forbidden: Caller lacks permission to update disputes (admin-only)
+ * - 429 Too Many Requests: Rate limit exceeded
+ * - 500 Internal Server Error: Unrecoverable error (logs correlation ID for support)
+ *
+ * @permission disputes:update — admin only
+ *
+ * @note
+ * Each item is processed independently:
+ * - Validation errors fail per-item without affecting others
+ * - State transition errors fail per-item
+ * - Successfully updated items persist immediately
+ * - Cascading side effects (notifications, escrow state) are fire-and-forget
+ *   (failures do not fail the main operation, but are logged for ops team)
+ *
+ * @cap 50 items per request
+ * Cap justifies by per-item side effects (notifications, escrow state changes)
+ * and rate limit considerations (300 req/min across all endpoints).
+ */
+router.post(
+  '/batch',
+  requirePermission('disputes', 'update'),
+  (req: Request, res: Response, next) => {
+    // Custom validation for the batch endpoint (not using validateSchema to keep error messages clear)
+    const result = batchDisputeRequestSchema.safeParse(req.body);
+    if (!result.success) {
+      const requestId = typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      return res.status(400).json({
+        error: {
+          code: 'validation_error',
+          message: 'Request validation failed',
+          requestId,
+          details: result.error.issues.map((issue) => ({
+            path: issue.path.map(String),
+            message: issue.message,
+            code: issue.code,
+          })),
+        },
+      });
+    }
+    req.body = result.data;
+    next();
+  },
+  async (req: Request, res: Response, next) => {
+    try {
+      const { operations } = req.body;
+
+      logger.info('[Disputes Batch] Request received', {
+        requestId: res.locals.requestId,
+        itemCount: operations.length,
+      });
+
+      // Process the batch (all items processed independently)
+      const results = await disputesService.processBatch(operations);
+
+      // Build summary
+      const succeeded = results.filter(r => r.success).length;
+      const failed = results.filter(r => !r.success).length;
+
+      // Construct response per the DTO schema
+      const response = {
+        results: results.map(r => {
+          if (r.success && r.dispute) {
+            return {
+              index: r.index,
+              success: true as const,
+              dispute: {
+                id: r.dispute.id,
+                contractId: r.dispute.contractId,
+                status: r.dispute.status,
+                resolution: r.dispute.resolution,
+                createdAt: r.dispute.createdAt.toISOString(),
+                updatedAt: r.dispute.updatedAt.toISOString(),
+              },
+            };
+          } else if (!r.success && r.error) {
+            return {
+              index: r.index,
+              success: false as const,
+              error: r.error,
+            };
+          }
+          throw new Error('Invalid batch result state');
+        }),
+        summary: {
+          total: operations.length,
+          succeeded,
+          failed,
+        },
+      };
+
+      logger.info('[Disputes Batch] Processing complete', {
+        requestId: res.locals.requestId,
+        succeeded,
+        failed,
+      });
+
+      // Return 200 even if some items failed — each item reports its own status
+      res.status(200).json(response);
+    } catch (err) {
+      next(err);
+    }
   },
 );
 
