@@ -260,19 +260,18 @@ export const rateLimitConfig = {
   } satisfies RateLimiterConfig,
 
   /**
-   * API-key management endpoints. This store is intentionally isolated from
-   * the general tiers so requests to unrelated routes cannot consume this
-   * endpoint's allowance.
+   * Webhooks API tier: webhook subscription endpoints
+   * Moderate limit to deter abuse of the webhook management API.
    */
-  apiKeys: {
-    maxRequests: toCount(process.env.RL_API_KEYS_MAX, 60),
-    windowMs: toMs(process.env.RL_API_KEYS_WINDOW_MS, 60_000),
-    abuseThreshold: toCount(process.env.RL_API_KEYS_ABUSE_THRESHOLD, 5),
-    blockWindowMs: toMs(process.env.RL_API_KEYS_BLOCK_WINDOW_MS, 300_000),
-    blockDurationMs: toMs(process.env.RL_API_KEYS_BLOCK_DURATION_MS, 600_000),
-    maxBlockDurationMs: toMs(process.env.RL_API_KEYS_MAX_BLOCK_MS, 86_400_000),
+  webhooksApi: {
+    maxRequests: toCount(process.env.RL_WEBHOOKS_MAX, 100),
+    windowMs: toMs(process.env.RL_WEBHOOKS_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_WEBHOOKS_ABUSE_THRESHOLD, 5),
+    blockWindowMs: toMs(process.env.RL_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_MAX_BLOCK_MS, 86_400_000),
     sendHeaders: true,
-    store: apiKeysRateLimitStore,
+    ...sharedStore,
   } satisfies RateLimiterConfig,
 
   /**

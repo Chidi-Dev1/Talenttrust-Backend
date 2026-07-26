@@ -17,12 +17,28 @@ import {
 import { AuthenticatedRequest } from '../lib/types';
 import { idempotencyMiddleware } from '../middleware/idempotency';
 import { validateWebhookUrl, findSubscriptionOrFail } from './webhook-subscription.validation';
+import { createRateLimiter } from '../middleware/rateLimiter';
+import { rateLimitConfig } from '../config/rateLimit';
+import { authRateLimitKeyFn } from '../auth/rateLimitKey';
 
 const router = Router();
 
 // DB and Repository setup is resolved at registration / execution time
 const getRepo = () => new SqliteWebhookSubscriptionRepository(getDb());
 
+const webhookRateLimiter = createRateLimiter({
+  ...rateLimitConfig.webhooksApi,
+  keyFn: authRateLimitKeyFn,
+});
+
+/**
+ * Removes the webhook secret from a subscription object before sending to the client.
+ * Secrets must never be exposed in API responses.
+ */
+function sanitizeSubscription(sub: any): any {
+  const { secret: _secret, ...rest } = sub;
+  return rest;
+}
 
 /**
  * POST /api/v1/webhook-subscriptions
@@ -31,6 +47,7 @@ const getRepo = () => new SqliteWebhookSubscriptionRepository(getDb());
  */
 router.post(
   '/',
+  webhookRateLimiter,
   requireAuth,
   requireRole('admin'),
   validateSchema(createWebhookSubscriptionSchema),
@@ -59,6 +76,7 @@ router.post(
  */
 router.get(
   '/',
+  webhookRateLimiter,
   requireAuth,
   requireRole('admin'),
   validateSchema(listWebhookSubscriptionsQuerySchema),
@@ -102,6 +120,7 @@ router.get(
  */
 router.get(
   '/:id',
+  webhookRateLimiter,
   requireAuth,
   requireRole('admin'),
   validateSchema(getWebhookSubscriptionSchema),
@@ -128,6 +147,7 @@ router.get(
  */
 router.patch(
   '/:id',
+  webhookRateLimiter,
   requireAuth,
   requireRole('admin'),
   validateSchema(updateWebhookSubscriptionSchema),
@@ -161,6 +181,7 @@ router.patch(
  */
 router.delete(
   '/:id',
+  webhookRateLimiter,
   requireAuth,
   requireRole('admin'),
   validateSchema(getWebhookSubscriptionSchema),
