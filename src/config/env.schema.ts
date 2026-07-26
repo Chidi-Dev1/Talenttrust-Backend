@@ -195,6 +195,11 @@ export const envSchema = z.object({
     .pipe(z.number().int().positive().max(10000)),
 
   // Reputation Scoring Configuration
+  REPUTATION_ENABLED: z.string()
+    .optional()
+    .transform((val) => val === undefined ? false : val === 'true')
+    .pipe(z.boolean()),
+
   REPUTATION_DECAY_LAMBDA: z.string()
     .default('0.005')
     .transform((val) => parseFloat(val))

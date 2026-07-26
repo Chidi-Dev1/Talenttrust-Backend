@@ -1,6 +1,6 @@
 /**
  * Reputation Service Tests
- * 
+ *
  * Comprehensive test suite for reputation score aggregation logic,
  * including the recency-weighted exponential decay algorithm.
  */
@@ -19,6 +19,13 @@ jest.mock('../audit/service', () => ({
     log: jest.fn()
   }
 }));
+
+// Mock the env validation for feature flag tests
+jest.mock('../config/env.schema', () => ({
+  validateEnv: jest.fn()
+}));
+
+import { validateEnv } from '../config/env.schema';
 
 // Test constants
 const REVIEWER_ID = 'reviewer-123';
@@ -505,5 +512,97 @@ describe('ReputationService.getProfile', () => {
     // 2-decimal rounding contract without contradicting the numeric-type tests.
     expect(profile.score.toFixed(2)).toMatch(/^\d+\.\d{2}$/);
     expect(profile.weightedScore.toFixed(2)).toMatch(/^\d+\.\d{2}$/);
+  });
+});
+
+describe('ReputationService — feature flag (REPUTATION_ENABLED)', () => {
+  let db: ReturnType<typeof Database>;
+
+  beforeAll(() => {
+    db = getDb(':memory:');
+    ReputationService.initialize(db);
+
+    // Seed minimal user rows
+    db.exec(`
+      INSERT OR IGNORE INTO users (id, username, email, role, created_at)
+      VALUES
+        ('reviewer-123', 'reviewer01', 'reviewer@test.com', 'client', datetime('now')),
+        ('target-456', 'target01', 'target@test.com', 'freelancer', datetime('now'));
+    `);
+
+    // Seed contract
+    db.prepare(
+      `INSERT OR IGNORE INTO contracts
+         (id, title, client_id, freelancer_id, amount, status, version, created_at)
+       VALUES (?, ?, ?, ?, 1000, 'completed', 0, datetime('now'))`,
+    ).run('contract-abc', 'Contract contract-abc', 'reviewer-123', 'target-456');
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('createRating throws ForbiddenError when REPUTATION_ENABLED is false', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: false });
+
+    expect(() => {
+      ReputationService.createRating(
+        'reviewer-123',
+        'target-456',
+        5,
+        'contract-abc',
+        'Great work!'
+      );
+    }).toThrow('Reputation system is currently disabled');
+  });
+
+  it('createRating succeeds when REPUTATION_ENABLED is true', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: true });
+
+    const entry = ReputationService.createRating(
+      'reviewer-123',
+      'target-456',
+      5,
+      'contract-abc',
+      'Great work!'
+    );
+
+    expect(entry).toBeDefined();
+    expect(entry.reviewerId).toBe('reviewer-123');
+    expect(entry.targetId).toBe('target-456');
+    expect(entry.rating).toBe(5);
+  });
+
+  it('getProfile throws ForbiddenError when REPUTATION_ENABLED is false', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: false });
+
+    expect(() => {
+      ReputationService.getProfile('target-456');
+    }).toThrow('Reputation system is currently disabled');
+  });
+
+  it('getProfile succeeds when REPUTATION_ENABLED is true', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: true });
+
+    const profile = ReputationService.getProfile('target-456');
+
+    expect(profile).toBeDefined();
+    expect(profile.freelancerId).toBe('target-456');
+  });
+
+  it('defaults to disabled when validateEnv throws an error', () => {
+    (validateEnv as jest.Mock).mockImplementation(() => {
+      throw new Error('Config validation failed');
+    });
+
+    expect(() => {
+      ReputationService.createRating(
+        'reviewer-123',
+        'target-456',
+        5,
+        'contract-abc',
+        'Great work!'
+      );
+    }).toThrow('Reputation system is currently disabled');
   });
 });
