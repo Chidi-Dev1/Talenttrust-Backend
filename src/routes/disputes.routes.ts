@@ -1,6 +1,7 @@
 /**
  * @module routes/disputes
- * @description Disputes API routes with per-client rate limiting.
+ * @description Disputes API routes with per-client rate limiting and webhook
+ * notifications on notable events.
  *
  * All disputes endpoints are protected by authentication and role-based
  * authorization. A sliding-window rate limiter (sensitive-tier) is applied
@@ -22,8 +23,16 @@ import { Router, Request, Response } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { WebhookService } from '../services/webhook.service';
+
+export const DISPUTE_EVENTS = {
+  CREATED: 'dispute.created',
+  UPDATED: 'dispute.updated',
+  DELETED: 'dispute.deleted',
+} as const;
 
 const router = Router();
+const webhookService = new WebhookService();
 
 // ── Rate limiter (disputes tier) ──────────────────────────────────────────────
 const disputesLimiter = createRateLimiter(rateLimitConfig.disputes);
@@ -65,16 +74,23 @@ router.get(
 router.post(
   '/',
   requirePermission('disputes', 'create'),
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     const body = req.body ?? {};
-    res.status(201).json({
-      dispute: {
-        id: `dispute-${Date.now()}`,
-        ...body,
-        status: 'open',
-        createdAt: new Date().toISOString(),
-      },
-    });
+    const dispute = {
+      id: `dispute-${Date.now()}`,
+      ...body,
+      status: 'open' as const,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Fire-and-forget webhook notification
+    webhookService
+      .trigger(DISPUTE_EVENTS.CREATED, dispute, req.headers['x-correlation-id'] as string | undefined)
+      .catch(() => {
+        /* webhook delivery errors are logged by the service */
+      });
+
+    res.status(201).json({ dispute });
   },
 );
 
@@ -83,15 +99,22 @@ router.post(
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     const body = req.body ?? {};
-    res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        ...body,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+    const dispute = {
+      id: req.params.id,
+      ...body,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Fire-and-forget webhook notification
+    webhookService
+      .trigger(DISPUTE_EVENTS.UPDATED, dispute, req.headers['x-correlation-id'] as string | undefined)
+      .catch(() => {
+        /* webhook delivery errors are logged by the service */
+      });
+
+    res.status(200).json({ dispute });
   },
 );
 
@@ -100,7 +123,16 @@ router.patch(
 router.delete(
   '/:id',
   requirePermission('disputes', 'delete'),
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
+    const payload = { id: req.params.id };
+
+    // Fire-and-forget webhook notification
+    webhookService
+      .trigger(DISPUTE_EVENTS.DELETED, payload, req.headers['x-correlation-id'] as string | undefined)
+      .catch(() => {
+        /* webhook delivery errors are logged by the service */
+      });
+
     res.status(200).json({
       message: `Dispute ${req.params.id} deleted successfully`,
     });
