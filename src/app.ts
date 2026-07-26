@@ -90,6 +90,12 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   const db = getDb();
   ReputationService.initialize(db);
 
+  // ── Prometheus scrape endpoint ────────────────────────────────────────────
+  app.get('/metrics', metricsAuthMiddleware, async (_req, res) => {
+    res.setHeader('Content-Type', metricsService.contentType);
+    res.status(200).send(await metricsService.getMetrics());
+  });
+
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', legacyHealthRouter);
   app.use('/health', readinessHealthRouter);

@@ -7,6 +7,7 @@ import {
   Registry,
 } from 'prom-client';
 
+import { logger } from '../logger';
 import { ServiceStatus } from './types';
 import {
   assertDlqDepth,
@@ -163,14 +164,14 @@ export class MetricsService implements MetricsServiceLike {
     this.httpRequestsTotal = new Counter({
       name: 'http_requests_total',
       help: 'Total number of HTTP requests.',
-      labelNames: ['method', 'route', 'status_code'],
+      labelNames: ['method', 'route', 'status_code', 'error_cause'],
       registers: [this.register],
     });
 
     this.httpRequestDurationSeconds = new Histogram({
       name: 'http_request_duration_seconds',
       help: 'Duration of HTTP requests in seconds.',
-      labelNames: ['method', 'route', 'status_code'],
+      labelNames: ['method', 'route', 'status_code', 'error_cause'],
       buckets: resolvedBuckets,
       registers: [this.register],
     });
@@ -246,16 +247,36 @@ export class MetricsService implements MetricsServiceLike {
     const start = process.hrtime.bigint();
 
     res.on('finish', () => {
-      const duration = Number(process.hrtime.bigint() - start) / 1_000_000_000;
+      const durationNs = process.hrtime.bigint() - start;
+      const duration = Number(durationNs) / 1_000_000_000;
+      const durationMs = Number(durationNs) / 1_000_000;
       const route = this.boundRouteLabel(extractRoute(req));
+      const errorCause = resolveErrorCause(res);
       const labels = {
         method: req.method,
         route,
         status_code: String(res.statusCode),
+        error_cause: errorCause,
       };
 
       this.httpRequestsTotal.inc(labels);
       this.httpRequestDurationSeconds.observe(labels, duration);
+
+      const locals = res.locals ?? {};
+      const requestId = typeof locals.requestId === 'string' ? locals.requestId : undefined;
+      const correlationId =
+        typeof locals.correlationId === 'string' ? locals.correlationId : undefined;
+
+      logger.info('http request metric', {
+        metric: 'http_request',
+        method: req.method,
+        route,
+        statusCode: res.statusCode,
+        errorCause,
+        durationMs: parseFloat(durationMs.toFixed(3)),
+        ...(requestId !== undefined && { requestId }),
+        ...(correlationId !== undefined && { correlationId }),
+      });
     });
 
     next();
@@ -462,4 +483,22 @@ function joinRouteParts(baseUrl: string, routePath: string): string {
 
   return `${baseUrl}${routePath}`;
 }
+
+function resolveErrorCause(res: Response): string {
+  const locals = res.locals ?? {};
+  const explicit = locals['errorCause'];
+  if (typeof explicit === 'string' && explicit.length > 0) {
+    return explicit;
+  }
+
+  const code = res.statusCode;
+  if (code < 400) {
+    return 'none';
+  }
+  if (code < 500) {
+    return 'client_error';
+  }
+  return 'server_error';
+}
+
 

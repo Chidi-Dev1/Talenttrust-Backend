@@ -202,4 +202,32 @@ describe('createApp()', () => {
       expect([200, 400, 404, 405]).toContain(res.statusCode);
     });
   });
+
+  // ── Metrics scrape endpoint ──────────────────────────────────────────────
+
+  describe('GET /metrics (Prometheus scrape endpoint)', () => {
+    it('returns 200 OK without auth when METRICS_AUTH_TOKEN is not set', async () => {
+      const res = await request(server, 'GET', '/metrics');
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('responds with the Prometheus text exposition content-type', async () => {
+      const res = await request(server, 'GET', '/metrics');
+      expect(res.headers['content-type']).toMatch(/text\/plain/);
+      expect(res.headers['content-type']).toMatch(/version=0\.0\.4/);
+    });
+
+    it('body contains documented catalog metric family names', async () => {
+      const res = await request(server, 'GET', '/metrics');
+      expect(res.body).toContain('http_requests_total');
+      expect(res.body).toContain('http_request_duration_seconds');
+      expect(res.body).toContain('service_health_status');
+    });
+
+    it('body contains HELP/TYPE metadata for http_requests_total', async () => {
+      const res = await request(server, 'GET', '/metrics');
+      expect(res.body).toContain('# HELP http_requests_total');
+      expect(res.body).toContain('# TYPE http_requests_total counter');
+    });
+  });
 });

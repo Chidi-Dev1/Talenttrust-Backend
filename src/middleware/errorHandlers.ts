@@ -66,6 +66,8 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
     ? res.locals.log
     : logger;
 
+  res.locals.errorCause = mapped.payload.error.code;
+
   log.error('API request failed', {
     err: {
       type: errorName(error),
