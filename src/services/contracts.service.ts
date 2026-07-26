@@ -7,6 +7,9 @@ import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.type
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
+import { createLogger } from '../logger';
+
+const log = createLogger({ service: 'ContractsService' });
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -55,10 +58,13 @@ export class ContractsService {
    * Creates a new contract off-chain, preparing it for escrow deposit.
    * Enforces milestone count and total amount caps before persisting.
    * @param data The contract details conforming to CreateContractDto.
+   * @param correlationId Optional correlation ID for distributed tracing.
    * @returns The newly created contract object.
    * @throws ContractBoundsError if budget or milestone totals exceed policy limits.
    */
-  public async createContract(data: CreateContractDto): Promise<Contract> {
+  public async createContract(data: CreateContractDto, correlationId?: string): Promise<Contract> {
+    const traceCtx = correlationId ? { correlationId } : {};
+
     const boundsCheck = validateContractBounds(data.budget, data.milestones);
     if (!boundsCheck.valid) {
       throw new ContractBoundsError(boundsCheck.error);
@@ -89,11 +95,24 @@ export class ContractsService {
       status: data.status || 'draft',
     });
 
+    log.info('ContractsService.createContract: contract created', {
+      ...traceCtx,
+      contractId: newContract.id,
+    });
+
     // Notify the Soroban service to prepare the transaction
     try {
       await this.sorobanService.prepareEscrow(newContract.id, data.budget);
+      log.info('ContractsService.createContract: soroban escrow prepared', {
+        ...traceCtx,
+        contractId: newContract.id,
+      });
     } catch (error) {
-      console.warn(`[ContractsService] Soroban prepareEscrow failed for contract ${newContract.id}:`, error);
+      log.warn('ContractsService.createContract: soroban prepareEscrow failed', {
+        ...traceCtx,
+        contractId: newContract.id,
+        err: error as Error,
+      });
     }
 
     return newContract;
@@ -115,6 +134,7 @@ export class ContractsService {
    *
    * @param id - UUID of the contract to update.
    * @param dto - Partial update payload including the OCC `version`.
+   * @param correlationId - Optional correlation ID for distributed tracing.
    * @returns The updated Contract with an incremented version.
    * @throws {MissingVersionError} When `version` is not provided.
    * @throws {InvalidVersionError} When `version` is not a non-negative integer.
@@ -127,7 +147,8 @@ export class ContractsService {
    * omitting the version field because this method validates it before calling
    * the repository.
    */
-  public async updateContract(id: string, dto: UpdateContractDto): Promise<Contract> {
+  public async updateContract(id: string, dto: UpdateContractDto, correlationId?: string): Promise<Contract> {
+    const traceCtx = correlationId ? { correlationId } : {};
     const { version, ...fields } = dto;
 
     // Defense-in-depth: validate version even though middleware already checked
@@ -163,17 +184,29 @@ export class ContractsService {
     if (fields.budget !== undefined) updateFields.amount = fields.budget;
     if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
 
-    return this.contractRepository.updateWithVersion(id, updateFields, version);
+    const updated = await this.contractRepository.updateWithVersion(id, updateFields, version);
+    log.info('ContractsService.updateContract: contract updated', {
+      ...traceCtx,
+      contractId: id,
+      version,
+    });
+    return updated;
   }
 
   /**
    * Deletes a contract by ID.
+   * @param correlationId - Optional correlation ID for distributed tracing.
    */
-  public async deleteContract(id: string): Promise<void> {
+  public async deleteContract(id: string, correlationId?: string): Promise<void> {
+    const traceCtx = correlationId ? { correlationId } : {};
     const deleted = await this.contractRepository.delete(id);
     if (!deleted) {
       throw new NotFoundError(`Contract with id ${id} not found`);
     }
+    log.info('ContractsService.deleteContract: contract deleted', {
+      ...traceCtx,
+      contractId: id,
+    });
   }
 
   /**

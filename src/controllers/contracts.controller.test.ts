@@ -694,10 +694,12 @@ describe('ContractsController', () => {
 
       expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
       expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: fakePage,
-      });
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'success',
+          data: fakePage,
+        }),
+      );
     });
 
     it('returns 200 with cursor page when a valid cursor is provided', async () => {
@@ -731,10 +733,15 @@ describe('ContractsController', () => {
       );
 
       expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'error',
-        message: expect.stringMatching(/invalid pagination cursor/i),
-      });
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'error',
+          error: expect.objectContaining({
+            code: 'bad_request',
+            message: expect.stringMatching(/invalid pagination cursor/i),
+          }),
+        }),
+      );
     });
 
     it('calls next() when service throws', async () => {
