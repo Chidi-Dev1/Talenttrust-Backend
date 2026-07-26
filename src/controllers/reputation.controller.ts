@@ -3,6 +3,8 @@ import { ReputationService } from '../services/reputation.service';
 import { ForbiddenError, ConflictError, ValidationError, AppError } from '../errors/appError';
 import { AuthenticatedRequest } from '../auth/authenticate';
 import { isValidReputationRatingPayload } from './reputation.validation';
+import { profileToResponseDTO, createRatingBodyToPayload } from '../types/reputation';
+import type { GetProfileParamsDTO, CreateRatingBodyDTO, ApiSuccessResponseDTO, ReputationProfileResponseDTO } from '../types/reputation';
 
 /**
  * @title Reputation Controller
@@ -15,9 +17,13 @@ export class ReputationController {
    */
   public static async getProfile(req: Request, res: Response): Promise<void> {
     try {
-      const { id } = req.params;
-      const profile = ReputationService.getProfile(id);
-      res.status(200).json({ status: 'success', data: profile });
+      const params: GetProfileParamsDTO = { id: req.params.id };
+      const profile = ReputationService.getProfile(params.id);
+      const response: ApiSuccessResponseDTO<ReputationProfileResponseDTO> = {
+        status: 'success',
+        data: profileToResponseDTO(profile),
+      };
+      res.status(200).json(response);
     } catch (error: any) {
       const requestId =
         typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
@@ -55,11 +61,11 @@ export class ReputationController {
   public static async createRating(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const payload: any = req.body;
+      const bodyDTO: CreateRatingBodyDTO = req.body as CreateRatingBodyDTO;
       const requestId =
         typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
 
-      if (!isValidReputationRatingPayload(payload)) {
+      if (!isValidReputationRatingPayload(bodyDTO)) {
         res.status(400).json({
           error: {
             code: 'bad_request',
@@ -70,10 +76,15 @@ export class ReputationController {
         return;
       }
 
+      const payload = createRatingBodyToPayload(bodyDTO);
       const updatedProfile = (ReputationService as any).updateProfile
         ? (ReputationService as any).updateProfile(id, payload)
         : ReputationService.getProfile(id);
-      res.status(200).json({ status: 'success', data: updatedProfile });
+      const response: ApiSuccessResponseDTO<ReputationProfileResponseDTO> = {
+        status: 'success',
+        data: profileToResponseDTO(updatedProfile),
+      };
+      res.status(200).json(response);
     } catch (error) {
       handleControllerError(error, res);
     }
