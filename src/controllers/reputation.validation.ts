@@ -22,6 +22,7 @@ export function isValidReputationRatingPayload(
   const rating = candidate.rating;
 
   return (
+    typeof candidate.reviewerId === 'string' &&
     Boolean(candidate.reviewerId) &&
     typeof rating === 'number' &&
     Number.isFinite(rating) &&
