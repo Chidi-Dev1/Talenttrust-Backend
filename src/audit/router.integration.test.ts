@@ -291,43 +291,51 @@ describe('GET /api/v1/audit — validation error paths', () => {
 
   it('returns 400 for an invalid action value', async () => {
     const res = await request(app).get('/api/v1/audit?action=NOT_AN_ACTION').expect(400);
-    expect(res.body.error).toMatch(/Invalid action/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('action'))).toBe(true);
   });
 
   it('returns 400 for an invalid severity value', async () => {
     const res = await request(app).get('/api/v1/audit?severity=VERBOSE').expect(400);
-    expect(res.body.error).toMatch(/Invalid severity/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('severity'))).toBe(true);
   });
 
   it('returns 400 for a non-ISO from date', async () => {
     const res = await request(app).get('/api/v1/audit?from=not-a-date').expect(400);
-    expect(res.body.error).toMatch(/Invalid from/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('from'))).toBe(true);
   });
 
   it('returns 400 for a non-ISO to date', async () => {
     const res = await request(app).get('/api/v1/audit?to=yesterday').expect(400);
-    expect(res.body.error).toMatch(/Invalid to/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('to'))).toBe(true);
   });
 
   it('returns 400 for a negative limit value', async () => {
     const res = await request(app).get('/api/v1/audit?limit=-1').expect(400);
-    expect(res.body.error).toMatch(/Invalid limit/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('limit'))).toBe(true);
   });
 
   it('returns 400 for a non-numeric limit value', async () => {
     const res = await request(app).get('/api/v1/audit?limit=abc').expect(400);
-    expect(res.body.error).toMatch(/Invalid limit/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('limit'))).toBe(true);
   });
 
   it('returns 400 for a negative offset value', async () => {
     // Note: router.ts parseOffset throws for negative values
     const res = await request(app).get('/api/v1/audit?offset=-5').expect(400);
-    expect(res.body.error).toMatch(/Invalid offset/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('offset'))).toBe(true);
   });
 
   it('returns 400 for a non-numeric offset value', async () => {
     const res = await request(app).get('/api/v1/audit?offset=xyz').expect(400);
-    expect(res.body.error).toMatch(/Invalid offset/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('offset'))).toBe(true);
   });
 
   it('accepts all valid AuditAction values without error', async () => {
@@ -717,32 +725,38 @@ describe('GET /api/v1/audit/export — validation error paths', () => {
 
   it('returns 400 for an invalid action filter', async () => {
     const res = await request(app).get('/api/v1/audit/export?action=HACK').expect(400);
-    expect(res.body.error).toMatch(/Invalid action/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('action'))).toBe(true);
   });
 
   it('returns 400 for an invalid severity filter', async () => {
     const res = await request(app).get('/api/v1/audit/export?severity=DEBUG').expect(400);
-    expect(res.body.error).toMatch(/Invalid severity/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('severity'))).toBe(true);
   });
 
   it('returns 400 for a malformed from timestamp', async () => {
     const res = await request(app).get('/api/v1/audit/export?from=not-a-date').expect(400);
-    expect(res.body.error).toMatch(/Invalid from/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('from'))).toBe(true);
   });
 
   it('returns 400 for a malformed to timestamp', async () => {
     const res = await request(app).get('/api/v1/audit/export?to=bad-date').expect(400);
-    expect(res.body.error).toMatch(/Invalid to/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('to'))).toBe(true);
   });
 
   it('returns 400 for a non-numeric limit', async () => {
     const res = await request(app).get('/api/v1/audit/export?limit=abc').expect(400);
-    expect(res.body.error).toMatch(/Invalid limit/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('limit'))).toBe(true);
   });
 
   it('returns 400 for a negative limit', async () => {
     const res = await request(app).get('/api/v1/audit/export?limit=-10').expect(400);
-    expect(res.body.error).toMatch(/Invalid limit/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('limit'))).toBe(true);
   });
 
   it('does not include response headers if headers are not yet sent on error', async () => {
@@ -1051,7 +1065,8 @@ describe('GET /api/v1/audit — cursor pagination', () => {
   it('returns 400 for invalid cursor format', async () => {
     const { app } = buildApp(store);
     const res = await request(app).get('/api/v1/audit?cursor=invalid-cursor').expect(400);
-    expect(res.body.error).toMatch(/Invalid cursor format/i);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('cursor'))).toBe(true);
   });
 
   it('cursor pagination respects limit bounds (default 50, max 100)', async () => {
@@ -1205,7 +1220,10 @@ describe('POST /api/v1/audit — idempotent write', () => {
       .send({ action: 'CONTRACT_CREATED' })
       .expect(400);
 
-    expect(res.body.error).toContain('Missing required fields');
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.map((d: { path: string[] }) => d.path[0])).toEqual(
+      expect.arrayContaining(['severity', 'actor', 'resource', 'resourceId']),
+    );
   });
 
   it('allows different Idempotency-Keys for independent entries', async () => {

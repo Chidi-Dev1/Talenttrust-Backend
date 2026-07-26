@@ -559,13 +559,15 @@ describe('auditRouter (singleton, real router)', () => {
   it('GET /api/v1/audit rejects invalid action param', async () => {
     const app = buildTestApp();
     const res = await request(app).get('/api/v1/audit?action=INVALID_ACTION').expect(400);
-    expect(res.body.error).toMatch(/Invalid action/);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('action'))).toBe(true);
   });
 
   it('GET /api/v1/audit rejects invalid severity param', async () => {
     const app = buildTestApp();
     const res = await request(app).get('/api/v1/audit?severity=UNKNOWN').expect(400);
-    expect(res.body.error).toMatch(/Invalid severity/);
+    expect(res.body.error.code).toBe('validation_error');
+    expect(res.body.error.details.some((d: { path: string[] }) => d.path.includes('severity'))).toBe(true);
   });
 
   it('GET /api/v1/audit/:id returns 404 for unknown id', async () => {
