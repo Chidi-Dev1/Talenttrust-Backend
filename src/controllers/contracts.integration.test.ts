@@ -544,7 +544,6 @@ describe('GET /api/v1/contracts', () => {
       expect(res.body.error).toMatchObject({ code: 'bad_request' });
     });
   });
-});
 
 afterAll(() => {
   closeDb();
