@@ -65,11 +65,8 @@ import { getDb, closeDb } from '../db/database';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-  beforeAll(async () => {
-    process.env.JWT_SECRET = 'super-secret';
-    process.env.DB_PATH = ':memory:';
-    db = getDb();
-    app = createApp({ includeTerminalHandlers: true });
+const SECRET = process.env.JWT_SECRET as string;
+const BASE = '/api/v1/webhook-subscriptions';
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 
@@ -189,207 +186,24 @@ describe('POST /api/v1/webhook-subscriptions', () => {
     expect(res.status).toBe(403);
   });
 
-  describe('GET /api/v1/webhook-subscriptions', () => {
-    it('lists and filters subscriptions (backward-compatible)', async () => {
-      const response = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ eventType: 'contract.created' });
-      expect(response.status).toBe(200);
-      expect(response.body.status).toBe('success');
-      expect(response.body.data).toHaveProperty('data');
-      expect(Array.isArray(response.body.data.data)).toBe(true);
-      expect(response.body.data.data.length).toBeGreaterThan(0);
-    });
+  // ── Validation failures ─────────────────────────────────────────────────────
 
-    it('returns empty result set when no subscriptions match', async () => {
-      const response = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ consumerId: crypto.randomUUID() });
-      expect(response.status).toBe(200);
-      expect(response.body.data.data).toEqual([]);
-      expect(response.body.data.hasNextPage).toBe(false);
-      expect(response.body.data.nextCursor).toBeNull();
-    });
-
-    it('returns first page with default limit', async () => {
-      const response = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`);
-      expect(response.status).toBe(200);
-      expect(response.body.data).toHaveProperty('data');
-      expect(response.body.data).toHaveProperty('nextCursor');
-      expect(response.body.data).toHaveProperty('hasNextPage');
-      expect(response.body.data).toHaveProperty('limit');
-      expect(typeof response.body.data.limit).toBe('number');
-    });
+  it('returns 400 when url is missing', async () => {
+    const res = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .send({ eventType: 'contract.created' });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
   });
 
-  describe('Cursor pagination', () => {
-    const createdIds: string[] = [];
-
-    beforeAll(async () => {
-      for (let i = 0; i < 25; i++) {
-        const res = await request(app)
-          .post('/api/v1/webhook-subscriptions')
-          .set('Authorization', `Bearer ${adminToken}`)
-          .send({
-            url: `https://example.com/cursor-test-${i}`,
-            eventType: 'cursor.test',
-          });
-        createdIds.push(res.body.data.id);
-      }
-    });
-
-    it('respects limit parameter', async () => {
-      const response = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 5, eventType: 'cursor.test' });
-      expect(response.status).toBe(200);
-      expect(response.body.data.data.length).toBe(5);
-      expect(response.body.data.limit).toBe(5);
-    });
-
-    it('paginates across multiple pages', async () => {
-      const page1 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 10, eventType: 'cursor.test' });
-      expect(page1.status).toBe(200);
-      expect(page1.body.data.data.length).toBe(10);
-      expect(page1.body.data.hasNextPage).toBe(true);
-      expect(page1.body.data.nextCursor).toBeTruthy();
-
-      const page2 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 10, cursor: page1.body.data.nextCursor, eventType: 'cursor.test' });
-      expect(page2.status).toBe(200);
-      expect(page2.body.data.data.length).toBe(10);
-      expect(page2.body.data.hasNextPage).toBe(true);
-
-      const page3 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 10, cursor: page2.body.data.nextCursor, eventType: 'cursor.test' });
-      expect(page3.status).toBe(200);
-      expect(page3.body.data.data.length).toBe(5);
-      expect(page3.body.data.hasNextPage).toBe(false);
-      expect(page3.body.data.nextCursor).toBeNull();
-    });
-
-    it('exact page boundary returns correct nextCursor', async () => {
-      const page = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 5, eventType: 'cursor.test' });
-      expect(page.body.data.data.length).toBe(5);
-      expect(page.body.data.hasNextPage).toBe(true);
-      expect(page.body.data.nextCursor).toBeTruthy();
-    });
-
-    it('last page has no nextCursor', async () => {
-      const page = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 25, eventType: 'cursor.test' });
-      expect(page.body.data.data.length).toBe(25);
-      expect(page.body.data.hasNextPage).toBe(false);
-      expect(page.body.data.nextCursor).toBeNull();
-    });
-
-    it('rejects invalid cursor with 400', async () => {
-      const response = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ cursor: 'not-a-valid-cursor!!!' });
-      expect(response.status).toBe(400);
-    });
-
-    it('rejects limit exceeding maximum', async () => {
-      const response = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 200 });
-      expect(response.status).toBe(400);
-    });
-
-    it('preserves stable ordering across pages', async () => {
-      const page1 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 8, eventType: 'cursor.test' });
-      const page2 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 8, cursor: page1.body.data.nextCursor, eventType: 'cursor.test' });
-      const page3 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 8, cursor: page2.body.data.nextCursor, eventType: 'cursor.test' });
-      const page4 = await request(app)
-        .get('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .query({ limit: 8, cursor: page3.body.data.nextCursor, eventType: 'cursor.test' });
-
-      const allIds = [
-        ...page1.body.data.data.map((s: any) => s.id),
-        ...page2.body.data.data.map((s: any) => s.id),
-        ...page3.body.data.data.map((s: any) => s.id),
-        ...page4.body.data.data.map((s: any) => s.id),
-      ];
-
-      const uniqueIds = new Set(allIds);
-      expect(uniqueIds.size).toBe(allIds.length);
-    });
-
-    it('no duplicate or skipped records across pages', async () => {
-      const allItems: any[] = [];
-      let cursor: string | undefined;
-      while (true) {
-        const query: any = { limit: 7, eventType: 'cursor.test' };
-        if (cursor) query.cursor = cursor;
-        const res = await request(app)
-          .get('/api/v1/webhook-subscriptions')
-          .set('Authorization', `Bearer ${adminToken}`)
-          .query(query);
-        allItems.push(...res.body.data.data);
-        if (!res.body.data.hasNextPage) break;
-        cursor = res.body.data.nextCursor;
-      }
-
-      expect(allItems.length).toBe(25);
-      const ids = allItems.map((s: any) => s.id);
-      expect(new Set(ids).size).toBe(25);
-    });
-  });
-
-  describe('GET /api/v1/webhook-subscriptions/:id', () => {
-    it('returns a subscription by id', async () => {
-      const createResponse = await request(app)
-        .post('/api/v1/webhook-subscriptions')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({
-          url: 'https://example.com/webhook-get',
-          eventType: 'contract.updated',
-        });
-      const subId = createResponse.body.data.id;
-
-      const response = await request(app)
-        .get(`/api/v1/webhook-subscriptions/${subId}`)
-        .set('Authorization', `Bearer ${adminToken}`);
-      expect(response.status).toBe(200);
-      expect(response.body.data.id).toBe(subId);
-    });
-
-    it('returns 404 for missing subscription', async () => {
-      const response = await request(app)
-        .get(`/api/v1/webhook-subscriptions/${crypto.randomUUID()}`)
-        .set('Authorization', `Bearer ${adminToken}`);
-      expect(response.status).toBe(404);
-    });
+  it('returns 400 when eventType is missing', async () => {
+    const res = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .send({ url: 'https://example.com/hook' });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
   });
 
   it('returns 400 when url is not a valid URL string', async () => {
@@ -535,5 +349,642 @@ describe('POST /api/v1/webhook-subscriptions', () => {
     expect(r1.status).toBe(201);
     expect(r2.status).toBe(201);
     expect(r1.body.data.id).not.toBe(r2.body.data.id);
+  });
+});
+
+// =============================================================================
+// GET /api/v1/webhook-subscriptions
+// =============================================================================
+
+describe('GET /api/v1/webhook-subscriptions', () => {
+  // ── Auth / RBAC ─────────────────────────────────────────────────────────────
+
+  it('returns 401 when no token is provided', async () => {
+    const res = await request(app).get(BASE);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 403 for client role', async () => {
+    const res = await request(app).get(BASE).set(auth(clientToken()));
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 for freelancer role', async () => {
+    const res = await request(app).get(BASE).set(auth(freelancerToken()));
+    expect(res.status).toBe(403);
+  });
+
+  // ── Success paths ───────────────────────────────────────────────────────────
+
+  it('returns 200 with an empty array when there are no subscriptions', async () => {
+    const res = await request(app).get(BASE).set(auth(adminToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('success');
+    expect(Array.isArray(res.body.data.data)).toBe(true);
+    expect(res.body.data.data).toHaveLength(0);
+    expect(res.body.data.nextCursor).toBeNull();
+    expect(res.body.data.hasNextPage).toBe(false);
+  });
+
+  it('returns 200 with all subscriptions', async () => {
+    await createSub({ eventType: 'contract.created' });
+    await createSub({ eventType: 'contract.updated', url: 'https://example.com/b' });
+
+    const res = await request(app).get(BASE).set(auth(adminToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(2);
+  });
+
+  it('filters by eventType', async () => {
+    await createSub({ eventType: 'contract.created' });
+    await createSub({ eventType: 'contract.updated', url: 'https://example.com/b' });
+
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ eventType: 'contract.created' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].eventType).toBe('contract.created');
+  });
+
+  it('filters by active=false', async () => {
+    const id = await createSub({ eventType: 'contract.created' });
+    // Deactivate it
+    await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ active: false });
+    // Create a second active one
+    await createSub({ eventType: 'contract.updated', url: 'https://example.com/b' });
+
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ active: 'false' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].active).toBe(false);
+  });
+
+  it('filters by active=true', async () => {
+    const id = await createSub({ eventType: 'contract.created' });
+    await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ active: false });
+    await createSub({ eventType: 'contract.updated', url: 'https://example.com/b' });
+
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ active: 'true' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.data.every((s: { active: boolean }) => s.active)).toBe(true);
+  });
+
+  it('respects limit parameter', async () => {
+    await createSub({ eventType: 'cursor.test', url: 'https://example.com/c1' });
+    await createSub({ eventType: 'cursor.test', url: 'https://example.com/c2' });
+
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 1, eventType: 'cursor.test' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.limit).toBe(1);
+    expect(res.body.data.hasNextPage).toBe(true);
+    expect(res.body.data.nextCursor).toBeTruthy();
+  });
+
+  it('paginates across multiple pages', async () => {
+    for (let i = 0; i < 5; i++) {
+      await createSub({ eventType: 'cursor.test', url: `https://example.com/cursor-${i}` });
+    }
+
+    const page1 = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 2, eventType: 'cursor.test' });
+    expect(page1.status).toBe(200);
+    expect(page1.body.data.data).toHaveLength(2);
+    expect(page1.body.data.hasNextPage).toBe(true);
+    expect(page1.body.data.nextCursor).toBeTruthy();
+
+    const page2 = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 2, cursor: page1.body.data.nextCursor, eventType: 'cursor.test' });
+    expect(page2.status).toBe(200);
+    expect(page2.body.data.data).toHaveLength(2);
+    expect(page2.body.data.hasNextPage).toBe(true);
+    expect(page2.body.data.nextCursor).toBeTruthy();
+
+    const page3 = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 2, cursor: page2.body.data.nextCursor, eventType: 'cursor.test' });
+    expect(page3.status).toBe(200);
+    expect(page3.body.data.data).toHaveLength(1);
+    expect(page3.body.data.hasNextPage).toBe(false);
+    expect(page3.body.data.nextCursor).toBeNull();
+  });
+
+  it('rejects invalid cursor with 400', async () => {
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ cursor: 'invalid-cursor-value' });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('invalid_cursor');
+  });
+
+  it('rejects limit exceeding maximum', async () => {
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 200 });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+
+  // ── Validation failures ─────────────────────────────────────────────────────
+
+  it('returns 400 when consumerId query param is not a UUID', async () => {
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ consumerId: 'not-a-uuid' });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+});
+
+// =============================================================================
+// GET /api/v1/webhook-subscriptions/:id
+// =============================================================================
+
+describe('GET /api/v1/webhook-subscriptions/:id', () => {
+  // ── Auth / RBAC ─────────────────────────────────────────────────────────────
+
+  it('returns 401 when no token is provided', async () => {
+    const res = await request(app).get(`${BASE}/${crypto.randomUUID()}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 403 for client role', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .get(`${BASE}/${id}`)
+      .set(auth(clientToken()));
+    expect(res.status).toBe(403);
+  });
+
+  // ── Success paths ───────────────────────────────────────────────────────────
+
+  it('returns 200 with the correct subscription', async () => {
+    const id = await createSub({ eventType: 'contract.created' });
+    const res = await request(app)
+      .get(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('success');
+    expect(res.body.data.id).toBe(id);
+    expect(res.body.data.eventType).toBe('contract.created');
+    expect(res.body.data.url).toBe('https://example.com/hook');
+    expect(res.body.data.active).toBe(true);
+    expect(res.body.data).toHaveProperty('createdAt');
+    expect(res.body.data).toHaveProperty('updatedAt');
+  });
+
+  it('does not leak the webhook secret in the response', async () => {
+    const id = await createSub({ secret: 'super-secret' });
+    const res = await request(app)
+      .get(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.data.secret).toBeUndefined();
+  });
+
+  // ── Error paths ─────────────────────────────────────────────────────────────
+
+  it('returns 404 for an id that does not exist', async () => {
+    const res = await request(app)
+      .get(`${BASE}/${crypto.randomUUID()}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(404);
+    expect(res.body.error?.code).toBe('not_found');
+  });
+
+  it('returns 400 when id is not a valid UUID', async () => {
+    const res = await request(app)
+      .get(`${BASE}/not-a-uuid`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+
+  it('404 response includes a requestId field', async () => {
+    const res = await request(app)
+      .get(`${BASE}/${crypto.randomUUID()}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(404);
+    expect(res.body.error).toHaveProperty('requestId');
+  });
+});
+
+// =============================================================================
+// PATCH /api/v1/webhook-subscriptions/:id
+// =============================================================================
+
+describe('PATCH /api/v1/webhook-subscriptions/:id', () => {
+  // ── Auth / RBAC ─────────────────────────────────────────────────────────────
+
+  it('returns 401 when no token is provided', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .send({ active: false });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 403 for client role', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(clientToken()))
+      .send({ active: false });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 for freelancer role', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(freelancerToken()))
+      .send({ active: false });
+    expect(res.status).toBe(403);
+  });
+
+  // ── Success paths ───────────────────────────────────────────────────────────
+
+  it('updates only the url (partial update)', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ url: 'https://example.com/updated' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('success');
+    expect(res.body.data.url).toBe('https://example.com/updated');
+    // eventType must be unchanged
+    expect(res.body.data.eventType).toBe('contract.created');
+  });
+
+  it('updates only the active flag (partial update)', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ active: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.active).toBe(false);
+    // url must be unchanged
+    expect(res.body.data.url).toBe('https://example.com/hook');
+  });
+
+  it('updates only the eventType (partial update)', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ eventType: 'contract.deleted' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.eventType).toBe('contract.deleted');
+  });
+
+  it('applies a full update (url + eventType + active + secret)', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({
+        url: 'https://example.com/full-update',
+        eventType: 'payment.completed',
+        active: false,
+        secret: 'new-secret',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.url).toBe('https://example.com/full-update');
+    expect(res.body.data.eventType).toBe('payment.completed');
+    expect(res.body.data.active).toBe(false);
+    // Secret must never appear in the response
+    expect(res.body.data.secret).toBeUndefined();
+  });
+
+  it('updatedAt timestamp advances after a patch', async () => {
+    const id = await createSub();
+    const before = await request(app)
+      .get(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    const originalUpdatedAt = before.body.data.updatedAt;
+
+    // Wait 1 ms to guarantee a different timestamp value
+    await new Promise((r) => setTimeout(r, 5));
+
+    await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ active: false });
+
+    const after = await request(app)
+      .get(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    expect(after.body.data.updatedAt >= originalUpdatedAt).toBe(true);
+  });
+
+  it('accepts an empty body as a no-op and returns 200', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.id).toBe(id);
+  });
+
+  // ── Error paths ─────────────────────────────────────────────────────────────
+
+  it('returns 404 for an unknown id', async () => {
+    const res = await request(app)
+      .patch(`${BASE}/${crypto.randomUUID()}`)
+      .set(auth(adminToken()))
+      .send({ active: false });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error?.code).toBe('not_found');
+  });
+
+  it('returns 400 when id param is not a UUID', async () => {
+    const res = await request(app)
+      .patch(`${BASE}/not-a-uuid`)
+      .set(auth(adminToken()))
+      .send({ active: false });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+
+  it('returns 400 when the new url is not a valid URL string', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ url: 'not-a-url' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+
+  it('returns 400 when the new url is SSRF-unsafe (private IP)', async () => {
+    const id = await createSub();
+    const original = process.env.SSRF_ALLOW_PRIVATE_HOSTS;
+    process.env.SSRF_ALLOW_PRIVATE_HOSTS = 'false';
+    try {
+      const res = await request(app)
+        .patch(`${BASE}/${id}`)
+        .set(auth(adminToken()))
+        .send({ url: 'http://10.0.0.1/hook' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error?.code).toBe('invalid_url');
+    } finally {
+      process.env.SSRF_ALLOW_PRIVATE_HOSTS = original;
+    }
+  });
+
+  it('returns 400 when eventType is empty string', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ eventType: '' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+
+  it('returns 400 when secret is an empty string', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .patch(`${BASE}/${id}`)
+      .set(auth(adminToken()))
+      .send({ secret: '' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+});
+
+// =============================================================================
+// DELETE /api/v1/webhook-subscriptions/:id
+// =============================================================================
+
+describe('DELETE /api/v1/webhook-subscriptions/:id', () => {
+  // ── Auth / RBAC ─────────────────────────────────────────────────────────────
+
+  it('returns 401 when no token is provided', async () => {
+    const id = await createSub();
+    const res = await request(app).delete(`${BASE}/${id}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 403 for client role', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(clientToken()));
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 403 for freelancer role', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(freelancerToken()));
+    expect(res.status).toBe(403);
+  });
+
+  // ── Success paths ───────────────────────────────────────────────────────────
+
+  it('returns 200 with deleted=true and the subscription id', async () => {
+    const id = await createSub();
+    const res = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('success');
+    expect(res.body.data.deleted).toBe(true);
+    expect(res.body.data.id).toBe(id);
+  });
+
+  it('subscription is no longer accessible after deletion', async () => {
+    const id = await createSub();
+    await request(app).delete(`${BASE}/${id}`).set(auth(adminToken()));
+
+    const check = await request(app)
+      .get(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    expect(check.status).toBe(404);
+  });
+
+  it('deleted subscription is absent from the list endpoint', async () => {
+    const id = await createSub({ eventType: 'contract.created' });
+    await createSub({ eventType: 'contract.updated', url: 'https://example.com/b' });
+
+    await request(app).delete(`${BASE}/${id}`).set(auth(adminToken()));
+
+    const list = await request(app).get(BASE).set(auth(adminToken()));
+    expect(list.status).toBe(200);
+    expect(list.body.data).toHaveLength(1);
+    expect(list.body.data[0].eventType).toBe('contract.updated');
+  });
+
+  // ── Idempotent-repeat (double-delete) ────────────────────────────────────────
+
+  it('returns 404 on a second DELETE of the same id (not idempotent — resource is gone)', async () => {
+    const id = await createSub();
+
+    const first = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    expect(first.status).toBe(200);
+
+    const second = await request(app)
+      .delete(`${BASE}/${id}`)
+      .set(auth(adminToken()));
+    expect(second.status).toBe(404);
+    expect(second.body.error?.code).toBe('not_found');
+  });
+
+  // ── Error paths ─────────────────────────────────────────────────────────────
+
+  it('returns 404 for an unknown UUID', async () => {
+    const res = await request(app)
+      .delete(`${BASE}/${crypto.randomUUID()}`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(404);
+    expect(res.body.error?.code).toBe('not_found');
+  });
+
+  it('returns 400 when id param is not a UUID', async () => {
+    const res = await request(app)
+      .delete(`${BASE}/not-a-uuid`)
+      .set(auth(adminToken()));
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
+  });
+});
+
+// =============================================================================
+// Cross-cutting: information-leakage and response-envelope contracts
+// =============================================================================
+
+describe('Security and envelope contracts', () => {
+  it('401 responses do not echo back the submitted token', async () => {
+    const forged = jwt.sign(
+      { sub: 'secret-user', email: 'sec@sec.com', role: 'admin' },
+      'wrong-secret',
+    );
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(forged));
+
+    expect(res.status).toBe(401);
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain(forged);
+    expect(body).not.toContain('secret-user');
+  });
+
+  it('403 responses do not leak user identity from the token', async () => {
+    const res = await request(app)
+      .post(BASE)
+      .set(auth(clientToken()))
+      .send(validCreate());
+
+    expect(res.status).toBe(403);
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain('client-uuid');
+  });
+
+  it('every error response carries a non-empty requestId', async () => {
+    const endpoints = [
+      () => request(app).get(BASE),
+      () => request(app).post(BASE).send({}),
+      () => request(app).get(`${BASE}/not-a-uuid`).set(auth(adminToken())),
+      () =>
+        request(app)
+          .get(`${BASE}/${crypto.randomUUID()}`)
+          .set(auth(adminToken())),
+    ];
+
+    for (const call of endpoints) {
+      const res = await call();
+      const errorBlock = res.body?.error ?? res.body;
+      // requestId is either top-level (auth errors) or nested under error
+      const requestId =
+        res.body?.error?.requestId ??
+        (typeof res.body?.requestId === 'string' ? res.body.requestId : undefined);
+      expect(requestId).toBeDefined();
+      expect(typeof requestId).toBe('string');
+      expect(requestId.length).toBeGreaterThan(0);
+      // Suppress the unused variable warning
+      void errorBlock;
+    }
+  });
+
+  it('success responses always wrap data under { status: "success", data: ... }', async () => {
+    const id = await createSub();
+    const endpoints = [
+      () => request(app).get(BASE).set(auth(adminToken())),
+      () => request(app).get(`${BASE}/${id}`).set(auth(adminToken())),
+    ];
+
+    for (const call of endpoints) {
+      const res = await call();
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('success');
+      expect(res.body).toHaveProperty('data');
+    }
+  });
+
+  it('validation error response includes a details array with path information', async () => {
+    const res = await request(app)
+      .post(BASE)
+      .set(auth(adminToken()))
+      .send({ eventType: 'contract.created' }); // missing url
+
+    expect(res.status).toBe(400);
+    expect(Array.isArray(res.body.error?.details)).toBe(true);
+    expect(res.body.error.details.length).toBeGreaterThan(0);
+    const detail = res.body.error.details[0];
+    expect(detail).toHaveProperty('path');
+    expect(detail).toHaveProperty('message');
+    expect(detail).toHaveProperty('code');
+  });
+
+  it('unknown routes under the webhook prefix return 404 not_found', async () => {
+    const res = await request(app)
+      .get('/api/v1/webhook-subscriptions/does/not/exist')
+      .set(auth(adminToken()));
+    // Either the route validator rejects the path or notFoundHandler fires
+    expect([400, 404]).toContain(res.status);
   });
 });

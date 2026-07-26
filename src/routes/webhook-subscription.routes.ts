@@ -3,7 +3,6 @@ import { getDb } from '../db/database';
 import { SqliteWebhookSubscriptionRepository } from '../repositories/webhook-subscription.repository';
 import { validateSchema } from '../middleware/validate.middleware';
 import { requireAuth, requireRole } from '../middleware/authorization';
-import { isSafeUrl } from '../utils/ssrf';
 import { decodeCursor } from '../contracts/cursor.repository';
 import {
   createWebhookSubscriptionSchema,
@@ -64,8 +63,8 @@ router.get(
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const repo = getRepo();
-      const { cursor, limit, ...filters } = req.query;
-      const cursorStr = cursor as string | undefined;
+      const query = toListWebhookSubscriptionsQueryDto(req.query as any);
+      const { cursor: cursorStr, limit, ...filters } = query;
       if (cursorStr !== undefined) {
         try {
           decodeCursor(cursorStr);
@@ -80,14 +79,19 @@ router.get(
         }
       }
       const filter = {
-        consumerId: filters.consumerId as string | undefined,
-        eventType: filters.eventType as string | undefined,
-        active: filters.active as boolean | undefined,
+        consumerId: filters.consumerId,
+        eventType: filters.eventType,
+        active: filters.active,
       };
-      const page = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
+      const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit });
       res.status(200).json({
         status: 'success',
-        data: page,
+        data: {
+          data: list.data.map((subscription) => toWebhookSubscriptionResponseDto(subscription)),
+          nextCursor: list.nextCursor,
+          hasNextPage: list.hasNextPage,
+          limit: list.limit,
+        },
       });
     } catch (error) {
       next(error);
