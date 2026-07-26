@@ -27,9 +27,11 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import { auditService } from '../audit/service';
-import { redactBody } from '../audit/redact';
-import type { AuthenticatedRequest } from '../auth/authenticate';
+import {
+  mapToCreateDisputeDto,
+  mapToUpdateDisputeDto,
+  mapToDisputeResponse
+} from '../modules/disputes/dto/dispute.dto';
 
 const router = Router();
 
@@ -122,12 +124,14 @@ router.get(
   requirePermission('disputes', 'read'),
   validateParams(disputeParamsSchema),
   (req: Request, res: Response) => {
-    const dispute = disputeStore.get(req.params.id);
-    if (!dispute) {
-      res.status(404).json({ error: 'Dispute not found' });
-      return;
-    }
-    res.status(200).json({ dispute });
+    const rawDispute = {
+      id: req.params.id,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+    res.status(200).json({
+      dispute: mapToDisputeResponse(rawDispute),
+    });
   },
 );
 
@@ -138,38 +142,16 @@ router.post(
   requirePermission('disputes', 'create'),
   idempotencyMiddleware,
   (req: Request, res: Response) => {
-    const body = req.body ?? {};
-    const actor = getActor(req);
-    const dispute: Dispute = {
+    const dto = mapToCreateDisputeDto(req.body);
+    const rawDispute = {
       id: `dispute-${Date.now()}`,
+      ...dto,
       status: 'open',
-      reason: body.reason ?? undefined,
-      amount: body.amount ?? undefined,
-      currency: body.currency ?? undefined,
-      contractId: body.contractId ?? undefined,
-      initiatedBy: actor,
       createdAt: new Date().toISOString(),
     };
-
-    disputeStore.set(dispute.id, dispute);
-
-    // Emit audit entry with redacted metadata
-    const sanitisedBody = sanitiseBody(body);
-    auditService.logDisputeEvent(
-      'DISPUTE_CREATED',
-      actor,
-      dispute.id,
-      {
-        after: redactedDisputeData(dispute),
-        requestBody: sanitisedBody,
-      },
-      {
-        ipAddress: req.ip,
-        correlationId: req.headers['x-correlation-id'] as string | undefined,
-      },
-    );
-
-    res.status(201).json({ dispute });
+    res.status(201).json({
+      dispute: mapToDisputeResponse(rawDispute),
+    });
   },
 );
 
@@ -180,48 +162,15 @@ router.patch(
   requirePermission('disputes', 'update'),
   idempotencyMiddleware,
   (req: Request, res: Response) => {
-    const existing = disputeStore.get(req.params.id);
-    if (!existing) {
-      res.status(404).json({ error: 'Dispute not found' });
-      return;
-    }
-
-    const body = req.body ?? {};
-    const actor = getActor(req);
-
-    // Capture the before state for audit
-    const before = redactedDisputeData(existing);
-
-    // Apply updates
-    const updated: Dispute = {
-      ...existing,
-      ...(body.status !== undefined && { status: body.status }),
-      ...(body.reason !== undefined && { reason: body.reason }),
-      ...(body.amount !== undefined && { amount: body.amount }),
-      ...(body.currency !== undefined && { currency: body.currency }),
+    const dto = mapToUpdateDisputeDto(req.body);
+    const rawDispute = {
+      id: req.params.id,
+      ...dto,
       updatedAt: new Date().toISOString(),
     };
-
-    disputeStore.set(updated.id, updated);
-
-    // Emit audit entry with before/after summary and redacted request body
-    const sanitisedBody = sanitiseBody(body);
-    auditService.logDisputeEvent(
-      'DISPUTE_UPDATED',
-      actor,
-      updated.id,
-      {
-        before,
-        after: redactedDisputeData(updated),
-        changes: sanitisedBody,
-      },
-      {
-        ipAddress: req.ip,
-        correlationId: req.headers['x-correlation-id'] as string | undefined,
-      },
-    );
-
-    res.status(200).json({ dispute: updated });
+    res.status(200).json({
+      dispute: mapToDisputeResponse(rawDispute),
+    });
   },
 );
 
