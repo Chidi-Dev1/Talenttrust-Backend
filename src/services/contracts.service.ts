@@ -7,6 +7,7 @@ import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.type
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
+import { parseBoolEnv } from '../config/env';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -16,10 +17,25 @@ import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflic
 export class ContractsService {
   private contractRepository: IContractRepository;
   private sorobanService: SorobanService;
+  /**
+   * When `false`, milestone fields are stripped from create/update payloads
+   * before any validation or persistence occurs. The feature is fully
+   * transparent to callers — requests still succeed but milestones are
+   * silently ignored.
+   *
+   * Defaults to `true` (read from `MILESTONES_ENABLED` env var at
+   * construction time) so the flag can be injected in tests without
+   * touching `process.env`.
+   */
+  private readonly milestonesEnabled: boolean;
 
-  constructor(contractRepository: IContractRepository) {
+  constructor(contractRepository: IContractRepository, milestonesEnabled?: boolean) {
     this.sorobanService = new SorobanService();
     this.contractRepository = contractRepository;
+    this.milestonesEnabled =
+      milestonesEnabled !== undefined
+        ? milestonesEnabled
+        : parseBoolEnv('MILESTONES_ENABLED', true);
   }
 
   /**
@@ -59,7 +75,14 @@ export class ContractsService {
    * @throws ContractBoundsError if budget or milestone totals exceed policy limits.
    */
   public async createContract(data: CreateContractDto): Promise<Contract> {
-    const boundsCheck = validateContractBounds(data.budget, data.milestones);
+    // Strip milestones when the feature flag is disabled. Validation and
+    // budget-cap checks are skipped entirely — the contract is created as if
+    // no milestones were supplied.
+    const effectiveData: CreateContractDto = this.milestonesEnabled
+      ? data
+      : { ...data, milestones: undefined };
+
+    const boundsCheck = validateContractBounds(effectiveData.budget, effectiveData.milestones);
     if (!boundsCheck.valid) {
       throw new ContractBoundsError(boundsCheck.error);
     }
@@ -68,25 +91,25 @@ export class ContractsService {
     // budget. `validateContractBounds` only guards the absolute policy cap
     // (MAX_CONTRACT_AMOUNT_STROOPS); the per-contract budget is the tighter,
     // caller-supplied limit that milestone payouts must never overrun.
-    if (data.milestones && data.milestones.length > 0) {
-      const totalMilestoneAmount = data.milestones.reduce(
+    if (effectiveData.milestones && effectiveData.milestones.length > 0) {
+      const totalMilestoneAmount = effectiveData.milestones.reduce(
         (sum, milestone) => sum + milestone.amount,
         0,
       );
-      if (totalMilestoneAmount > data.budget) {
+      if (totalMilestoneAmount > effectiveData.budget) {
         throw new ContractBoundsError(
           `Total milestone amount exceeds maximum contract amount ` +
-            `(milestones total ${totalMilestoneAmount} exceeds budget of ${data.budget})`,
+            `(milestones total ${totalMilestoneAmount} exceeds budget of ${effectiveData.budget})`,
         );
       }
     }
 
     const newContract = await this.contractRepository.create({
-      title: data.title,
-      clientId: data.clientId,
-      freelancerId: data.freelancerId ?? '',
-      amount: data.budget,
-      status: data.status || 'draft',
+      title: effectiveData.title,
+      clientId: effectiveData.clientId,
+      freelancerId: effectiveData.freelancerId ?? '',
+      amount: effectiveData.budget,
+      status: effectiveData.status || 'draft',
     });
 
     // Notify the Soroban service to prepare the transaction
@@ -138,17 +161,23 @@ export class ContractsService {
       throw new InvalidVersionError();
     }
 
+    // Strip milestones from the update payload when the feature flag is
+    // disabled, so milestone data supplied by callers is silently ignored.
+    const effectiveFields = this.milestonesEnabled
+      ? fields
+      : { ...fields, milestones: undefined };
+
     // Reject no-op updates
-    const hasFields = Object.keys(fields).some(
-      (k) => (fields as Record<string, unknown>)[k] !== undefined,
+    const hasFields = Object.keys(effectiveFields).some(
+      (k) => (effectiveFields as Record<string, unknown>)[k] !== undefined,
     );
     if (!hasFields) {
       throw new Error('At least one field must be provided for an update.');
     }
 
     // Re-validate bounds when amount or milestones are being changed
-    const budget = fields.budget;
-    const milestones = fields.milestones;
+    const budget = effectiveFields.budget;
+    const milestones = effectiveFields.milestones;
     if (budget !== undefined || milestones !== undefined) {
       // Fall back to 0 if budget is absent so the bounds check can still run on milestones alone
       const boundsCheck = validateContractBounds(budget ?? 0, milestones);
@@ -158,10 +187,10 @@ export class ContractsService {
     }
 
     const updateFields: Partial<Contract> = {};
-    if (fields.title !== undefined) updateFields.title = fields.title;
-    if (fields.status !== undefined) updateFields.status = fields.status;
-    if (fields.budget !== undefined) updateFields.amount = fields.budget;
-    if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
+    if (effectiveFields.title !== undefined) updateFields.title = effectiveFields.title;
+    if (effectiveFields.status !== undefined) updateFields.status = effectiveFields.status;
+    if (effectiveFields.budget !== undefined) updateFields.amount = effectiveFields.budget;
+    if (effectiveFields.freelancerId !== undefined) updateFields.freelancerId = effectiveFields.freelancerId ?? '';
 
     return this.contractRepository.updateWithVersion(id, updateFields, version);
   }

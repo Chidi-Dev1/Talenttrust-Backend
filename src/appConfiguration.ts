@@ -39,6 +39,12 @@ export interface AppConfig {
   webhookCircuitBreaker: CircuitBreakerConfig;
   idempotencyTtlMs: number;
   allowedAssets: string[];
+  /**
+   * When `true` (default), milestones are validated and enforced through the
+   * contracts API. When `false`, milestone fields are stripped from incoming
+   * requests so the feature is entirely disabled at runtime without a deploy.
+   */
+  milestonesEnabled: boolean;
 }
 
 const MAX_TIMEOUT_MS = 10_000;
@@ -134,5 +140,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     idempotencyTtlMs,
     allowedAssets: _parseAssets(env.ALLOWED_ASSETS),
+    milestonesEnabled: parseBoolean(env.MILESTONES_ENABLED, true),
   };
 }

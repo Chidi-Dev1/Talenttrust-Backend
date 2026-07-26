@@ -235,6 +235,25 @@ export const envSchema = z.object({
   AWS_REGION: z.string().optional(),
 
   SENDGRID_API_KEY: z.string().optional(),
+
+  // Feature Flags
+  /**
+   * MILESTONES_ENABLED controls whether the milestones feature is active.
+   *
+   * - `true`  (default) — milestones are validated, enforced, and persisted
+   *   through the contracts API as normal.
+   * - `false` — any milestones supplied in a request body are silently
+   *   stripped before reaching the service layer. No milestone validation
+   *   (bounds, budget cap) is performed, and the contract is created/updated
+   *   as if no milestones were included.
+   *
+   * Set `MILESTONES_ENABLED=false` to disable the feature entirely without
+   * a deploy.  The safe default is `true` so existing deployments are
+   * unaffected by the introduction of this flag.
+   */
+  MILESTONES_ENABLED: z.string()
+    .optional()
+    .transform((val) => val === undefined || val.toLowerCase() !== 'false'),
 }).superRefine((obj, ctx) => {
   const requireForEmailProvider = (field: keyof typeof obj, message: string): void => {
     if (!obj[field]) {
