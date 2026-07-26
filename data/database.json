@@ -2,19 +2,5 @@
   "contract_metadata": [],
   "contracts": [],
   "users": [],
-  "api_keys": [
-    {
-      "name": "Test Key",
-      "key_hash": "4cdde8f153ad3a4d1ca5f2624cc8c79f:0fa99dc0e7a854f5eb109e6797336f4f5bc291eeb9672f4a7e7103ddcae3979e3830ed8c8d96f77d8f3ee0c4e79a5292f4b2958f68b9fa292e5921156211c918",
-      "key_selector": "8c39c5a9babb1874849c7cd0d0f4e2965733403d48bf1cbfbb8edb2711e961e8",
-      "scope": [
-        "contracts:read"
-      ],
-      "created_by": "test-user",
-      "is_active": true,
-      "id": "17eaddce-032b-45dc-8edf-ca98e2d38821",
-      "created_at": "2026-07-26T15:47:09.034Z",
-      "updated_at": "2026-07-26T15:47:09.034Z"
-    }
-  ]
+  "api_keys": []
 }
