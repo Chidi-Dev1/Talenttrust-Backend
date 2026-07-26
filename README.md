@@ -565,8 +565,11 @@ Each probe reports one of three statuses:
 
 **Other Probes:**
 - `stellar-rpc`: Stellar/Soroban RPC reachability (5s timeout)
-- `queue`: BullMQ job queue health (degraded if failed jobs exceed threshold)
-- `circuit-breaker`: Reports open circuit breakers
+- `queue`: BullMQ job queue health (degraded if failed jobs exceed
+  `QUEUE_FAILED_THRESHOLD` or waiting backlog exceeds
+  `QUEUE_BACKLOG_THRESHOLD`; configurable via validated config)
+- `circuit-breaker`: Reports open circuit breakers (degraded if any
+  breaker is in OPEN state)
 - `env`: Verifies required environment variables
 
 **Production Security:**

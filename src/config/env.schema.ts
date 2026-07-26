@@ -127,13 +127,28 @@ export const envSchema = z.object({
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().int().nonnegative('STELLAR_RPC_RETRY_BASE_DELAY_MS must be >= 0').max(60_000)),
 
-  STELLAR_RPC_RETRY_MAX_DELAY_MS: z.string()
-    .default('2000')
-    .transform((val) => parseInt(val, 10))
-    .pipe(z.number().int().nonnegative('STELLAR_RPC_RETRY_MAX_DELAY_MS must be >= 0').max(60_000)),
+   STELLAR_RPC_RETRY_MAX_DELAY_MS: z.string()
+     .default('2000')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().nonnegative('STELLAR_RPC_RETRY_MAX_DELAY_MS must be >= 0').max(60_000)),
 
+   // Health Probe Configuration
+   QUEUE_FAILED_THRESHOLD: z.string()
+     .default('10')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().nonnegative('QUEUE_FAILED_THRESHOLD must be >= 0').max(10_000)),
 
-  // Router / Blue-Green Deployment Configuration
+   QUEUE_BACKLOG_THRESHOLD: z.string()
+     .default('100')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().nonnegative('QUEUE_BACKLOG_THRESHOLD must be >= 0').max(1_000_000)),
+
+   QUEUE_PROBE_TIMEOUT_MS: z.string()
+     .default('3000')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().positive('QUEUE_PROBE_TIMEOUT_MS must be > 0').max(30_000)),
+
+   // Router / Blue-Green Deployment Configuration
   ACTIVE_COLOR: z.enum(['blue', 'green']).default('blue'),
   BLUE_PORT: z.string().default('3001'),
   GREEN_PORT: z.string().default('3002'),
