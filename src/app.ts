@@ -102,6 +102,7 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/config', configRouter);
   app.use('/api/v1', eventsRouter);
   app.use('/api/v1/auth', authRouter);
+  app.use('/api/v1/api-keys', metricsService.trackApiKeysRequest.bind(metricsService));
   app.use('/api/v1', apiKeysRouter);
   app.use('/api/v1/contracts', contractsModuleRouter);
   app.use('/api/v1/disputes', disputesRouter);

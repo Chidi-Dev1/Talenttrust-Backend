@@ -15,6 +15,8 @@ import {
   assertWebhookOutcome,
   WebhookOutcome as ValidatedWebhookOutcome,
 } from './metrics-validation';
+import { DEFAULT_HISTOGRAM_BUCKETS, validateHistogramBuckets } from './observability-config';
+import { Logger, logger as rootLogger } from '../logger';
 
 /**
  * Re-exported from metrics-validation to preserve existing import paths.
@@ -34,9 +36,9 @@ export type WebhookOutcome = ValidatedWebhookOutcome;
 export const CATALOG_METRIC_NAMES: readonly string[] = [
   'http_requests_total',
   'http_request_duration_seconds',
-  'reputation_requests_total',
-  'reputation_request_duration_seconds',
-  'reputation_errors_total',
+  'api_keys_requests_total',
+  'api_keys_request_duration_seconds',
+  'api_keys_errors_total',
   'service_health_status',
   'webhook_deliveries_total',
   'webhook_dlq_depth',
@@ -76,6 +78,7 @@ export interface ReputationRequestMetric {
 export interface MetricsServiceLike {
   contentType: string;
   trackHttpRequest: (req: Request, res: Response, next: NextFunction) => void;
+  trackApiKeysRequest: (req: Request, res: Response, next: NextFunction) => void;
   getMetrics: () => Promise<string>;
   recordReputationRequest: (metric: ReputationRequestMetric) => void;
   recordHealthStatus: (status: ServiceStatus) => void;
@@ -120,11 +123,11 @@ export class MetricsService implements MetricsServiceLike {
 
   private readonly httpRequestDurationSeconds: Histogram;
 
-  private readonly reputationRequestsTotal: Counter;
+  private readonly apiKeysRequestsTotal: Counter;
 
-  private readonly reputationRequestDurationSeconds: Histogram;
+  private readonly apiKeysRequestDurationSeconds: Histogram;
 
-  private readonly reputationErrorsTotal: Counter;
+  private readonly apiKeysErrorsTotal: Counter;
 
   private readonly serviceHealthStatus: Gauge;
 
@@ -176,25 +179,25 @@ export class MetricsService implements MetricsServiceLike {
       registers: [this.register],
     });
 
-    this.reputationRequestsTotal = new Counter({
-      name: 'reputation_requests_total',
-      help: 'Total reputation endpoint requests by operation, status, and error cause.',
-      labelNames: ['operation', 'status', 'status_code', 'error_cause'],
+    this.apiKeysRequestsTotal = new Counter({
+      name: 'api_keys_requests_total',
+      help: 'Total number of API key management requests.',
+      labelNames: ['operation', 'status_code'],
       registers: [this.register],
     });
 
-    this.reputationRequestDurationSeconds = new Histogram({
-      name: 'reputation_request_duration_seconds',
-      help: 'Duration of reputation endpoint requests in seconds.',
-      labelNames: ['operation', 'status', 'status_code', 'error_cause'],
+    this.apiKeysRequestDurationSeconds = new Histogram({
+      name: 'api_keys_request_duration_seconds',
+      help: 'Duration of API key management requests in seconds.',
+      labelNames: ['operation', 'status_code'],
       buckets: resolvedBuckets,
       registers: [this.register],
     });
 
-    this.reputationErrorsTotal = new Counter({
-      name: 'reputation_errors_total',
-      help: 'Total reputation endpoint errors by operation and error cause.',
-      labelNames: ['operation', 'error_cause'],
+    this.apiKeysErrorsTotal = new Counter({
+      name: 'api_keys_errors_total',
+      help: 'Total number of API key management request errors by cause.',
+      labelNames: ['operation', 'cause'],
       registers: [this.register],
     });
 
@@ -277,6 +280,45 @@ export class MetricsService implements MetricsServiceLike {
         ...(requestId !== undefined && { requestId }),
         ...(correlationId !== undefined && { correlationId }),
       });
+    });
+
+    next();
+  }
+
+  trackApiKeysRequest(req: Request, res: Response, next: NextFunction): void {
+    const start = process.hrtime.bigint();
+
+    res.on('finish', () => {
+      const durationSeconds = Number(process.hrtime.bigint() - start) / 1_000_000_000;
+      const statusCode = res.statusCode;
+      const operation = apiKeysOperation(req.method, req.route?.path);
+      const labels = { operation, status_code: String(statusCode) };
+      const errorCause = apiKeysErrorCause(statusCode);
+
+      this.apiKeysRequestsTotal.inc(labels);
+      this.apiKeysRequestDurationSeconds.observe(labels, durationSeconds);
+      if (errorCause !== null) {
+        this.apiKeysErrorsTotal.inc({ operation, cause: errorCause });
+      }
+
+      const log = (res.locals['log'] as Logger | undefined) ?? rootLogger;
+      const logFields = {
+        method: req.method,
+        route: apiKeysRouteTemplate(req.route?.path),
+        operation,
+        statusCode,
+        durationMs: Number((durationSeconds * 1000).toFixed(3)),
+        outcome: statusCode < 400 ? 'success' : 'error',
+        ...(errorCause !== null && { errorCause }),
+      };
+
+      if (statusCode >= 500) {
+        log.error('api_keys_request', logFields);
+      } else if (statusCode >= 400) {
+        log.warn('api_keys_request', logFields);
+      } else {
+        log.info('api_keys_request', logFields);
+      }
     });
 
     next();
@@ -378,26 +420,36 @@ export class MetricsService implements MetricsServiceLike {
   }
 }
 
-function assertReputationRequestMetric(metric: ReputationRequestMetric): void {
-  if (!REPUTATION_OPERATIONS.includes(metric.operation)) {
-    throw new Error('Invalid reputation operation');
-  }
+type ApiKeysErrorCause =
+  | 'validation_error'
+  | 'authentication_error'
+  | 'authorization_error'
+  | 'not_found'
+  | 'client_error'
+  | 'server_error';
 
-  if (!REPUTATION_STATUSES.includes(metric.status)) {
-    throw new Error('Invalid reputation request status');
-  }
+function apiKeysErrorCause(statusCode: number): ApiKeysErrorCause | null {
+  if (statusCode < 400) return null;
+  if (statusCode === 400 || statusCode === 422) return 'validation_error';
+  if (statusCode === 401) return 'authentication_error';
+  if (statusCode === 403) return 'authorization_error';
+  if (statusCode === 404) return 'not_found';
+  if (statusCode < 500) return 'client_error';
+  return 'server_error';
+}
 
-  if (!REPUTATION_ERROR_CAUSES.includes(metric.errorCause)) {
-    throw new Error('Invalid reputation error cause');
-  }
+function apiKeysOperation(method: string, routePath: unknown): string {
+  const route = typeof routePath === 'string' ? routePath : '';
+  if (method === 'POST' && route === '/api-keys') return 'create';
+  if (method === 'GET' && route === '/api-keys') return 'list';
+  if (method === 'GET' && route === '/api-keys/:id') return 'get';
+  if (method === 'POST' && route === '/api-keys/:id/rotate') return 'rotate';
+  if (method === 'DELETE' && route === '/api-keys/:id') return 'deactivate';
+  return 'unknown';
+}
 
-  if (!Number.isInteger(metric.statusCode) || metric.statusCode < 100 || metric.statusCode > 599) {
-    throw new Error('Invalid reputation status code');
-  }
-
-  if (!Number.isFinite(metric.durationSeconds) || metric.durationSeconds < 0) {
-    throw new Error('Invalid reputation request duration');
-  }
+function apiKeysRouteTemplate(routePath: unknown): string {
+  return typeof routePath === 'string' ? `/api/v1${routePath}` : '/api/v1/api-keys';
 }
 
 /**
