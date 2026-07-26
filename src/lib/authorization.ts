@@ -133,6 +133,20 @@ export const PERMISSION_MATRIX: PermissionMatrix = {
     delete: { admin: ALLOW,  auditor: DENY,  client: DENY,     freelancer: DENY },
     list:   { admin: ALLOW,  auditor: ALLOW, client: DENY,     freelancer: DENY },
   },
+
+  // ── disputes ───────────────────────────────────────────────────────────────
+  disputes: {
+    create: { admin: ALLOW,  auditor: DENY,  client: ALLOW,    freelancer: ALLOW },
+    read:   { admin: ALLOW,  auditor: ALLOW, client: OWN,      freelancer: OWN },
+    update: { admin: ALLOW,  auditor: DENY,  client: OWN,      freelancer: DENY },
+    delete: { admin: ALLOW,  auditor: DENY,  client: DENY,     freelancer: DENY },
+    list:   { admin: ALLOW,  auditor: ALLOW, client: OWN,      freelancer: OWN },
+  },
+
+  // ── health ────────────────────────────────────────────────────────────────
+  health: {
+    read:   { admin: ALLOW,  auditor: ALLOW, client: ALLOW,    freelancer: ALLOW },
+  },
 } satisfies PermissionMatrix;
 
 // ─── isAuthorized ─────────────────────────────────────────────────────────────

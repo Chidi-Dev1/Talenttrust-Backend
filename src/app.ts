@@ -14,17 +14,23 @@
 import express from 'express';
 import { applySecurityMiddleware } from './middleware/security';
 import { MetricsService } from './observability/metrics-service';
-import { rateLimitStore } from './config/rateLimit';
+import { apiKeysRateLimitStore, rateLimitStore } from './config/rateLimit';
 import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
 import { healthRouter as legacyHealthRouter } from './routes/health';
 import { healthRouter as readinessHealthRouter } from './health';
 import { validateEnv } from './config/env.schema';
 import { createRequestLimitsMiddleware } from './middleware/requestLimits';
+import apiKeysRouter from './routes/apiKeys.routes';
 
 import contractsModuleRouter from './routes/contracts.routes';
 import eventsRouter from './routes/events.routes';
+import disputesRouter from './routes/disputes.routes';
+import { createMetricsRouter, createMetricsScrapeHandler } from './routes/metrics.routes';
+import { metricsAuthMiddleware } from './middleware/metricsAuth';
 
-import reputationRouter from './routes/reputation.routes';
+import reputationRouter, { createReputationRouter } from './routes/reputation.routes';
+import apiKeysRouter from './routes/apiKeys.routes';
+import authRouter from './routes/auth.routes';
 import configRouter from './routes/config.routes';
 import dependencyScanRouter from './routes/dependency-scan.routes';
 import { adminRouter } from './routes/admin.routes';
@@ -86,12 +92,22 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/health', readinessHealthRouter);
   app.use('/api/config', configRouter);
   app.use('/api/v1', eventsRouter);
+  app.use('/api/v1/auth', authRouter);
+  app.use('/api/v1', apiKeysRouter);
   app.use('/api/v1/contracts', contractsModuleRouter);
-  app.use('/api/v1/reputation', reputationRouter);
+  app.use('/api/v1/disputes', disputesRouter);
+  const configuredReputationRouter =
+    typeof createReputationRouter === 'function'
+      ? createReputationRouter({ metricsService })
+      : reputationRouter;
+  app.use('/api/v1/reputation', configuredReputationRouter);
   app.use('/api/v1/dependency-scan', dependencyScanRouter);
+  app.use('/api/v1', apiKeysRouter);
   app.use('/api/v1/admin', adminRouter);
   app.use('/api/v1/admin/deploy', deployRouter);
   app.use('/api/v1/webhook-subscriptions', webhookSubscriptionRouter);
+  app.use('/api/v1/metrics', metricsAuthMiddleware, createMetricsRouter(metricsService));
+  app.get('/metrics', metricsAuthMiddleware, createMetricsScrapeHandler(metricsService));
 
   if (includeTerminalHandlers) {
     attachTerminalHandlers(app);
@@ -122,5 +138,12 @@ export function shutdownRateLimitStore(): void {
   if (rateLimitStore && typeof (rateLimitStore as any).destroy === 'function') {
     (rateLimitStore as any).destroy();
     console.log('[rateLimit] Store shutdown complete');
+  }
+  if (
+    apiKeysRateLimitStore &&
+    typeof (apiKeysRateLimitStore as any).destroy === 'function'
+  ) {
+    (apiKeysRateLimitStore as any).destroy();
+    console.log('[rateLimit] API-key store shutdown complete');
   }
 }

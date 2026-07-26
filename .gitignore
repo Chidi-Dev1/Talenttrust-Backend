@@ -21,3 +21,6 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 .deployment-state.json
+*.db-shm
+*.db-wal
+.opencode

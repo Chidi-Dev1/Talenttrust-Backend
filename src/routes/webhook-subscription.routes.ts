@@ -3,20 +3,25 @@ import { getDb } from '../db/database';
 import { SqliteWebhookSubscriptionRepository } from '../repositories/webhook-subscription.repository';
 import { validateSchema } from '../middleware/validate.middleware';
 import { requireAuth, requireRole } from '../middleware/authorization';
-import { isSafeUrl } from '../utils/ssrf';
 import { decodeCursor } from '../contracts/cursor.repository';
 import {
   createWebhookSubscriptionSchema,
   updateWebhookSubscriptionSchema,
   getWebhookSubscriptionSchema,
   listWebhookSubscriptionsQuerySchema,
+  toCreateWebhookSubscriptionDto,
+  toUpdateWebhookSubscriptionDto,
+  toWebhookSubscriptionResponseDto,
+  toListWebhookSubscriptionsQueryDto,
 } from '../modules/webhooks/dto/webhook-subscription.dto';
 import { AuthenticatedRequest } from '../lib/types';
+import { validateWebhookUrl, findSubscriptionOrFail } from './webhook-subscription.validation';
 
 const router = Router();
 
 // DB and Repository setup is resolved at registration / execution time
 const getRepo = () => new SqliteWebhookSubscriptionRepository(getDb());
+
 
 /**
  * POST /api/v1/webhook-subscriptions
@@ -31,21 +36,14 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { url } = req.body;
-      if (!isSafeUrl(url)) {
-        return res.status(400).json({
-          error: {
-            code: 'invalid_url',
-            message: 'Provided URL is invalid or resolved to a private/reserved address.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      if (!validateWebhookUrl(url, res)) return;
 
       const repo = getRepo();
-      const subscription = await repo.create(req.body);
+      const createDto = toCreateWebhookSubscriptionDto(req.body);
+      const subscription = await repo.create(createDto);
       res.status(201).json({
         status: 'success',
-        data: subscription,
+        data: toWebhookSubscriptionResponseDto(subscription),
       });
     } catch (error) {
       next(error);
@@ -65,8 +63,8 @@ router.get(
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const repo = getRepo();
-      const { cursor, limit, ...filters } = req.query;
-      const cursorStr = cursor as string | undefined;
+      const query = toListWebhookSubscriptionsQueryDto(req.query as any);
+      const { cursor: cursorStr, limit, ...filters } = query;
       if (cursorStr !== undefined) {
         try {
           decodeCursor(cursorStr);
@@ -81,14 +79,19 @@ router.get(
         }
       }
       const filter = {
-        consumerId: filters.consumerId as string | undefined,
-        eventType: filters.eventType as string | undefined,
-        active: filters.active as boolean | undefined,
+        consumerId: filters.consumerId,
+        eventType: filters.eventType,
+        active: filters.active,
       };
-      const page = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
+      const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit });
       res.status(200).json({
         status: 'success',
-        data: page,
+        data: {
+          data: list.data.map((subscription) => toWebhookSubscriptionResponseDto(subscription)),
+          nextCursor: list.nextCursor,
+          hasNextPage: list.hasNextPage,
+          limit: list.limit,
+        },
       });
     } catch (error) {
       next(error);
@@ -109,21 +112,12 @@ router.get(
     try {
       const { id } = req.params;
       const repo = getRepo();
-      const subscription = await repo.findById(id);
-
-      if (!subscription) {
-        return res.status(404).json({
-          error: {
-            code: 'not_found',
-            message: 'Webhook subscription not found.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      const subscription = await findSubscriptionOrFail(id, repo, res);
+      if (!subscription) return;
 
       res.status(200).json({
         status: 'success',
-        data: subscription,
+        data: toWebhookSubscriptionResponseDto(subscription),
       });
     } catch (error) {
       next(error);
@@ -145,32 +139,17 @@ router.patch(
       const { id } = req.params;
       const { url } = req.body;
 
-      if (url !== undefined && !isSafeUrl(url)) {
-        return res.status(400).json({
-          error: {
-            code: 'invalid_url',
-            message: 'Provided URL is invalid or resolved to a private/reserved address.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      if (url !== undefined && !validateWebhookUrl(url, res)) return;
 
       const repo = getRepo();
-      const existing = await repo.findById(id);
-      if (!existing) {
-        return res.status(404).json({
-          error: {
-            code: 'not_found',
-            message: 'Webhook subscription not found.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
+      const existing = await findSubscriptionOrFail(id, repo, res);
+      if (!existing) return;
 
-      const updated = await repo.update(id, req.body);
+      const updateDto = toUpdateWebhookSubscriptionDto(req.body);
+      const updated = await repo.update(id, updateDto);
       res.status(200).json({
         status: 'success',
-        data: updated,
+        data: toWebhookSubscriptionResponseDto(updated),
       });
     } catch (error) {
       next(error);
@@ -191,18 +170,9 @@ router.delete(
     try {
       const { id } = req.params;
       const repo = getRepo();
-      const deleted = await repo.delete(id);
+      if (!(await findSubscriptionOrFail(id, repo, res))) return;
 
-      if (!deleted) {
-        return res.status(404).json({
-          error: {
-            code: 'not_found',
-            message: 'Webhook subscription not found.',
-            requestId: res.locals.requestId || 'unknown',
-          },
-        });
-      }
-
+      await repo.delete(id);
       res.status(200).json({
         status: 'success',
         data: {

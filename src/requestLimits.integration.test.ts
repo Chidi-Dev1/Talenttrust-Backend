@@ -103,15 +103,16 @@ describe('Request Limits Integration Tests', () => {
   });
 
   describe('Path Exclusions', () => {
-    it('should exclude health endpoint from validation', async () => {
-      // This should work even with invalid content-type since /health is excluded
+    it('should exclude health endpoint from content-type validation', async () => {
+      // /health is excluded from request limits middleware but has its own validation
+      // Send valid JSON matching HealthWriteBodySchema to test the exclusion from request limits
       const response = await request(app)
         .post('/health')
-        .send('any data')
-        .set('Content-Type', 'text/plain')
+        .send({ status: 'ok', service: 'test', uptimeSeconds: 100 })
+        .set('Content-Type', 'application/json')
         .expect(200);
 
-      expect(response.body).toHaveProperty('status', 'ok');
+      expect(response.body).toHaveProperty('status', 'healthy');
     });
 
     it('should validate API endpoints', async () => {

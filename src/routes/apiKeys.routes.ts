@@ -6,9 +6,11 @@
  * since they are used to manage API keys themselves.
  */
 
-import { Router } from 'express';
+import { Request, Router } from 'express';
 import { authenticateMiddleware } from '../auth/authenticate';
 import { requirePermission } from '../auth/middleware';
+import { rateLimitConfig } from '../config/rateLimit';
+import { createRateLimiter } from '../middleware/rateLimiter';
 import {
   createApiKeyController,
   listApiKeysController,
@@ -18,6 +20,29 @@ import {
 } from '../controllers/apiKeyController';
 
 const router = Router();
+
+/**
+ * Scope limits to the presented API key when one is available, otherwise to
+ * the client IP. Prefixes keep the two identifier namespaces distinct. Raw
+ * identifiers are hashed by RateLimitStore before they are retained.
+ */
+export function apiKeysRateLimitKey(req: Request): string {
+  const apiKeyHeader = req.headers['x-api-key'];
+  const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+
+  if (typeof apiKey === 'string' && apiKey.trim().length > 0) {
+    return `api-key:${apiKey.trim()}`;
+  }
+
+  return `ip:${req.ip ?? req.socket?.remoteAddress ?? 'unknown'}`;
+}
+
+const apiKeysRateLimiter = createRateLimiter({
+  ...rateLimitConfig.apiKeys,
+  keyFn: apiKeysRateLimitKey,
+});
+
+router.use(apiKeysRateLimiter);
 
 /**
  * @route   POST /api/v1/api-keys
@@ -56,9 +81,18 @@ router.post(
 
 /**
  * @route   GET /api/v1/api-keys
- * @desc    List all API keys for the authenticated user
+ * @desc    List active API keys for the authenticated user, newest first.
+ *          Cursor-paginated via opaque `nextCursor` tokens so results stay
+ *          stable across pages even as new keys are created concurrently.
  * @access  Private (requires JWT authentication)
+ * @query   limit  - Page size, 1-100 (default 20). Out-of-range values are
+ *                   clamped rather than rejected.
+ * @query   cursor - Opaque cursor from the previous page's `nextCursor`.
+ *                   Omit for the first page. A malformed cursor returns 400.
  * @example
+ * // Request
+ * GET /api/v1/api-keys?limit=20
+ *
  * // Response
  * {
  *   "apiKeys": [
@@ -73,7 +107,10 @@ router.post(
  *       "isActive": true
  *     }
  *   ],
- *   "total": 1
+ *   "total": 1,
+ *   "nextCursor": null,
+ *   "hasNextPage": false,
+ *   "limit": 20
  * }
  */
 router.get(

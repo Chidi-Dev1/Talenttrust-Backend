@@ -1,6 +1,6 @@
 /**
  * Reputation Service Tests
- * 
+ *
  * Comprehensive test suite for reputation score aggregation logic,
  * including the recency-weighted exponential decay algorithm.
  */
@@ -19,6 +19,13 @@ jest.mock('../audit/service', () => ({
     log: jest.fn()
   }
 }));
+
+// Mock the env validation for feature flag tests
+jest.mock('../config/env.schema', () => ({
+  validateEnv: jest.fn()
+}));
+
+import { validateEnv } from '../config/env.schema';
 
 // Test constants
 const REVIEWER_ID = 'reviewer-123';
@@ -212,6 +219,123 @@ describe('ReputationService.createRating — anti-abuse protections', () => {
     // Rounding should not introduce instability
     const result2 = computeWeightedReputationScore(ratings, now, lambda);
     expect(parseFloat(result2.toFixed(2))).toEqual(rounded);
+  });
+});
+
+describe('ReputationService.createRating — comment validation guards', () => {
+  let db: ReturnType<typeof Database>;
+  let contractSeq = 0;
+
+  function uniqueContract(): string {
+    const id = `ctx-cv-${contractSeq++}`;
+    db.exec(`
+      INSERT OR IGNORE INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
+      VALUES ('${id}', 'Test', 'rv-cv', 'tg-cv', 1000, 'completed', 0, datetime('now'));
+    `);
+    return id;
+  }
+
+  beforeAll(() => {
+    db = getDb(':memory:');
+    ReputationService.initialize(db);
+    db.exec(`
+      INSERT OR IGNORE INTO users (id, username, email, role, created_at)
+      VALUES
+        ('rv-cv', 'reviewer-cv', 'reviewer-cv@test.com', 'client', datetime('now')),
+        ('tg-cv', 'target-cv',   'target-cv@test.com',   'freelancer', datetime('now'));
+    `);
+  });
+
+  it('accepts comment at exactly 1000 characters (boundary)', () => {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz ';
+    const comment = Array.from({ length: 1000 }, (_, i) => alphabet[i % alphabet.length]).join('');
+    const entry = ReputationService.createRating('rv-cv', 'tg-cv', 5, uniqueContract(), comment);
+    expect(entry.comment?.length).toBe(1000);
+  });
+
+  it('rejects comment exceeding 1000 characters', () => {
+    const comment = 'a'.repeat(1001);
+    expect(() => ReputationService.createRating('rv-cv', 'tg-cv', 5, uniqueContract(), comment))
+      .toThrow('Comment exceeds maximum length of 1000 characters');
+  });
+
+  it('rejects whitespace-only comment', () => {
+    expect(() => ReputationService.createRating('rv-cv', 'tg-cv', 5, uniqueContract(), '   '))
+      .toThrow('Comment cannot be empty or whitespace-only');
+  });
+
+  it('rejects comment with excessive repetitive content (spam > 50%)', () => {
+    const comment = 'aaaaa';
+    expect(() => ReputationService.createRating('rv-cv', 'tg-cv', 5, uniqueContract(), comment))
+      .toThrow('Comment contains excessive repetitive content');
+  });
+
+  it('rejects comment with mixed spam content', () => {
+    const comment = '11111';
+    expect(() => ReputationService.createRating('rv-cv', 'tg-cv', 5, uniqueContract(), comment))
+      .toThrow('Comment contains excessive repetitive content');
+  });
+});
+
+describe('ReputationService.createRating — audit failure handling', () => {
+  let db: ReturnType<typeof Database>;
+
+  beforeAll(() => {
+    db = getDb(':memory:');
+    ReputationService.initialize(db);
+    db.exec(`
+      INSERT OR IGNORE INTO users (id, username, email, role, created_at)
+      VALUES ('rv-af', 'reviewer-af', 'reviewer-af@test.com', 'client', datetime('now')),
+             ('tg-af', 'target-af',   'target-af@test.com',   'freelancer', datetime('now'));
+      INSERT OR IGNORE INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
+      VALUES ('ctx-af', 'Test', 'rv-af', 'tg-af', 1000, 'completed', 0, datetime('now'));
+    `);
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('re-throws error when audit logging fails', () => {
+    const auditService = require('../audit/service').auditService;
+    auditService.log.mockImplementationOnce(() => { throw new Error('Audit store unavailable'); });
+    expect(() => ReputationService.createRating('rv-af', 'tg-af', 5, 'ctx-af', 'Great work'))
+      .toThrow('Failed to create audit trail');
+  });
+});
+
+describe('ReputationService — uninitialized', () => {
+  const originalRepository = (ReputationService as any).repository;
+
+  beforeAll(() => {
+    (ReputationService as any).repository = null;
+  });
+
+  afterAll(() => {
+    (ReputationService as any).repository = originalRepository;
+  });
+
+  it('throws error from createRating when not initialized', () => {
+    expect(() => ReputationService.createRating('a', 'b', 5, 'c'))
+      .toThrow('ReputationService not initialized');
+  });
+
+  it('throws error from getProfile when not initialized', () => {
+    expect(() => ReputationService.getProfile('any-id'))
+      .toThrow('ReputationService not initialized');
+  });
+});
+
+describe('ReputationService.getProfile — empty target id', () => {
+  let db: ReturnType<typeof Database>;
+
+  beforeAll(() => {
+    db = getDb(':memory:');
+    ReputationService.initialize(db);
+  });
+
+  it('throws error for empty target ID', () => {
+    expect(() => ReputationService.getProfile('')).toThrow('Target ID is required');
   });
 });
 
@@ -414,6 +538,88 @@ describe('computeWeightedReputationScore — mathematical edge cases', () => {
     // Should not return Infinity or NaN
     expect(Number.isFinite(result)).toBe(true);
   });
+
+  it('handles malformed createdAt date string gracefully', () => {
+    const ratings = [
+      { rating: 5, createdAt: 'not-a-date' },
+      { rating: 3, createdAt: createFixedTimestamp(100, now) }
+    ];
+    const result = computeWeightedReputationScore(ratings, now, lambda);
+    // malformed entry should be skipped; result based on valid entry only
+    expect(Number.isFinite(result)).toBe(true);
+    expect(result).toBe(3);
+  });
+
+  it('handles empty-string createdAt date gracefully', () => {
+    const ratings = [
+      { rating: 5, createdAt: '' },
+      { rating: 3, createdAt: createFixedTimestamp(100, now) }
+    ];
+    const result = computeWeightedReputationScore(ratings, now, lambda);
+    expect(Number.isFinite(result)).toBe(true);
+    expect(result).toBe(3);
+  });
+
+  it('handles NaN rating value by skipping the entry', () => {
+    const ratings = [
+      { rating: NaN, createdAt: createFixedTimestamp(0, now) },
+      { rating: 3, createdAt: createFixedTimestamp(100, now) }
+    ];
+    const result = computeWeightedReputationScore(ratings, now, lambda);
+    expect(Number.isFinite(result)).toBe(true);
+    expect(result).toBe(3);
+  });
+
+  it('handles non-finite rating by skipping the entry', () => {
+    const ratings = [
+      { rating: Infinity, createdAt: createFixedTimestamp(0, now) },
+      { rating: 3, createdAt: createFixedTimestamp(100, now) }
+    ];
+    const result = computeWeightedReputationScore(ratings, now, lambda);
+    expect(Number.isFinite(result)).toBe(true);
+    expect(result).toBe(3);
+  });
+
+  it('handles negative lambda by clamping to 0 (no inverted decay)', () => {
+    const ratings = [
+      { rating: 5, createdAt: createFixedTimestamp(0, now) },
+      { rating: 1, createdAt: createFixedTimestamp(1000, now) }
+    ];
+    const result = computeWeightedReputationScore(ratings, now, -0.005);
+    // With clamped lambda=0, all weights are 1 → simple average of 3
+    expect(result).toBe(3);
+  });
+
+  it('returns 0 when all entries are malformed (skipped completely)', () => {
+    const ratings = [
+      { rating: 5, createdAt: 'bad-date' },
+      { rating: NaN, createdAt: createFixedTimestamp(0, now) },
+    ];
+    const result = computeWeightedReputationScore(ratings, now, lambda);
+    expect(result).toBe(0);
+  });
+
+  it('triggers totalWeight underflow guard with extreme age and high lambda', () => {
+    // lambda=10, ageInDays=1000 → weight = exp(-10000) → effectively 0
+    const ratings = [
+      { rating: 5, createdAt: createFixedTimestamp(0, now) },
+      { rating: 1, createdAt: createFixedTimestamp(1000, now) },
+    ];
+    const result = computeWeightedReputationScore(ratings, now, 10);
+    // totalWeight ≈ 1 + 0 = 1 → should not hit the ===0 path with finite math
+    expect(Number.isFinite(result)).toBe(true);
+  });
+
+  it('handles null created at gracefully', () => {
+    const ratings = [
+      { rating: 5, createdAt: createFixedTimestamp(0, now) },
+      { rating: 3, createdAt: null as unknown as string },
+    ];
+    const result = computeWeightedReputationScore(ratings, now, lambda);
+    // null date string → unparseable → skipped
+    expect(Number.isFinite(result)).toBe(true);
+    expect(result).toBe(5);
+  });
 });
 
 describe('ReputationService.getProfile', () => {
@@ -505,5 +711,97 @@ describe('ReputationService.getProfile', () => {
     // 2-decimal rounding contract without contradicting the numeric-type tests.
     expect(profile.score.toFixed(2)).toMatch(/^\d+\.\d{2}$/);
     expect(profile.weightedScore.toFixed(2)).toMatch(/^\d+\.\d{2}$/);
+  });
+});
+
+describe('ReputationService — feature flag (REPUTATION_ENABLED)', () => {
+  let db: ReturnType<typeof Database>;
+
+  beforeAll(() => {
+    db = getDb(':memory:');
+    ReputationService.initialize(db);
+
+    // Seed minimal user rows
+    db.exec(`
+      INSERT OR IGNORE INTO users (id, username, email, role, created_at)
+      VALUES
+        ('reviewer-123', 'reviewer01', 'reviewer@test.com', 'client', datetime('now')),
+        ('target-456', 'target01', 'target@test.com', 'freelancer', datetime('now'));
+    `);
+
+    // Seed contract
+    db.prepare(
+      `INSERT OR IGNORE INTO contracts
+         (id, title, client_id, freelancer_id, amount, status, version, created_at)
+       VALUES (?, ?, ?, ?, 1000, 'completed', 0, datetime('now'))`,
+    ).run('contract-abc', 'Contract contract-abc', 'reviewer-123', 'target-456');
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('createRating throws ForbiddenError when REPUTATION_ENABLED is false', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: false });
+
+    expect(() => {
+      ReputationService.createRating(
+        'reviewer-123',
+        'target-456',
+        5,
+        'contract-abc',
+        'Great work!'
+      );
+    }).toThrow('Reputation system is currently disabled');
+  });
+
+  it('createRating succeeds when REPUTATION_ENABLED is true', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: true });
+
+    const entry = ReputationService.createRating(
+      'reviewer-123',
+      'target-456',
+      5,
+      'contract-abc',
+      'Great work!'
+    );
+
+    expect(entry).toBeDefined();
+    expect(entry.reviewerId).toBe('reviewer-123');
+    expect(entry.targetId).toBe('target-456');
+    expect(entry.rating).toBe(5);
+  });
+
+  it('getProfile throws ForbiddenError when REPUTATION_ENABLED is false', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: false });
+
+    expect(() => {
+      ReputationService.getProfile('target-456');
+    }).toThrow('Reputation system is currently disabled');
+  });
+
+  it('getProfile succeeds when REPUTATION_ENABLED is true', () => {
+    (validateEnv as jest.Mock).mockReturnValue({ REPUTATION_ENABLED: true });
+
+    const profile = ReputationService.getProfile('target-456');
+
+    expect(profile).toBeDefined();
+    expect(profile.freelancerId).toBe('target-456');
+  });
+
+  it('defaults to disabled when validateEnv throws an error', () => {
+    (validateEnv as jest.Mock).mockImplementation(() => {
+      throw new Error('Config validation failed');
+    });
+
+    expect(() => {
+      ReputationService.createRating(
+        'reviewer-123',
+        'target-456',
+        5,
+        'contract-abc',
+        'Great work!'
+      );
+    }).toThrow('Reputation system is currently disabled');
   });
 });

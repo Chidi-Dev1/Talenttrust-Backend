@@ -7,6 +7,20 @@ import { createHash } from 'crypto';
 import { validateEnv } from '../config/env.schema';
 
 /**
+ * Checks if the reputation system is enabled via the REPUTATION_ENABLED feature flag.
+ * @returns true if reputation is enabled, false otherwise
+ */
+function isReputationEnabled(): boolean {
+  try {
+    const config = validateEnv(process.env);
+    return config.REPUTATION_ENABLED;
+  } catch (error) {
+    // If config validation fails, default to disabled for safety
+    return false;
+  }
+}
+
+/**
  * Computes a recency-weighted reputation score using exponential time decay.
  *
  * Each rating's contribution is weighted by exp(-λ * ageInDays), where ageInDays
@@ -39,15 +53,28 @@ export function computeWeightedReputationScore(
 
   const nowTime = now.getTime();
 
+  // Guard: clamp negative lambda to 0 (disallow inverted decay)
+  const safeLambda = Math.max(0, lambda);
+
   for (const ratingEntry of ratings) {
     // Parse createdAt ISO string to Date
     const createdAtTime = new Date(ratingEntry.createdAt).getTime();
-    
+
+    // Guard: skip entries with unparseable createdAt (malformed date strings)
+    if (isNaN(createdAtTime)) {
+      continue;
+    }
+
+    // Guard: skip entries with non-finite rating values (NaN, Infinity)
+    if (typeof ratingEntry.rating !== 'number' || !isFinite(ratingEntry.rating)) {
+      continue;
+    }
+
     // Compute age in days, clamping to 0 minimum (defense against future timestamps)
     const ageInDays = Math.max(0, (nowTime - createdAtTime) / (1000 * 60 * 60 * 24));
     
     // Compute exponential decay weight
-    const weight = Math.exp(-lambda * ageInDays);
+    const weight = Math.exp(-safeLambda * ageInDays);
     
     // Accumulate weighted sum and total weight
     weightedSum += ratingEntry.rating * weight;
@@ -105,6 +132,11 @@ export class ReputationService {
     contextId: string,
     comment?: string
   ): ReputationEntry {
+    // Feature flag check - reputation must be enabled
+    if (!isReputationEnabled()) {
+      throw new ForbiddenError('Reputation system is currently disabled');
+    }
+
     // Ensure repository is initialized
     if (!this.repository) {
       throw new Error('ReputationService not initialized. Call initialize() first.');
@@ -164,6 +196,12 @@ export class ReputationService {
     }
 
     /**
+     * Snapshot the target's rating count immediately before the write so the
+     * audit entry can carry a before/after summary for incident review.
+     */
+    const totalRatingsBefore = this.repository.findByTargetId(targetId).length;
+
+    /**
      * Guard 5 — Persist the reputation entry.
      * Runs only after all guards have passed.
      */
@@ -177,7 +215,9 @@ export class ReputationService {
 
     /**
      * Guard 6 — Mandatory audit log.
-     * Every successful write MUST produce an immutable audit entry.
+     * Every successful write MUST produce an immutable audit entry, carrying
+     * a before/after summary of the target's rating count so reviewers can
+     * see the effect of the mutation without re-deriving it from raw rows.
      * The comment is stored as a SHA-256 hash to avoid leaking PII into the
      * audit store; the plaintext is never logged.
      *
@@ -197,9 +237,16 @@ export class ReputationService {
         resource: 'reputation',
         resourceId: targetId,
         metadata: {
-          rating,
-          comment: comment ? this.hashComment(comment) : undefined,
+          entryId: entry.id,
           contextId,
+          before: {
+            totalRatings: totalRatingsBefore,
+          },
+          after: {
+            totalRatings: totalRatingsBefore + 1,
+            rating,
+            comment: comment ? this.hashComment(comment) : undefined,
+          },
         },
       });
     } catch (auditError) {
@@ -219,6 +266,11 @@ export class ReputationService {
    * @returns ReputationProfile with aggregated stats and reviews
    */
   public static getProfile(targetId: string): ReputationProfile {
+    // Feature flag check - reputation must be enabled
+    if (!isReputationEnabled()) {
+      throw new ForbiddenError('Reputation system is currently disabled');
+    }
+
     // Ensure repository is initialized
     if (!this.repository) {
       throw new Error('ReputationService not initialized. Call initialize() first.');

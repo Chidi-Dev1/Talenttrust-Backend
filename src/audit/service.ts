@@ -14,13 +14,14 @@
  *   strict mode so tests can assert on them.
  */
 
-import type { AuditEntry, AuditQuery, AuditSeverity, CreateAuditEntryInput, IntegrityReport } from './types';
+import type { AuditEntry, AuditQuery, AuditSeverity, CreateAuditEntryInput, IntegrityReport, AuditQueryResult } from './types';
 import type { AuditAction } from './types';
 import { createDefaultAuditRepository, type AuditLogRepository } from './repository';
+import { AuditCache, type AuditCacheOptions } from './auditCache';
 
 export interface AuditServiceOptions {
-  /** Reserved for future use. */
-  _reserved?: never;
+  /** Cache options for audit read responses. */
+  cache?: AuditCacheOptions;
 }
 
 /**
@@ -43,10 +44,14 @@ export interface AuditServiceOptions {
  * ```
  */
 export class AuditService {
+  private cache: AuditCache | null;
+
   constructor(
     private readonly repository: AuditLogRepository = createDefaultAuditRepository(),
     private readonly options: AuditServiceOptions = {},
-  ) {}
+  ) {
+    this.cache = options.cache ? new AuditCache(options.cache) : null;
+  }
 
   /**
    * Records an audit event.
@@ -57,7 +62,14 @@ export class AuditService {
    */
   log(input: CreateAuditEntryInput): AuditEntry {
     try {
-      return this.repository.append(input);
+      const entry = this.repository.append(input);
+      
+      // Invalidate cache on write operations
+      if (this.cache) {
+        this.cache.invalidateByResourceId(input.resourceId);
+      }
+      
+      return entry;
     } catch (err) {
       console.error('[AuditService] Failed to persist audit entry:', err);
       throw err;
@@ -159,7 +171,49 @@ export class AuditService {
    * @returns Matching entries in insertion order.
    */
   query(query: AuditQuery = {}): AuditEntry[] {
-    return this.repository.query(query);
+    // Check cache first
+    if (this.cache) {
+      const cached = this.cache.get(query, 'query');
+      if (cached) {
+        return cached as AuditEntry[];
+      }
+    }
+
+    // Cache miss - fetch from repository
+    const entries = this.repository.query(query);
+
+    // Store in cache
+    if (this.cache) {
+      this.cache.set(query, entries, 'query');
+    }
+
+    return entries;
+  }
+
+  /**
+   * Queries the audit log with cursor-based pagination.
+   *
+   * @param query - Filter and pagination options including cursor.
+   * @returns Paginated result with entries and next cursor.
+   */
+  queryWithCursor(query: AuditQuery = {}): AuditQueryResult {
+    // Check cache first
+    if (this.cache) {
+      const cached = this.cache.get(query, 'queryWithCursor');
+      if (cached) {
+        return cached as AuditQueryResult;
+      }
+    }
+
+    // Cache miss - fetch from repository
+    const result = this.repository.queryWithCursor(query);
+
+    // Store in cache
+    if (this.cache) {
+      this.cache.set(query, result, 'queryWithCursor');
+    }
+
+    return result;
   }
 
   /**
@@ -173,7 +227,23 @@ export class AuditService {
    * Retrieves a single audit entry by ID.
    */
   getById(id: string): AuditEntry | undefined {
-    return this.repository.getById(id);
+    // Check cache first
+    if (this.cache) {
+      const cached = this.cache.get({}, 'getById', id);
+      if (cached) {
+        return cached as AuditEntry;
+      }
+    }
+
+    // Cache miss - fetch from repository
+    const entry = this.repository.getById(id);
+
+    // Store in cache
+    if (this.cache && entry) {
+      this.cache.set({}, entry, 'getById', id);
+    }
+
+    return entry;
   }
 
   /**

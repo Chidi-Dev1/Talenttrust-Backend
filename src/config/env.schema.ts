@@ -44,6 +44,12 @@ export const envSchema = z.object({
       return val.split(',').map(o => o.trim()).filter(Boolean);
     }),
 
+  // Feature Flags
+  CONTRACTS_ENABLED: z.string()
+    .optional()
+    .transform((val) => val !== 'false')
+    .pipe(z.boolean()),
+
   // Database
   DATABASE_URL: z.string().optional(),
 
@@ -59,6 +65,14 @@ export const envSchema = z.object({
     .optional()
     .transform((val) => val ? val.split(',') : ['deploy:*', '*', 'jobs:admin', 'jobs:*'])
     .pipe(z.array(z.string()).optional()),
+
+  // API-key management rate limiting
+  RL_API_KEYS_MAX: z.string().optional(),
+  RL_API_KEYS_WINDOW_MS: z.string().optional(),
+  RL_API_KEYS_ABUSE_THRESHOLD: z.string().optional(),
+  RL_API_KEYS_BLOCK_WINDOW_MS: z.string().optional(),
+  RL_API_KEYS_BLOCK_DURATION_MS: z.string().optional(),
+  RL_API_KEYS_MAX_BLOCK_MS: z.string().optional(),
 
   // Stellar/Soroban Configuration
   STELLAR_HORIZON_URL: z.string().url()
@@ -95,8 +109,46 @@ export const envSchema = z.object({
     })
     .default('https://rpc-testnet.stellar.org'),
 
+  // Stellar RPC transport timeout and retry knobs.  Mirrored in
+  // src/rpc/stellarConfig.ts so the transport can be loaded in isolation
+  // (e.g. tests that exercise the rpc client without booting the full app).
+  STELLAR_RPC_TIMEOUT_MS: z.string()
+    .default('5000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('STELLAR_RPC_TIMEOUT_MS must be greater than 0').max(120_000)),
 
-  // Router / Blue-Green Deployment Configuration
+  STELLAR_RPC_MAX_RETRIES: z.string()
+    .default('3')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().min(0, 'STELLAR_RPC_MAX_RETRIES must be >= 0').max(10, 'STELLAR_RPC_MAX_RETRIES must be <= 10')),
+
+  STELLAR_RPC_RETRY_BASE_DELAY_MS: z.string()
+    .default('200')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().nonnegative('STELLAR_RPC_RETRY_BASE_DELAY_MS must be >= 0').max(60_000)),
+
+   STELLAR_RPC_RETRY_MAX_DELAY_MS: z.string()
+     .default('2000')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().nonnegative('STELLAR_RPC_RETRY_MAX_DELAY_MS must be >= 0').max(60_000)),
+
+   // Health Probe Configuration
+   QUEUE_FAILED_THRESHOLD: z.string()
+     .default('10')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().nonnegative('QUEUE_FAILED_THRESHOLD must be >= 0').max(10_000)),
+
+   QUEUE_BACKLOG_THRESHOLD: z.string()
+     .default('100')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().nonnegative('QUEUE_BACKLOG_THRESHOLD must be >= 0').max(1_000_000)),
+
+   QUEUE_PROBE_TIMEOUT_MS: z.string()
+     .default('3000')
+     .transform((val) => parseInt(val, 10))
+     .pipe(z.number().int().positive('QUEUE_PROBE_TIMEOUT_MS must be > 0').max(30_000)),
+
+   // Router / Blue-Green Deployment Configuration
   ACTIVE_COLOR: z.enum(['blue', 'green']).default('blue'),
   BLUE_PORT: z.string().default('3001'),
   GREEN_PORT: z.string().default('3002'),
@@ -132,6 +184,11 @@ export const envSchema = z.object({
     .transform((val) => val === undefined ? undefined : parseInt(val, 10))
     .pipe(z.number().int().positive().optional()),
 
+  RATE_LIMIT_STORE_TYPE: z.enum(['memory', 'redis'])
+    .default('memory'),
+  REDIS_URL: z.string().optional(),
+  REDIS_KEY_PREFIX: z.string().default('rate_limit:'),
+
   ROUTE_BODY_LIMITS: z.string()
     .optional()
     .refine(val => {
@@ -166,7 +223,28 @@ export const envSchema = z.object({
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().int().positive().max(10000)),
 
+  // Contract Cache Configuration
+  CONTRACT_CACHE_TTL_MS: z.string()
+    .default('5000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('CONTRACT_CACHE_TTL_MS must be a positive integer').max(300_000)),
+
+  CONTRACT_CACHE_SWR_MS: z.string()
+    .default('30000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().nonnegative('CONTRACT_CACHE_SWR_MS must be >= 0').max(600_000)),
+
+  CONTRACT_CACHE_MAX_ENTRIES: z.string()
+    .default('500')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('CONTRACT_CACHE_MAX_ENTRIES must be a positive integer').max(100_000)),
+
   // Reputation Scoring Configuration
+  REPUTATION_ENABLED: z.string()
+    .optional()
+    .transform((val) => val === undefined ? false : val === 'true')
+    .pipe(z.boolean()),
+
   REPUTATION_DECAY_LAMBDA: z.string()
     .default('0.005')
     .transform((val) => parseFloat(val))
@@ -176,6 +254,31 @@ export const envSchema = z.object({
 
   REPUTATION_SCORE_ALGORITHM_VERSION: z.string()
     .default('exp-decay-v1'),
+
+  // Reputation Read Cache Configuration
+  /**
+   * Time-to-live (ms) for cached reputation profiles.
+   * Reads within this window are served from in-memory LRU cache without
+   * hitting the database. Must be a positive integer. Default: 60 000 (1 min).
+   */
+  REPUTATION_CACHE_TTL_MS: z.string()
+    .default('60000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number()
+      .int('REPUTATION_CACHE_TTL_MS must be an integer')
+      .positive('REPUTATION_CACHE_TTL_MS must be greater than 0')),
+
+  /**
+   * Maximum number of reputation profiles to hold in the LRU cache.
+   * When this bound is exceeded, the least-recently-used entry is evicted.
+   * Must be a positive integer. Default: 500.
+   */
+  REPUTATION_CACHE_MAX_ENTRIES: z.string()
+    .default('500')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number()
+      .int('REPUTATION_CACHE_MAX_ENTRIES must be an integer')
+      .positive('REPUTATION_CACHE_MAX_ENTRIES must be greater than 0')),
 
   // Email transport (queue processor + notification service)
   EMAIL_PROVIDER: z.enum(['console', 'smtp', 'ses', 'sendgrid'])
@@ -207,7 +310,47 @@ export const envSchema = z.object({
   AWS_REGION: z.string().optional(),
 
   SENDGRID_API_KEY: z.string().optional(),
+
+  // Auth Cache Configuration
+  AUTH_CACHE_TTL_MS: z.string()
+    .default('5000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('AUTH_CACHE_TTL_MS must be greater than 0').max(300_000)),
+  AUTH_CACHE_MAX_ENTRIES: z.string()
+    .default('1000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('AUTH_CACHE_MAX_ENTRIES must be greater than 0').max(100_000)),
+
+  // Audit Cache Configuration
+  AUDIT_CACHE_TTL_MS: z.string()
+    .default('10000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('AUDIT_CACHE_TTL_MS must be greater than 0').max(300_000)),
+  AUDIT_CACHE_MAX_ENTRIES: z.string()
+    .default('500')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('AUDIT_CACHE_MAX_ENTRIES must be greater than 0').max(100_000)),
 }).superRefine((obj, ctx) => {
+  const requireForEmailProvider = (field: keyof typeof obj, message: string): void => {
+    if (!obj[field]) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message });
+    }
+  };
+
+  if (obj.EMAIL_PROVIDER === 'smtp') {
+    requireForEmailProvider('SMTP_HOST', 'SMTP_HOST is required when EMAIL_PROVIDER=smtp');
+    requireForEmailProvider('SMTP_PORT', 'SMTP_PORT is required when EMAIL_PROVIDER=smtp');
+    requireForEmailProvider('SMTP_FROM', 'SMTP_FROM is required when EMAIL_PROVIDER=smtp');
+  } else if (obj.EMAIL_PROVIDER === 'ses') {
+    requireForEmailProvider('SMTP_FROM', 'SMTP_FROM is required when EMAIL_PROVIDER=ses');
+    requireForEmailProvider('AWS_REGION', 'AWS_REGION is required when EMAIL_PROVIDER=ses');
+    requireForEmailProvider('AWS_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID is required when EMAIL_PROVIDER=ses');
+    requireForEmailProvider('AWS_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY is required when EMAIL_PROVIDER=ses');
+  } else if (obj.EMAIL_PROVIDER === 'sendgrid') {
+    requireForEmailProvider('SMTP_FROM', 'SMTP_FROM is required when EMAIL_PROVIDER=sendgrid');
+    requireForEmailProvider('SENDGRID_API_KEY', 'SENDGRID_API_KEY is required when EMAIL_PROVIDER=sendgrid');
+  }
+
   if (obj.NODE_ENV === 'production') {
     if (!obj.JWT_SECRET) {
       ctx.addIssue({

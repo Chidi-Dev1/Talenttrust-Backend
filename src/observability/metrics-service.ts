@@ -8,28 +8,79 @@ import {
 } from 'prom-client';
 
 import { ServiceStatus } from './types';
+import {
+  assertDlqDepth,
+  assertServiceStatus,
+  assertWebhookOutcome,
+  WebhookOutcome as ValidatedWebhookOutcome,
+} from './metrics-validation';
+import { DEFAULT_HISTOGRAM_BUCKETS, validateHistogramBuckets } from './observability-config';
 
-export type WebhookOutcome = 'success' | 'failure' | 'dlq';
+/**
+ * Re-exported from metrics-validation to preserve existing import paths.
+ * The canonical definition lives in metrics-validation.ts where all metric
+ * input types are colocated.
+ */
+export type WebhookOutcome = ValidatedWebhookOutcome;
 
 /**
  * Canonical list of metric family names documented in docs/observability.md.
  * This constant enables round-trip verification: tests assert that the set of
  * metrics registered by MetricsService matches this list exactly.
+ *
+ * Note: auth_cache_hits_total and auth_cache_misses_total are registered by
+ * AuthCache (not MetricsService) and are documented separately.
  */
 export const CATALOG_METRIC_NAMES: readonly string[] = [
   'http_requests_total',
   'http_request_duration_seconds',
+  'reputation_requests_total',
+  'reputation_request_duration_seconds',
+  'reputation_errors_total',
   'service_health_status',
   'webhook_deliveries_total',
   'webhook_dlq_depth',
   'webhook_rate_limit_tokens',
   'webhook_rate_limit_queue_depth',
+  'contract_cache_hits_total',
+  'contract_cache_misses_total',
+  'contract_cache_invalidations_total',
+  'contract_cache_entries',
 ] as const;
+
+export const REPUTATION_OPERATIONS = ['get_profile', 'create_rating'] as const;
+export type ReputationOperation = (typeof REPUTATION_OPERATIONS)[number];
+
+export const REPUTATION_STATUSES = ['success', 'client_error', 'server_error'] as const;
+export type ReputationRequestStatus = (typeof REPUTATION_STATUSES)[number];
+
+export const REPUTATION_ERROR_CAUSES = [
+  'none',
+  'bad_request',
+  'authentication',
+  'authorization',
+  'not_found',
+  'conflict',
+  'validation',
+  'rate_limit',
+  'client_error',
+  'internal_error',
+] as const;
+export type ReputationErrorCause = (typeof REPUTATION_ERROR_CAUSES)[number];
+
+export interface ReputationRequestMetric {
+  operation: ReputationOperation;
+  status: ReputationRequestStatus;
+  statusCode: number;
+  errorCause: ReputationErrorCause;
+  durationSeconds: number;
+}
 
 export interface MetricsServiceLike {
   contentType: string;
   trackHttpRequest: (req: Request, res: Response, next: NextFunction) => void;
   getMetrics: () => Promise<string>;
+  recordReputationRequest: (metric: ReputationRequestMetric) => void;
   recordHealthStatus: (status: ServiceStatus) => void;
   recordWebhookDelivery: (outcome: WebhookOutcome) => void;
   setWebhookDlqDepth: (depth: number) => void;
@@ -49,6 +100,13 @@ const UNMATCHED_ROUTE_LABEL = 'unmatched';
 
 export interface MetricsServiceOptions {
   httpRouteLabelLimit?: number;
+  /**
+   * Custom histogram bucket boundaries (in seconds) for
+   * `http_request_duration_seconds`. Must be a non-empty array of strictly
+   * increasing positive numbers. Falls back to {@link DEFAULT_HISTOGRAM_BUCKETS}
+   * when absent or invalid.
+   */
+  histogramBuckets?: number[];
 }
 
 /**
@@ -62,6 +120,12 @@ export class MetricsService implements MetricsServiceLike {
   private readonly httpRequestsTotal: Counter;
 
   private readonly httpRequestDurationSeconds: Histogram;
+
+  private readonly reputationRequestsTotal: Counter;
+
+  private readonly reputationRequestDurationSeconds: Histogram;
+
+  private readonly reputationErrorsTotal: Counter;
 
   private readonly serviceHealthStatus: Gauge;
 
@@ -86,6 +150,11 @@ export class MetricsService implements MetricsServiceLike {
   ) {
     this.register = register ?? new Registry();
     this.httpRouteLabelLimit = options.httpRouteLabelLimit ?? DEFAULT_HTTP_ROUTE_LABEL_LIMIT;
+
+    // Resolve histogram buckets: validate caller-supplied values and fall back
+    // to defaults when absent or invalid, so misconfiguration is non-fatal.
+    const resolvedBuckets = resolveHistogramBuckets(options.histogramBuckets);
+
     collectDefaultMetrics({
       register: this.register,
       prefix: `${sanitizeMetricPrefix(serviceName)}_`,
@@ -102,7 +171,29 @@ export class MetricsService implements MetricsServiceLike {
       name: 'http_request_duration_seconds',
       help: 'Duration of HTTP requests in seconds.',
       labelNames: ['method', 'route', 'status_code'],
-      buckets: [0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+      buckets: resolvedBuckets,
+      registers: [this.register],
+    });
+
+    this.reputationRequestsTotal = new Counter({
+      name: 'reputation_requests_total',
+      help: 'Total reputation endpoint requests by operation, status, and error cause.',
+      labelNames: ['operation', 'status', 'status_code', 'error_cause'],
+      registers: [this.register],
+    });
+
+    this.reputationRequestDurationSeconds = new Histogram({
+      name: 'reputation_request_duration_seconds',
+      help: 'Duration of reputation endpoint requests in seconds.',
+      labelNames: ['operation', 'status', 'status_code', 'error_cause'],
+      buckets: resolvedBuckets,
+      registers: [this.register],
+    });
+
+    this.reputationErrorsTotal = new Counter({
+      name: 'reputation_errors_total',
+      help: 'Total reputation endpoint errors by operation and error cause.',
+      labelNames: ['operation', 'error_cause'],
       registers: [this.register],
     });
 
@@ -164,18 +255,26 @@ export class MetricsService implements MetricsServiceLike {
   }
 
   recordHealthStatus(status: ServiceStatus): void {
+    // Runtime guard: reject unknown status strings that bypass TypeScript types
+    // (e.g. from JSON-deserialized or cross-process call sites).
+    const validated = assertServiceStatus(status);
     this.serviceHealthStatus.set(
       { service: this.serviceName },
-      HEALTH_STATUS_VALUE[status],
+      HEALTH_STATUS_VALUE[validated],
     );
   }
 
   recordWebhookDelivery(outcome: WebhookOutcome): void {
-    this.webhookDeliveriesTotal.inc({ outcome });
+    // Runtime guard: reject unknown outcome strings.
+    const validated = assertWebhookOutcome(outcome);
+    this.webhookDeliveriesTotal.inc({ outcome: validated });
   }
 
   setWebhookDlqDepth(depth: number): void {
-    this.webhookDlqDepth.set(depth);
+    // Runtime guard: reject NaN, ±Infinity, negative values, and unreasonably
+    // large values that would indicate a bug or injection attempt.
+    const validated = assertDlqDepth(depth);
+    this.webhookDlqDepth.set(validated);
   }
 
   startRateLimitMetricsSampling(limiter: any, intervalMs: number = 10000): void {
@@ -202,7 +301,34 @@ export class MetricsService implements MetricsServiceLike {
     return this.register.metrics();
   }
 
+  recordReputationRequest(metric: ReputationRequestMetric): void {
+    assertReputationRequestMetric(metric);
+
+    const labels = {
+      operation: metric.operation,
+      status: metric.status,
+      status_code: String(metric.statusCode),
+      error_cause: metric.errorCause,
+    };
+
+    this.reputationRequestsTotal.inc(labels);
+    this.reputationRequestDurationSeconds.observe(labels, metric.durationSeconds);
+
+    if (metric.errorCause !== 'none') {
+      this.reputationErrorsTotal.inc({
+        operation: metric.operation,
+        error_cause: metric.errorCause,
+      });
+    }
+  }
+
   private boundRouteLabel(route: string): string {
+    // Never collapse unmatched routes — they are not user-controlled and must
+    // always be tracked separately so operators can monitor 404 rates.
+    if (route === UNMATCHED_ROUTE_LABEL) {
+      return route;
+    }
+
     if (this.observedHttpRouteLabels.has(route)) {
       return route;
     }
@@ -214,6 +340,50 @@ export class MetricsService implements MetricsServiceLike {
 
     return OTHER_ROUTE_LABEL;
   }
+}
+
+function assertReputationRequestMetric(metric: ReputationRequestMetric): void {
+  if (!REPUTATION_OPERATIONS.includes(metric.operation)) {
+    throw new Error('Invalid reputation operation');
+  }
+
+  if (!REPUTATION_STATUSES.includes(metric.status)) {
+    throw new Error('Invalid reputation request status');
+  }
+
+  if (!REPUTATION_ERROR_CAUSES.includes(metric.errorCause)) {
+    throw new Error('Invalid reputation error cause');
+  }
+
+  if (!Number.isInteger(metric.statusCode) || metric.statusCode < 100 || metric.statusCode > 599) {
+    throw new Error('Invalid reputation status code');
+  }
+
+  if (!Number.isFinite(metric.durationSeconds) || metric.durationSeconds < 0) {
+    throw new Error('Invalid reputation request duration');
+  }
+}
+
+/**
+ * Validate the caller-supplied bucket array and return it if valid.
+ * Falls back to {@link DEFAULT_HISTOGRAM_BUCKETS} when the input is absent or
+ * fails validation, ensuring that misconfiguration is non-fatal and existing
+ * dashboards keep working.
+ */
+function resolveHistogramBuckets(buckets: number[] | undefined): number[] {
+  if (buckets === undefined) {
+    return [...DEFAULT_HISTOGRAM_BUCKETS];
+  }
+
+  const result = validateHistogramBuckets(buckets);
+  if (!result.valid) {
+    console.warn(
+      `[MetricsService] Invalid histogramBuckets option; falling back to defaults.`,
+    );
+    return [...DEFAULT_HISTOGRAM_BUCKETS];
+  }
+
+  return result.buckets;
 }
 
 function sanitizeMetricPrefix(input: string): string {
@@ -277,5 +447,4 @@ function joinRouteParts(baseUrl: string, routePath: string): string {
 
   return `${baseUrl}${routePath}`;
 }
-
 

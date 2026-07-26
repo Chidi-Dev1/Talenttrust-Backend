@@ -41,6 +41,7 @@ describe('ContractsController', () => {
     mockRequest = {
       body: { title: 'Test Contract' },
       query: {},
+      params: {},
     };
     mockResponse = {
       status: jest.fn().mockReturnThis(),
@@ -48,8 +49,7 @@ describe('ContractsController', () => {
       locals: { audit: {} as never },
     };
     mockNext = jest.fn();
-    
-    // Clear all mocks
+
     mockGetAllContracts.mockClear();
     mockGetContractById.mockClear();
     mockCreateContract.mockClear();
@@ -58,7 +58,6 @@ describe('ContractsController', () => {
     mockDeleteContract.mockClear();
     mockGetContractStats.mockClear();
 
-    // Instantiate controller
     const { ContractsService } = require('../services/contracts.service');
     controller = new ContractsController(new ContractsService());
   });
@@ -68,56 +67,51 @@ describe('ContractsController', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getContracts — happy paths
+  // getContracts — cursor pagination
   // -------------------------------------------------------------------------
 
-  describe('getContracts — success', () => {
+  describe('getContracts — cursor pagination', () => {
     it('returns 200 with cursor page on first page (no cursor)', async () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
       mockGetContractsPage.mockResolvedValue(fakePage);
-    });
-  });
+      mockRequest.query = { limit: '20' };
 
-  describe('getContracts', () => {
-    it('returns 200 with contracts list', async () => {
-      mockGetAllContracts.mockResolvedValue([]);
       await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
       );
+
+      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
       expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockResponse.json).toHaveBeenCalledWith({
         status: 'success',
         data: [],
-        meta: expect.any(Object)
-      }));
+        meta: { limit: 20, nextCursor: null, hasNextPage: false },
+        requestId: 'unknown',
+      });
     });
 
-    it('calls next() on error', async () => {
-      const mockError = new Error('DB Down');
-      mockGetAllContracts.mockRejectedValue(mockError);
+    it('defaults limit to CURSOR_DEFAULT_LIMIT when only cursor is provided', async () => {
+      const validCursor = Buffer.from(
+        JSON.stringify({ createdAt: '2024-01-01T00:00:00.000Z', id: 'abc-123' }),
+        'utf8',
+      ).toString('base64url');
+      const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
+      mockGetContractsPage.mockResolvedValue(fakePage);
+      mockRequest.query = { cursor: validCursor };
+
       await controller.getContracts(
         mockRequest as Request,
         mockResponse as Response,
         mockNext,
       );
 
-      expect(mockNext).toHaveBeenCalledWith(mockError);
+      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: validCursor });
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
     });
 
-    it('calls next() on error', async () => {
-      const mockError = new Error('DB Down');
-      mockGetContractsPage.mockRejectedValue(mockError);
-      await controller.getContracts(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-
-    it('passes limit and cursor to service when provided', async () => {
+    it('passes limit and cursor to service when both provided', async () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 5 };
       mockGetContractsPage.mockResolvedValue(fakePage);
 
@@ -140,6 +134,46 @@ describe('ContractsController', () => {
       });
       expect(mockResponse.status).toHaveBeenCalledWith(200);
     });
+
+    it('returns cursor page with hasNextPage and nextCursor in meta', async () => {
+      const fakePage = {
+        data: [{ id: '1', title: 'Test' }],
+        nextCursor: 'next-cursor-value',
+        hasNextPage: true,
+        limit: 5,
+      };
+      mockGetContractsPage.mockResolvedValue(fakePage);
+      mockRequest.query = { limit: '5' };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      const callArg = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(callArg.status).toBe('success');
+      expect(callArg.requestId).toBe('unknown');
+      expect(callArg.meta).toEqual({
+        limit: 5,
+        nextCursor: 'next-cursor-value',
+        hasNextPage: true,
+      });
+    });
+
+    it('defaults to cursor pagination with no params', async () => {
+      const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
+      mockGetContractsPage.mockResolvedValue(fakePage);
+      mockRequest.query = {};
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -157,9 +191,9 @@ describe('ContractsController', () => {
       );
 
       expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect((mockResponse.json as jest.Mock).mock.calls[0][0]).toMatchObject({
-        status: 'error',
-      });
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+      );
       expect(mockNext).not.toHaveBeenCalled();
     });
 
@@ -187,6 +221,18 @@ describe('ContractsController', () => {
       expect(mockResponse.status).toHaveBeenCalledWith(400);
     });
 
+    it('returns 400 when limit is non-numeric', async () => {
+      mockRequest.query = { limit: 'abc' };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+
     it('returns 400 for a malformed cursor', async () => {
       mockRequest.query = { cursor: 'not-a-valid-cursor' };
 
@@ -197,9 +243,9 @@ describe('ContractsController', () => {
       );
 
       expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect((mockResponse.json as jest.Mock).mock.calls[0][0]).toMatchObject({
-        status: 'error',
-      });
+      expect(mockResponse.json).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error' }),
+      );
       expect(mockNext).not.toHaveBeenCalled();
     });
 
@@ -209,6 +255,35 @@ describe('ContractsController', () => {
         'utf8',
       ).toString('base64url');
       mockRequest.query = { cursor: bad };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 400 for a cursor with an invalid date', async () => {
+      const bad = Buffer.from(
+        JSON.stringify({ createdAt: 'not-a-date', id: 'abc-123' }),
+        'utf8',
+      ).toString('base64url');
+      mockRequest.query = { cursor: bad };
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 400 for a cursor exceeding max length', async () => {
+      const oversized = 'a'.repeat(257);
+      mockRequest.query = { cursor: oversized };
 
       await controller.getContracts(
         mockRequest as Request,
@@ -228,7 +303,7 @@ describe('ContractsController', () => {
     it('calls next() when service throws', async () => {
       const mockError = new Error('DB Down');
       mockGetContractsPage.mockRejectedValue(mockError);
-      mockRequest.query = {};
+      mockRequest.query = { limit: '5' };
 
       await controller.getContracts(
         mockRequest as Request,
@@ -238,6 +313,10 @@ describe('ContractsController', () => {
       expect(mockNext).toHaveBeenCalledWith(mockError);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // getContractById
+  // -------------------------------------------------------------------------
 
   describe('getContractById', () => {
     it('returns 200 with contract data', async () => {
@@ -268,6 +347,10 @@ describe('ContractsController', () => {
       expect(error.statusCode).toBe(404);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // createContract
+  // -------------------------------------------------------------------------
 
   describe('createContract', () => {
     it('returns 201 on success', async () => {
@@ -319,8 +402,126 @@ describe('ContractsController', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // updateContract
+  // -------------------------------------------------------------------------
+
+  describe('updateContract', () => {
+    it('returns 200 on success', async () => {
+      const updated = { id: 'abc', title: 'Updated' };
+      mockUpdateContract.mockResolvedValue(updated);
+      mockRequest.params = { id: 'abc' };
+      await controller.updateContract(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+    });
+
+    it('returns 422 when service throws ContractBoundsError', async () => {
+      mockUpdateContract.mockRejectedValue(
+        new ContractBoundsError('Budget exceeds maximum'),
+      );
+      mockRequest.params = { id: 'abc' };
+      await controller.updateContract(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(422);
+      expect(mockNext).not.toHaveBeenCalled();
+    });
+
+    it('delegates non-bounds errors to next()', async () => {
+      const error = new Error('Update failed');
+      mockUpdateContract.mockRejectedValue(error);
+      mockRequest.params = { id: 'abc' };
+      await controller.updateContract(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockNext).toHaveBeenCalledWith(error);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // deleteContract
+  // -------------------------------------------------------------------------
+
+  describe('deleteContract', () => {
+    it('returns 200 on success', async () => {
+      mockDeleteContract.mockResolvedValue(undefined);
+      mockRequest.params = { id: 'abc' };
+      await controller.deleteContract(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+    });
+
+    it('delegates errors to next()', async () => {
+      const error = new Error('Delete failed');
+      mockDeleteContract.mockRejectedValue(error);
+      mockRequest.params = { id: 'abc' };
+      await controller.deleteContract(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockNext).toHaveBeenCalledWith(error);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getContractStats
+  // -------------------------------------------------------------------------
+
+  describe('getContractStats', () => {
+    it('returns 200 with stats', async () => {
+      const stats = { total: 5, byStatus: { draft: 3, active: 2 }, totalBudget: 5000 };
+      mockGetContractStats.mockResolvedValue(stats);
+      await controller.getContractStats(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+    });
+
+    it('returns 422 when service throws ContractBoundsError', async () => {
+      mockGetContractStats.mockRejectedValue(
+        new ContractBoundsError('Bounds exceeded'),
+      );
+      await controller.getContractStats(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockResponse.status).toHaveBeenCalledWith(422);
+      expect(mockNext).not.toHaveBeenCalled();
+    });
+
+    it('delegates non-bounds errors to next()', async () => {
+      const error = new Error('Stats failed');
+      mockGetContractStats.mockRejectedValue(error);
+      await controller.getContractStats(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockNext).toHaveBeenCalledWith(error);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // getBounds
+  // -------------------------------------------------------------------------
+
   describe('getBounds', () => {
-    it('returns 200 with CONTRACT_BOUNDS', () => {
+    it('returns 200 with CONTRACT_BOUNDS (instance)', () => {
       controller.getBounds(mockRequest as Request, mockResponse as Response);
       expect(mockResponse.status).toHaveBeenCalledWith(200);
       expect(mockResponse.json).toHaveBeenCalledWith({
@@ -328,6 +529,29 @@ describe('ContractsController', () => {
         data: CONTRACT_BOUNDS,
         requestId: 'unknown',
       });
+    });
+
+    it('returns 200 with CONTRACT_BOUNDS via instance', () => {
+      controller.getBounds(mockRequest as Request, mockResponse as Response);
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // createContractsController factory
+  // -------------------------------------------------------------------------
+
+  describe('createContractsController factory', () => {
+    it('returns bound handler methods', () => {
+      const { createContractsController } = require('./contracts.controller');
+      const controller = createContractsController(new (require('../services/contracts.service').ContractsService)());
+      expect(controller).toHaveProperty('getContracts');
+      expect(controller).toHaveProperty('getContractById');
+      expect(controller).toHaveProperty('createContract');
+      expect(controller).toHaveProperty('updateContract');
+      expect(controller).toHaveProperty('deleteContract');
+      expect(controller).toHaveProperty('getContractStats');
+      expect(controller).toHaveProperty('getBounds');
     });
   });
 });

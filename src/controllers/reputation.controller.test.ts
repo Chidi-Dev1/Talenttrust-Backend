@@ -1,8 +1,9 @@
-import { Request, Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { ReputationController } from './reputation.controller';
 import { ReputationService } from '../services/reputation.service';
-import { ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
+import { AppError, ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
+import { reputationCache } from '../utils/reputationCache';
 
 jest.mock('../services/reputation.service');
 
@@ -10,14 +11,15 @@ jest.mock('../services/reputation.service');
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeRes(): { res: Partial<Response>; statusMock: jest.Mock; jsonMock: jest.Mock } {
+function makeRes(): { res: Partial<Response>; statusMock: jest.Mock; jsonMock: jest.Mock; nextMock: jest.Mock } {
   const jsonMock = jest.fn();
   const statusMock = jest.fn().mockReturnValue({ json: jsonMock });
+  const nextMock = jest.fn();
   const res: Partial<Response> = {
     status: statusMock,
     locals: { requestId: 'test-request-id' },
   } as unknown as Response;
-  return { res, statusMock, jsonMock };
+  return { res, statusMock, jsonMock, nextMock };
 }
 
 function makeReq(overrides: Partial<Request> = {}): Partial<Request> {
@@ -134,53 +136,51 @@ describe('updateReputationSchema — rating field validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('ReputationController.getProfile', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    reputationCache.clear();
+  });
 
   it('returns 200 with profile data on success', async () => {
     const mockProfile = { freelancerId: 'user-1', score: 4.5, totalRatings: 10 };
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
-    const { res, statusMock, jsonMock } = makeRes();
-    await ReputationController.getProfile(makeReq() as Request, res as Response);
+    const { res, statusMock, jsonMock, nextMock } = makeRes();
+    await ReputationController.getProfile(makeReq() as Request, res as Response, nextMock as NextFunction);
 
     expect(statusMock).toHaveBeenCalledWith(200);
     expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: mockProfile });
+    expect(nextMock).not.toHaveBeenCalled();
   });
 
-  it('returns 400 with structured error when service throws "Freelancer ID is required"', async () => {
+  it('forwards "Freelancer ID is required" as a 400 AppError to next', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
       throw new Error('Freelancer ID is required');
     });
 
-    const { res, statusMock, jsonMock } = makeRes();
-    await ReputationController.getProfile(makeReq() as Request, res as Response);
+    const { res, nextMock } = makeRes();
+    await ReputationController.getProfile(makeReq() as Request, res as Response, nextMock as NextFunction);
 
-    expect(statusMock).toHaveBeenCalledWith(400);
-    expect(jsonMock).toHaveBeenCalledWith({
-      error: {
-        code: 'bad_request',
-        message: 'Freelancer ID is required',
-        requestId: 'test-request-id',
-      },
-    });
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
+    expect(error.code).toBe('bad_request');
+    expect(error.message).toBe('Freelancer ID is required');
   });
 
-  it('returns 500 with structured error for unknown service errors', async () => {
+  it('forwards unknown errors to next unchanged', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
       throw new Error('Database down');
     });
 
-    const { res, statusMock, jsonMock } = makeRes();
-    await ReputationController.getProfile(makeReq() as Request, res as Response);
+    const { res, nextMock } = makeRes();
+    await ReputationController.getProfile(makeReq() as Request, res as Response, nextMock as NextFunction);
 
-    expect(statusMock).toHaveBeenCalledWith(500);
-    expect(jsonMock).toHaveBeenCalledWith({
-      error: {
-        code: 'internal_error',
-        message: 'An unexpected error occurred',
-        requestId: 'test-request-id',
-      },
-    });
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe('Database down');
   });
 });
 
@@ -189,7 +189,10 @@ describe('ReputationController.getProfile', () => {
 // ---------------------------------------------------------------------------
 
 describe('ReputationController.createRating', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    reputationCache.clear();
+  });
 
   const validBody = {
     reviewerId: 'reviewer-1',
@@ -201,124 +204,168 @@ describe('ReputationController.createRating', () => {
     const mockProfile = { freelancerId: 'user-1', score: 4.0, totalRatings: 1 };
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
-    const { res, statusMock, jsonMock } = makeRes();
+    const { res, statusMock, jsonMock, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
 
     expect(statusMock).toHaveBeenCalledWith(200);
     expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: mockProfile });
+    expect(nextMock).not.toHaveBeenCalled();
   });
 
   // --- Missing / invalid required fields ---
 
-  it('returns 400 when reviewerId is missing', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when reviewerId is missing', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { rating: 3 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
-  it('returns 400 when rating is missing', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating is missing', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { reviewerId: 'reviewer-1' } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
   // --- Out-of-range rating values ---
 
-  it('returns 400 when rating = 0 (min - 1)', async () => {
-    const { res, statusMock, jsonMock } = makeRes();
+  it('forwards 400 AppError when rating = 0 (min - 1)', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 0 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
-    expect(jsonMock).toHaveBeenCalledWith(
-      expect.objectContaining({ error: expect.objectContaining({ code: 'bad_request' }) })
-    );
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
+    expect(error.code).toBe('bad_request');
   });
 
-  it('returns 400 when rating = 6 (max + 1)', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = 6 (max + 1)', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 6 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
-  it('returns 400 when rating = -1', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = -1', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: -1 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
-  it('returns 400 when rating = 100', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = 100', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 100 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
   // --- Non-integer ratings ---
 
-  it('returns 400 when rating = 1.5 (decimal)', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = 1.5 (decimal)', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 1.5 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
-  it('returns 400 when rating = 4.9 (decimal)', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = 4.9 (decimal)', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 4.9 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
   // --- NaN and Infinity ---
 
-  it('returns 400 when rating = NaN', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = NaN', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: NaN } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
-  it('returns 400 when rating = Infinity', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = Infinity', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: Infinity } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
-  it('returns 400 when rating = -Infinity', async () => {
-    const { res, statusMock } = makeRes();
+  it('forwards 400 AppError when rating = -Infinity', async () => {
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: -Infinity } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
-    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.statusCode).toBe(400);
   });
 
   // --- Boundary: valid edge values ---
@@ -327,83 +374,102 @@ describe('ReputationController.createRating', () => {
     const mockProfile = { freelancerId: 'user-1', score: 1.0, totalRatings: 1 };
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
-    const { res, statusMock } = makeRes();
+    const { res, statusMock, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 1 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
     expect(statusMock).toHaveBeenCalledWith(200);
+    expect(nextMock).not.toHaveBeenCalled();
   });
 
   it('accepts rating = 5 (maximum)', async () => {
     const mockProfile = { freelancerId: 'user-1', score: 5.0, totalRatings: 1 };
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
-    const { res, statusMock } = makeRes();
+    const { res, statusMock, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 5 } }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
     expect(statusMock).toHaveBeenCalledWith(200);
+    expect(nextMock).not.toHaveBeenCalled();
   });
 
   // --- Service-layer errors are surfaced correctly ---
 
-  it('returns 403 when service throws ForbiddenError', async () => {
+  it('forwards ForbiddenError to next', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
       throw new ForbiddenError('Users cannot rate themselves');
     });
 
-    const { res, statusMock, jsonMock } = makeRes();
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
 
-    expect(statusMock).toHaveBeenCalledWith(403);
-    expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Users cannot rate themselves' });
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(ForbiddenError);
+    expect(error.statusCode).toBe(403);
+    expect(error.message).toBe('Users cannot rate themselves');
   });
 
-  it('returns 409 when service throws ConflictError', async () => {
+  it('forwards ConflictError to next', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
       throw new ConflictError('Rating already exists');
     });
 
-    const { res, statusMock } = makeRes();
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
 
-    expect(statusMock).toHaveBeenCalledWith(409);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(ConflictError);
+    expect(error.statusCode).toBe(409);
   });
 
-  it('returns 422 when service throws ValidationError', async () => {
+  it('forwards ValidationError to next', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
       throw new ValidationError('Comment contains spam');
     });
 
-    const { res, statusMock } = makeRes();
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
 
-    expect(statusMock).toHaveBeenCalledWith(422);
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.statusCode).toBe(422);
   });
 
-  it('returns 500 for unknown service errors', async () => {
+  it('forwards unknown errors to next unchanged', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
       throw new Error('Unexpected failure');
     });
 
-    const { res, statusMock, jsonMock } = makeRes();
+    const { res, nextMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response
+      res as Response,
+      nextMock as NextFunction
     );
 
-    expect(statusMock).toHaveBeenCalledWith(500);
-    expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Internal server error' });
+    expect(nextMock).toHaveBeenCalledTimes(1);
+    const error = nextMock.mock.calls[0][0];
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toBe('Unexpected failure');
   });
 });
