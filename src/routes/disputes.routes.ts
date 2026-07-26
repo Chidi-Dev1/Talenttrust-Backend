@@ -34,6 +34,7 @@ import {
   DisputesRequestMetricInput,
 } from '../observability/metrics-service';
 import { mapDisputesErrorCause } from '../observability/metrics-validation';
+import { createDisputesController } from '../controllers/disputes.controller';
 
 export interface DisputesRouterOptions {
   /** Optional metrics service; when omitted, metrics are skipped. */
@@ -49,6 +50,7 @@ export interface DisputesRouterOptions {
  */
 export function createDisputesRouter(options: DisputesRouterOptions = {}): Router {
   const router = Router();
+  const controller = createDisputesController();
 
   // Observability first so duration/status capture includes auth + rate-limit outcomes.
   router.use(createDisputesObservabilityMiddleware(options));
@@ -65,9 +67,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.get(
     '/',
     requirePermission('disputes', 'list'),
-    (_req: Request, res: Response) => {
-      res.status(200).json({ disputes: [], total: 0 });
-    },
+    controller.getDisputes,
   );
 
   // ── GET /:id — get a single dispute ───────────────────────────────────────────
@@ -75,15 +75,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.get(
     '/:id',
     requirePermission('disputes', 'read'),
-    (req: Request, res: Response) => {
-      res.status(200).json({
-        dispute: {
-          id: req.params.id,
-          status: 'open',
-          createdAt: new Date().toISOString(),
-        },
-      });
-    },
+    controller.getDisputeById,
   );
 
   // ── POST / — create a new dispute ─────────────────────────────────────────────
@@ -91,17 +83,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.post(
     '/',
     requirePermission('disputes', 'create'),
-    (req: Request, res: Response) => {
-      const body = req.body ?? {};
-      res.status(201).json({
-        dispute: {
-          id: `dispute-${Date.now()}`,
-          ...body,
-          status: 'open',
-          createdAt: new Date().toISOString(),
-        },
-      });
-    },
+    controller.createDispute,
   );
 
   // ── PATCH /:id — update a dispute ────────────────────────────────────────────
@@ -109,16 +91,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.patch(
     '/:id',
     requirePermission('disputes', 'update'),
-    (req: Request, res: Response) => {
-      const body = req.body ?? {};
-      res.status(200).json({
-        dispute: {
-          id: req.params.id,
-          ...body,
-          updatedAt: new Date().toISOString(),
-        },
-      });
-    },
+    controller.updateDispute,
   );
 
   // ── DELETE /:id — delete a dispute ────────────────────────────────────────────
@@ -126,11 +99,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.delete(
     '/:id',
     requirePermission('disputes', 'delete'),
-    (req: Request, res: Response) => {
-      res.status(200).json({
-        message: `Dispute ${req.params.id} deleted successfully`,
-      });
-    },
+    controller.deleteDispute,
   );
 
   return router;
