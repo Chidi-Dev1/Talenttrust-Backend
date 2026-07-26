@@ -39,6 +39,8 @@ import disputesRouter from './disputes.routes';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+const testUuid = '550e8400-e29b-41d4-a716-446655440000';
+
 function buildApp() {
   const app = express();
   app.use(express.json());
@@ -57,8 +59,10 @@ async function fireRequests(
   const results: request.Response[] = [];
   for (let i = 0; i < n; i++) {
     const reqBuilder = request(app)[method](path).set('X-Forwarded-For', ip);
-    if (method !== 'get') {
-      reqBuilder.send({ reason: 'test-dispute' });
+    if (method === 'post') {
+      reqBuilder.send({ contractId: testUuid, reason: 'test-dispute' });
+    } else if (method !== 'get') {
+      reqBuilder.send({ status: 'resolved' });
     }
     results.push(await reqBuilder);
   }
@@ -84,7 +88,7 @@ describe('Disputes endpoints — rate limiting', () => {
       const res = await request(app)
         .post('/api/v1/disputes')
         .set('X-Forwarded-For', '10.0.0.2')
-        .send({ reason: 'test' });
+        .send({ contractId: testUuid, reason: 'test' });
       expect(res.status).toBe(201);
     });
 
@@ -233,7 +237,7 @@ describe('Disputes endpoints — rate limiting', () => {
         await request(app)
           .post('/api/v1/disputes')
           .set('X-Forwarded-For', ip)
-          .send({ reason: 'test' });
+          .send({ contractId: testUuid, reason: 'test' });
       }
       const over = await request(app)
         .get('/api/v1/disputes')
@@ -251,7 +255,7 @@ describe('Disputes endpoints — rate limiting', () => {
 
       for (let i = 0; i < limit; i++) {
         await request(app)
-          .patch('/api/v1/disputes/test-id')
+          .patch(`/api/v1/disputes/${testUuid}`)
           .set('X-Forwarded-For', ip)
           .send({ status: 'resolved' });
       }
@@ -271,7 +275,7 @@ describe('Disputes endpoints — rate limiting', () => {
 
       for (let i = 0; i < limit; i++) {
         await request(app)
-          .delete('/api/v1/disputes/test-id')
+          .delete(`/api/v1/disputes/${testUuid}`)
           .set('X-Forwarded-For', ip);
       }
       const over = await request(app)
@@ -460,7 +464,9 @@ describe('Disputes endpoints — rate limiting', () => {
       // is exactly at the limit (limit-th request = allowed).
       await request(app).get('/api/v1/disputes').set('X-Forwarded-For', ip);
       for (let i = 2; i < limit - 1; i++) {
-        await request(app).get(`/api/v1/disputes/${i}`).set('X-Forwarded-For', ip);
+        await request(app)
+          .get(`/api/v1/disputes/${testUuid}`)
+          .set('X-Forwarded-For', ip);
       }
 
       // At-limit request succeeds (the limit-th request)

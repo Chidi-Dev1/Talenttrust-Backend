@@ -22,6 +22,13 @@ import { Router, Request, Response } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { validateRequest, validateParams, validateQuery } from '../middleware/validate.middleware';
+import {
+  createDisputeSchema,
+  updateDisputeSchema,
+  disputeParamsSchema,
+  listDisputesQuerySchema,
+} from './disputes.validation';
 
 const router = Router();
 
@@ -39,6 +46,7 @@ router.use(requireAuth);
 router.get(
   '/',
   requirePermission('disputes', 'list'),
+  validateQuery(listDisputesQuerySchema),
   (_req: Request, res: Response) => {
     res.status(200).json({ disputes: [], total: 0 });
   },
@@ -49,6 +57,7 @@ router.get(
 router.get(
   '/:id',
   requirePermission('disputes', 'read'),
+  validateParams(disputeParamsSchema),
   (req: Request, res: Response) => {
     res.status(200).json({
       dispute: {
@@ -65,6 +74,7 @@ router.get(
 router.post(
   '/',
   requirePermission('disputes', 'create'),
+  validateRequest(createDisputeSchema),
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(201).json({
@@ -83,6 +93,7 @@ router.post(
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
+  validateRequest(updateDisputeSchema),
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(200).json({
