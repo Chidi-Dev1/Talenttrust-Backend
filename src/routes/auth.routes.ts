@@ -64,6 +64,7 @@ function getAuthService(): AuthService {
 }
 
 function authError(res: Response, status: number, code: string, message: string): Response {
+  res.locals.errorCause = code;
   return res.status(status).json({ error: { code, message } });
 }
 

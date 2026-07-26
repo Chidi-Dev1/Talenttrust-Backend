@@ -102,6 +102,7 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/health', readinessHealthRouter);
   app.use('/api/config', configRouter);
   app.use('/api/v1', eventsRouter);
+  app.use('/api/v1/auth', metricsService.trackAuthRequest.bind(metricsService));
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/api-keys', metricsService.trackApiKeysRequest.bind(metricsService));
   app.use('/api/v1', apiKeysRouter);
