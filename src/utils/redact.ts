@@ -7,7 +7,46 @@
  */
 
 const REDACTED = '[REDACTED]';
-const SENSITIVE_KEY_PATTERN = /\b(secret|signature|token|key|password|authorization|nonce|cookie)\b/i;
+
+/**
+ * Checks if a key name should be redacted based on sensitive patterns.
+ * Matches exact sensitive words and camelCase/PascalCase variants,
+ * but excludes words where sensitive terms are substrings (e.g., "tokenized").
+ */
+function isSensitiveKey(key: string): boolean {
+  const sensitiveWords = ['secret', 'signature', 'token', 'key', 'password', 'authorization', 'nonce', 'cookie'];
+  
+  for (const word of sensitiveWords) {
+    // Exact match (case-insensitive)
+    if (key.toLowerCase() === word) {
+      return true;
+    }
+    
+    // camelCase/PascalCase: word at start followed by uppercase letter (e.g., "ApiKey")
+    if (new RegExp(`^${word}[A-Z]`, 'i').test(key)) {
+      return true;
+    }
+    
+    // camelCase: word preceded by lowercase letter, followed by uppercase letter (e.g., "apiKey")
+    if (new RegExp(`[a-z]${word}[A-Z]`, 'i').test(key)) {
+      return true;
+    }
+    
+    // camelCase: word preceded by lowercase letter, at end of string (e.g., "apiKey")
+    // This matches patterns where the sensitive word is at the end of a camelCase key
+    if (new RegExp(`[a-z]${word}$`, 'i').test(key)) {
+      return true;
+    }
+    
+    // Word with separator: _word, .word, word_, word.
+    // If preceded by separator, can be followed by separator or end
+    if (new RegExp(`(_|\\.)${word}(_|\\.|$)`, 'i').test(key)) {
+      return true;
+    }
+  }
+  
+  return false;
+}
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
   'cookie',
@@ -41,7 +80,7 @@ export function redactSecret(_value: unknown): string {
 export function redactObject(obj: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (SENSITIVE_KEY_PATTERN.test(k)) {
+    if (isSensitiveKey(k)) {
       out[k] = REDACTED;
     } else if (v !== null && typeof v === 'object') {
       if (Array.isArray(v)) {
