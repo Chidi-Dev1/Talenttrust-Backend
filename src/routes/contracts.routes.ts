@@ -182,12 +182,14 @@ function createContractsRouter(): Router {
 
   // PATCH /:id — update an existing contract (owner or admin only)
   // validateContractId runs before auth to reject clearly invalid :id params early.
+  // Idempotency-Key support added for milestones write safety.
   /** @permission contracts:update (ownOnly for client/freelancer) — admin, client, freelancer */
   router.patch(
     '/:id',
     validateContractId,
     requireAuth,
     requirePermission('contracts', 'update', getContractOwnerId),
+    contractCreateIdempotencyMiddleware(),
     validateUpdateContract,
     controller.updateContract,
   );
