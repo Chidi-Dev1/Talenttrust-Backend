@@ -293,10 +293,20 @@ describe('ContractsController', () => {
     });
 
     it('returns 200 with paginated legacy metadata when page+limit provided', async () => {
+      const makeContract = (id: string, title: string) => ({
+        id,
+        title,
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 0,
+      });
       const contracts = [
-        { id: '1', title: 'A' },
-        { id: '2', title: 'B' },
-        { id: '3', title: 'C' },
+        makeContract('1', 'A'),
+        makeContract('2', 'B'),
+        makeContract('3', 'C'),
       ];
       mockGetAllContracts.mockResolvedValue(contracts);
       mockRequest.query = { page: '1', limit: '2' };
@@ -441,7 +451,16 @@ describe('ContractsController', () => {
 
   describe('getContractById', () => {
     it('returns 200 with contract data', async () => {
-      const contract = { id: 'abc', title: 'Test' };
+      const contract = {
+        id: 'abc',
+        title: 'Test',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 0,
+      };
       mockGetContractById.mockResolvedValue(contract);
       mockRequest.params = { id: 'abc' };
       await controller.getContractById(
@@ -475,7 +494,16 @@ describe('ContractsController', () => {
 
   describe('createContract', () => {
     it('returns 201 on success', async () => {
-      const contract = { id: 'abc', status: 'PENDING' };
+      const contract = {
+        id: 'abc',
+        title: 'Test',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'draft',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 0,
+      };
       mockCreateContract.mockResolvedValue(contract);
       await controller.createContract(
         mockRequest as Request,
@@ -529,7 +557,16 @@ describe('ContractsController', () => {
 
   describe('updateContract', () => {
     it('returns 200 on success', async () => {
-      const updated = { id: 'abc', title: 'Updated' };
+      const updated = {
+        id: 'abc',
+        title: 'Updated',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 1,
+      };
       mockUpdateContract.mockResolvedValue(updated);
       mockRequest.params = { id: 'abc' };
       await controller.updateContract(
@@ -758,7 +795,16 @@ describe('ContractsController', () => {
 
   describe('updateContract', () => {
     it('returns 200 on success', async () => {
-      const updatedContract = { id: 'abc', title: 'Updated', version: 1 };
+      const updatedContract = {
+        id: 'abc',
+        title: 'Updated',
+        clientId: 'client-1',
+        freelancerId: 'freelancer-1',
+        amount: 1000,
+        status: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        version: 1,
+      };
       mockRequest.params = { id: 'abc' };
       mockRequest.body = { version: 0, title: 'Updated' };
       mockUpdateContract.mockResolvedValue(updatedContract);

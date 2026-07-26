@@ -48,6 +48,20 @@ const mockService = {
   getContractStats: jest.fn(),
 };
 
+function makeContract(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'abc',
+    title: 'Test',
+    clientId: 'client-1',
+    freelancerId: 'freelancer-1',
+    amount: 1000,
+    status: 'active',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    version: 0,
+    ...overrides,
+  };
+}
+
 describe('ContractsController (DI)', () => {
   let controller: ReturnType<typeof createContractsController>;
 
@@ -58,11 +72,12 @@ describe('ContractsController (DI)', () => {
 
   describe('getContracts', () => {
     it('returns paginated contracts', async () => {
-      mockService.getAllContracts.mockResolvedValueOnce([{ id: '1' }, { id: '2' }]);
+      const contracts = [makeContract({ id: '1' }), makeContract({ id: '2' })];
+      mockService.getAllContracts.mockResolvedValueOnce(contracts);
       await controller.getContracts(makeMockReq(), makeMockRes(), next);
       expect(ok).toHaveBeenCalledWith(
         expect.anything(),
-        [{ id: '1' }, { id: '2' }],
+        contracts,
         expect.objectContaining({ page: 1, limit: 10, total: 2 }),
       );
     });
@@ -76,7 +91,7 @@ describe('ContractsController (DI)', () => {
 
   describe('getContractById', () => {
     it('returns contract when found', async () => {
-      const contract = { id: 'abc', title: 'Test' };
+      const contract = makeContract();
       mockService.getContractById.mockResolvedValueOnce(contract);
       await controller.getContractById(
         makeMockReq({ params: { id: 'abc' } }),
@@ -99,7 +114,7 @@ describe('ContractsController (DI)', () => {
 
   describe('createContract', () => {
     it('creates contract and returns 201', async () => {
-      const newContract = { id: 'new-1', title: 'New' };
+      const newContract = makeContract({ id: 'new-1', title: 'New', status: 'draft' });
       mockService.createContract.mockResolvedValueOnce(newContract);
       await controller.createContract(
         makeMockReq({ body: { title: 'New' } }),
@@ -125,7 +140,7 @@ describe('ContractsController (DI)', () => {
 
   describe('updateContract', () => {
     it('updates contract successfully', async () => {
-      const updated = { id: 'u-1', title: 'Updated' };
+      const updated = makeContract({ id: 'u-1', title: 'Updated', version: 1 });
       mockService.updateContract.mockResolvedValueOnce(updated);
       await controller.updateContract(
         makeMockReq({ params: { id: 'u-1' }, body: { title: 'Updated' } }),
@@ -180,7 +195,7 @@ describe('ContractsController (DI)', () => {
 
   describe('getContractStats', () => {
     it('returns stats', async () => {
-      const stats = { total: 5, active: 3 };
+      const stats = { total: 5, totalBudget: 5000, byStatus: { active: 3, draft: 2 } };
       mockService.getContractStats.mockResolvedValueOnce(stats);
       await controller.getContractStats(makeMockReq(), makeMockRes(), next);
       expect(ok).toHaveBeenCalledWith(expect.anything(), stats);
