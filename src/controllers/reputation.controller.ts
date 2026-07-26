@@ -1,96 +1,66 @@
 import { NextFunction, Request, Response } from 'express';
 import { ReputationService } from '../services/reputation.service';
-import { AppError } from '../errors/appError';
+import { mapErrorToPayload } from '../errors/appError';
 import { AuthenticatedRequest } from '../auth/authenticate';
-import { isValidReputationRatingPayload } from './reputation.validation';
-import { ReputationProfile } from '../types/reputation';
-import { reputationCache } from '../utils/reputationCache';
 
 /**
  * @title Reputation Controller
- * @dev Handles HTTP requests for the reputation system with proper error handling.
+ * @dev Thin HTTP adapter.
  *
- * ### Caching
- * GET /:id responses are cached in the module-level `reputationCache` singleton
- * (bounded LRU with TTL). The cache key is the freelancer ID (`req.params.id`).
+ * All reputation business logic lives in {@link ReputationService}. This
+ * controller only:
+ *   1. extracts path parameters from the HTTP request,
+ *   2. delegates to the service, and
+ *   3. serializes the service's response (or thrown error) to JSON.
  *
- * On a **hit** the cached `ReputationProfile` is returned immediately without
- * touching the database. On a **miss** the service is called, the result is
- * stored in the cache, and then returned to the caller.
- *
- * PUT /:id (write path) invalidates the affected cache key so that the next
- * GET always reflects the newly submitted rating.
+ * Error serialization goes through the shared {@link mapErrorToPayload} helper
+ * so that all endpoints emit the canonical `{ error: { code, message, requestId } }`
+ * payload shape - matching every other controller in the codebase.
  */
 export class ReputationController {
   /**
    * GET /api/v1/reputation/:id
-   * Retrieve a freelancer's reputation profile.
-   *
-   * Checks the LRU cache first. On a cache miss, falls through to
-   * `ReputationService.getProfile`, stores the result, and returns it.
+   * Retrieve a freelancer's aggregated reputation profile.
    */
   public static async getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { id } = req.params;
-
-      // ── Cache read ────────────────────────────────────────────────────────
-      const cached = reputationCache.get(id);
-      if (cached !== undefined) {
-        res.status(200).json({ status: 'success', data: cached as ReputationProfile });
-        return;
-      }
-
-      // ── Cache miss — delegate to service ─────────────────────────────────
-      const profile = ReputationService.getProfile(id);
-
-      // Store in cache for subsequent reads
-      reputationCache.set(id, profile);
-
+      const profile = ReputationService.getProfile(req.params.id);
       res.status(200).json({ status: 'success', data: profile });
-    } catch (error: any) {
-      if (error.message === 'Freelancer ID is required') {
-        next(new AppError(400, 'bad_request', error.message));
-      } else {
-        next(error);
-      }
+    } catch (error) {
+      sendError(res, error);
     }
   }
 
   /**
-   * POST /api/v1/reputation/:id/rate
-   * Create a new reputation rating for a freelancer.
+   * POST /api/v1/reputation/:id/rate / PUT /api/v1/reputation/:id
+   * Record a new rating and return the recomputed profile.
    *
-   * Rating validation is enforced at two layers:
-   *  1. Zod DTO via validateSchema middleware (primary — rejects before this method runs)
-   *  2. Guard below (defense-in-depth — catches bypassed middleware or direct controller calls)
-   *
-   * Rating must be a finite integer in [1, 5]. Anything outside that range or any
-   * non-integer (including NaN/Infinity/decimals) is rejected with a 400.
-   *
-   * After a successful write, the cache entry for `id` is **invalidated** so
-   * that the next GET re-fetches fresh data from the service layer.
+   * Payload validation is enforced at two layers:
+   *  1. Zod DTO via `validateSchema` middleware (primary - rejects before
+   *     this method runs).
+   *  2. `ReputationService.updateProfile` (defense-in-depth - catches
+   *     bypassed middleware or direct service callers).
    */
   public static async createRating(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { id } = req.params;
-      const payload: any = req.body;
-
-      if (!isValidReputationRatingPayload(payload)) {
-        next(new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1–5) are required'));
-        return;
-      }
-
-      const updatedProfile = (ReputationService as any).updateProfile
-        ? (ReputationService as any).updateProfile(id, payload)
-        : ReputationService.getProfile(id);
-
-      // ── Cache invalidation ─────────────────────────────────────────────────
-      // Evict any stale cached profile so the next GET reflects the new rating.
-      reputationCache.invalidate(id);
-
+      const updatedProfile = ReputationService.updateProfile(req.params.id, req.body);
       res.status(200).json({ status: 'success', data: updatedProfile });
     } catch (error) {
-      next(error);
+      sendError(res, error);
     }
   }
+}
+
+/**
+ * Single error-serialization boundary for reputation endpoints.
+ *
+ * Delegates to {@link mapErrorToPayload} so AppError subclasses, Zod errors,
+ * and unknown errors all map to the same `{ error: { code, message, requestId } }`
+ * shape used elsewhere in the codebase.
+ */
+function sendError(res: Response, error: unknown): void {
+  const requestId =
+    typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  const { statusCode, payload } = mapErrorToPayload(error, requestId);
+  res.status(statusCode).json(payload);
 }

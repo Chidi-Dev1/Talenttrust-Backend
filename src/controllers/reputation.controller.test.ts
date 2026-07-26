@@ -1,7 +1,12 @@
 import { NextFunction, Request, Response } from 'express';
 import { ReputationController } from './reputation.controller';
 import { ReputationService } from '../services/reputation.service';
-import { AppError, ForbiddenError, ConflictError, ValidationError } from '../errors/appError';
+import {
+  ForbiddenError,
+  ConflictError,
+  ValidationError,
+  AppError,
+} from '../errors/appError';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
 import { reputationCache } from '../utils/reputationCache';
 
@@ -132,7 +137,7 @@ describe('updateReputationSchema — rating field validation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ReputationController — getProfile
+// ReputationController — thin adapter delegating to ReputationService
 // ---------------------------------------------------------------------------
 
 describe('ReputationController.getProfile', () => {
@@ -150,12 +155,12 @@ describe('ReputationController.getProfile', () => {
 
     expect(statusMock).toHaveBeenCalledWith(200);
     expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: mockProfile });
-    expect(nextMock).not.toHaveBeenCalled();
+    expect(ReputationService.getProfile).toHaveBeenCalledWith('user-1');
   });
 
-  it('forwards "Freelancer ID is required" as a 400 AppError to next', async () => {
+  it('returns 400 with structured error when service throws AppError(400, bad_request)', async () => {
     (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
-      throw new Error('Freelancer ID is required');
+      throw new AppError(400, 'bad_request', 'Freelancer ID is required');
     });
 
     const { res, nextMock } = makeRes();
@@ -185,7 +190,7 @@ describe('ReputationController.getProfile', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ReputationController.createRating — defense-in-depth guard
+// ReputationController.createRating — thin adapter, no inline validation
 // ---------------------------------------------------------------------------
 
 describe('ReputationController.createRating', () => {
@@ -200,9 +205,9 @@ describe('ReputationController.createRating', () => {
     rating: 4,
   };
 
-  it('returns 200 when payload is valid', async () => {
+  it('returns 200 with updated profile when service succeeds', async () => {
     const mockProfile = { freelancerId: 'user-1', score: 4.0, totalRatings: 1 };
-    (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
+    (ReputationService.updateProfile as jest.Mock).mockReturnValue(mockProfile);
 
     const { res, statusMock, jsonMock, nextMock } = makeRes();
     await ReputationController.createRating(
@@ -213,26 +218,32 @@ describe('ReputationController.createRating', () => {
 
     expect(statusMock).toHaveBeenCalledWith(200);
     expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: mockProfile });
-    expect(nextMock).not.toHaveBeenCalled();
+    expect(ReputationService.updateProfile).toHaveBeenCalledWith('user-1', validBody);
   });
 
-  // --- Missing / invalid required fields ---
+  // --- 400: missing/invalid payload — service throws AppError(400, bad_request) ---
 
-  it('forwards 400 AppError when reviewerId is missing', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when reviewerId is missing', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock, jsonMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { rating: 3 } }) as Request,
       res as Response,
       nextMock as NextFunction
     );
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(AppError);
-    expect(error.statusCode).toBe(400);
+    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(jsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'bad_request' }) })
+    );
   });
 
-  it('forwards 400 AppError when rating is missing', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating is missing', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { reviewerId: 'reviewer-1' } }) as Request,
       res as Response,
@@ -244,10 +255,11 @@ describe('ReputationController.createRating', () => {
     expect(error.statusCode).toBe(400);
   });
 
-  // --- Out-of-range rating values ---
-
-  it('forwards 400 AppError when rating = 0 (min - 1)', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating = 0 (min - 1)', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock, jsonMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 0 } }) as Request,
       res as Response,
@@ -260,8 +272,11 @@ describe('ReputationController.createRating', () => {
     expect(error.code).toBe('bad_request');
   });
 
-  it('forwards 400 AppError when rating = 6 (max + 1)', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating = 6 (max + 1)', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 6 } }) as Request,
       res as Response,
@@ -273,8 +288,11 @@ describe('ReputationController.createRating', () => {
     expect(error.statusCode).toBe(400);
   });
 
-  it('forwards 400 AppError when rating = -1', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating = -1', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: -1 } }) as Request,
       res as Response,
@@ -286,23 +304,11 @@ describe('ReputationController.createRating', () => {
     expect(error.statusCode).toBe(400);
   });
 
-  it('forwards 400 AppError when rating = 100', async () => {
-    const { res, nextMock } = makeRes();
-    await ReputationController.createRating(
-      makeReq({ body: { ...validBody, rating: 100 } }) as Request,
-      res as Response,
-      nextMock as NextFunction
-    );
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(AppError);
-    expect(error.statusCode).toBe(400);
-  });
-
-  // --- Non-integer ratings ---
-
-  it('forwards 400 AppError when rating = 1.5 (decimal)', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating = 1.5 (decimal)', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: 1.5 } }) as Request,
       res as Response,
@@ -314,23 +320,11 @@ describe('ReputationController.createRating', () => {
     expect(error.statusCode).toBe(400);
   });
 
-  it('forwards 400 AppError when rating = 4.9 (decimal)', async () => {
-    const { res, nextMock } = makeRes();
-    await ReputationController.createRating(
-      makeReq({ body: { ...validBody, rating: 4.9 } }) as Request,
-      res as Response,
-      nextMock as NextFunction
-    );
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(AppError);
-    expect(error.statusCode).toBe(400);
-  });
-
-  // --- NaN and Infinity ---
-
-  it('forwards 400 AppError when rating = NaN', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating = NaN', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: NaN } }) as Request,
       res as Response,
@@ -342,8 +336,11 @@ describe('ReputationController.createRating', () => {
     expect(error.statusCode).toBe(400);
   });
 
-  it('forwards 400 AppError when rating = Infinity', async () => {
-    const { res, nextMock } = makeRes();
+  it('returns 400 when rating = Infinity', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
+      throw new AppError(400, 'bad_request', 'Invalid payload: reviewerId and a valid integer rating (1\u20135) are required');
+    });
+    const { res, statusMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: { ...validBody, rating: Infinity } }) as Request,
       res as Response,
@@ -355,121 +352,83 @@ describe('ReputationController.createRating', () => {
     expect(error.statusCode).toBe(400);
   });
 
-  it('forwards 400 AppError when rating = -Infinity', async () => {
-    const { res, nextMock } = makeRes();
-    await ReputationController.createRating(
-      makeReq({ body: { ...validBody, rating: -Infinity } }) as Request,
-      res as Response,
-      nextMock as NextFunction
-    );
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(AppError);
-    expect(error.statusCode).toBe(400);
-  });
+  // --- 403 / 409 / 422: AppError subclasses from createRating guards ---
 
-  // --- Boundary: valid edge values ---
-
-  it('accepts rating = 1 (minimum)', async () => {
-    const mockProfile = { freelancerId: 'user-1', score: 1.0, totalRatings: 1 };
-    (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
-
-    const { res, statusMock, nextMock } = makeRes();
-    await ReputationController.createRating(
-      makeReq({ body: { ...validBody, rating: 1 } }) as Request,
-      res as Response,
-      nextMock as NextFunction
-    );
-    expect(statusMock).toHaveBeenCalledWith(200);
-    expect(nextMock).not.toHaveBeenCalled();
-  });
-
-  it('accepts rating = 5 (maximum)', async () => {
-    const mockProfile = { freelancerId: 'user-1', score: 5.0, totalRatings: 1 };
-    (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
-
-    const { res, statusMock, nextMock } = makeRes();
-    await ReputationController.createRating(
-      makeReq({ body: { ...validBody, rating: 5 } }) as Request,
-      res as Response,
-      nextMock as NextFunction
-    );
-    expect(statusMock).toHaveBeenCalledWith(200);
-    expect(nextMock).not.toHaveBeenCalled();
-  });
-
-  // --- Service-layer errors are surfaced correctly ---
-
-  it('forwards ForbiddenError to next', async () => {
-    (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
+  it('returns 403 with structured error when service throws ForbiddenError', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
       throw new ForbiddenError('Users cannot rate themselves');
     });
-
-    const { res, nextMock } = makeRes();
+    const { res, statusMock, jsonMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
       res as Response,
       nextMock as NextFunction
     );
-
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(ForbiddenError);
-    expect(error.statusCode).toBe(403);
-    expect(error.message).toBe('Users cannot rate themselves');
+    expect(statusMock).toHaveBeenCalledWith(403);
+    expect(jsonMock).toHaveBeenCalledWith({
+      error: {
+        code: 'forbidden',
+        message: 'Users cannot rate themselves',
+        requestId: 'test-request-id',
+      },
+    });
   });
 
-  it('forwards ConflictError to next', async () => {
-    (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
+  it('returns 409 with structured error when service throws ConflictError', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
       throw new ConflictError('Rating already exists');
     });
-
-    const { res, nextMock } = makeRes();
+    const { res, statusMock, jsonMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
       res as Response,
       nextMock as NextFunction
     );
-
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(ConflictError);
-    expect(error.statusCode).toBe(409);
+    expect(statusMock).toHaveBeenCalledWith(409);
+    expect(jsonMock).toHaveBeenCalledWith({
+      error: {
+        code: 'conflict',
+        message: 'Rating already exists',
+        requestId: 'test-request-id',
+      },
+    });
   });
 
-  it('forwards ValidationError to next', async () => {
-    (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
+  it('returns 422 with structured error when service throws ValidationError', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
       throw new ValidationError('Comment contains spam');
     });
-
-    const { res, nextMock } = makeRes();
+    const { res, statusMock, jsonMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response,
-      nextMock as NextFunction
+      res as Response
     );
-
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error.statusCode).toBe(422);
+    expect(statusMock).toHaveBeenCalledWith(422);
+    expect(jsonMock).toHaveBeenCalledWith({
+      error: {
+        code: 'validation_error',
+        message: 'Comment contains spam',
+        requestId: 'test-request-id',
+      },
+    });
   });
 
-  it('forwards unknown errors to next unchanged', async () => {
-    (ReputationService.getProfile as jest.Mock).mockImplementation(() => {
+  it('returns 500 with structured error for unknown service errors', async () => {
+    (ReputationService.updateProfile as jest.Mock).mockImplementation(() => {
       throw new Error('Unexpected failure');
     });
-
-    const { res, nextMock } = makeRes();
+    const { res, statusMock, jsonMock } = makeRes();
     await ReputationController.createRating(
       makeReq({ body: validBody }) as Request,
-      res as Response,
-      nextMock as NextFunction
+      res as Response
     );
-
-    expect(nextMock).toHaveBeenCalledTimes(1);
-    const error = nextMock.mock.calls[0][0];
-    expect(error).toBeInstanceOf(Error);
-    expect(error.message).toBe('Unexpected failure');
+    expect(statusMock).toHaveBeenCalledWith(500);
+    expect(jsonMock).toHaveBeenCalledWith({
+      error: {
+        code: 'internal_error',
+        message: 'An unexpected error occurred',
+        requestId: 'test-request-id',
+      },
+    });
   });
 });
