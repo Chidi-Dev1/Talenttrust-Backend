@@ -1,19 +1,17 @@
 /**
  * @module routes/disputes
- * @description Disputes API routes with per-client rate limiting and
- * read-response caching.
+ * @description Disputes API routes with per-client rate limiting and response compression.
  *
  * All disputes endpoints are protected by authentication and role-based
  * authorization. A sliding-window rate limiter (sensitive-tier) is applied
  * to every route to prevent abuse and accidental overload.
  *
- * GET / and GET /:id responses are cached with a config-driven TTL
- * (default 5 s) and LRU max-entries bound (default 100).  POST, PATCH,
- * and DELETE invalidate the affected cache keys so subsequent reads
- * reflect the new state.
+ * Responses above {@link DISPUTES_COMPRESSION_THRESHOLD} bytes are automatically
+ * compressed using gzip or deflate, honouring the client's `Accept-Encoding`
+ * header. Small responses are served uncompressed to avoid unnecessary CPU cost.
  *
- * @route GET    /api/v1/disputes       - List disputes (cached)
- * @route GET    /api/v1/disputes/:id   - Get a single dispute (cached)
+ * @route GET    /api/v1/disputes       - List disputes
+ * @route GET    /api/v1/disputes/:id   - Get a single dispute
  * @route POST   /api/v1/disputes       - Create a new dispute
  * @route PATCH  /api/v1/disputes/:id   - Update a dispute
  * @route DELETE /api/v1/disputes/:id   - Delete a dispute
@@ -30,7 +28,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import { DisputesCache, DisputesCacheConfig } from '../utils/disputesCache';
+import { createCompressionMiddleware } from '../middleware/compression';
+
+/**
+ * Minimum serialised response size (bytes) before compression is applied.
+ * Responses smaller than this value are sent as plain JSON.
+ */
+export const DISPUTES_COMPRESSION_THRESHOLD = 1024; // 1 KiB
 
 const router = Router();
 
@@ -53,6 +57,9 @@ const disputesLimiter = createRateLimiter(rateLimitConfig.disputes);
 
 // Apply rate limiting to all disputes routes
 router.use(disputesLimiter);
+
+// ── Compression — applied before auth so large error bodies are also compressed
+router.use(createCompressionMiddleware({ threshold: DISPUTES_COMPRESSION_THRESHOLD }));
 
 // ── Authentication — all disputes routes require a valid JWT ──────────────────
 router.use(requireAuth);
