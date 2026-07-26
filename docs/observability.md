@@ -186,6 +186,12 @@ All label values on every exported series originate exclusively from one of thes
 - Timestamps or sequence numbers
 - Any unbounded runtime strings
 
+Reputation instrumentation follows the same rule. Its labels are limited to the
+two operation names, three status classes, HTTP status codes, and a finite error
+cause enumeration. Its structured completion event is `reputation_request` and
+contains method, operation, status, status code, error cause, and duration only;
+the request path and body are intentionally absent.
+
 ---
 
 ## Exported Metrics Catalog
@@ -196,6 +202,9 @@ All label values on every exported series originate exclusively from one of thes
 |-------------|------|--------|------|-------------|---------------|-------------------|
 | `http_requests_total` | Counter | `method`, `route`, `status_code` | total (dimensionless count) | Total number of HTTP requests. | `src/observability/metrics-service.ts` | N/A |
 | `http_request_duration_seconds` | Histogram | `method`, `route`, `status_code` | seconds | Duration of HTTP requests in seconds. Measures end-to-end request latency. | `src/observability/metrics-service.ts` | `0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, +Inf` |
+| `reputation_requests_total` | Counter | `operation`, `status`, `status_code`, `error_cause` | total (dimensionless count) | Reputation endpoint requests classified into success, client error, or server error with bounded causes. | `src/observability/metrics-service.ts` | N/A |
+| `reputation_request_duration_seconds` | Histogram | `operation`, `status`, `status_code`, `error_cause` | seconds | End-to-end reputation endpoint request duration. | `src/observability/metrics-service.ts` | `0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, +Inf` |
+| `reputation_errors_total` | Counter | `operation`, `error_cause` | total (dimensionless count) | Reputation endpoint errors grouped by bounded cause. | `src/observability/metrics-service.ts` | N/A |
 | `service_health_status` | Gauge | `service` | dimensionless (encoded: `2=up`, `1=degraded`, `0=down`) | Current service health status based on runtime signals and dependency checks. See Health Status section for encoding details. | `src/observability/health-service.ts` | N/A |
 | `webhook_deliveries_total` | Counter | `outcome` | total (dimensionless count) | Total webhook delivery attempts by outcome. Possible outcomes: `success`, `failure`, `dlq`. Incremented by MetricsService. | `src/observability/metrics-service.ts` | N/A |
 | `webhook_dlq_depth` | Gauge | (no labels) | entries | Current number of entries in the webhook dead-letter queue. Represents absolute count, not a delta. Set by MetricsService. | `src/observability/metrics-service.ts` | N/A |

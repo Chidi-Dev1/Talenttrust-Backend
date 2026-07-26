@@ -31,6 +31,9 @@ export type WebhookOutcome = ValidatedWebhookOutcome;
 export const CATALOG_METRIC_NAMES: readonly string[] = [
   'http_requests_total',
   'http_request_duration_seconds',
+  'reputation_requests_total',
+  'reputation_request_duration_seconds',
+  'reputation_errors_total',
   'service_health_status',
   'webhook_deliveries_total',
   'webhook_dlq_depth',
@@ -38,10 +41,39 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'webhook_rate_limit_queue_depth',
 ] as const;
 
+export const REPUTATION_OPERATIONS = ['get_profile', 'create_rating'] as const;
+export type ReputationOperation = (typeof REPUTATION_OPERATIONS)[number];
+
+export const REPUTATION_STATUSES = ['success', 'client_error', 'server_error'] as const;
+export type ReputationRequestStatus = (typeof REPUTATION_STATUSES)[number];
+
+export const REPUTATION_ERROR_CAUSES = [
+  'none',
+  'bad_request',
+  'authentication',
+  'authorization',
+  'not_found',
+  'conflict',
+  'validation',
+  'rate_limit',
+  'client_error',
+  'internal_error',
+] as const;
+export type ReputationErrorCause = (typeof REPUTATION_ERROR_CAUSES)[number];
+
+export interface ReputationRequestMetric {
+  operation: ReputationOperation;
+  status: ReputationRequestStatus;
+  statusCode: number;
+  errorCause: ReputationErrorCause;
+  durationSeconds: number;
+}
+
 export interface MetricsServiceLike {
   contentType: string;
   trackHttpRequest: (req: Request, res: Response, next: NextFunction) => void;
   getMetrics: () => Promise<string>;
+  recordReputationRequest: (metric: ReputationRequestMetric) => void;
   recordHealthStatus: (status: ServiceStatus) => void;
   recordWebhookDelivery: (outcome: WebhookOutcome) => void;
   setWebhookDlqDepth: (depth: number) => void;
@@ -81,6 +113,12 @@ export class MetricsService implements MetricsServiceLike {
   private readonly httpRequestsTotal: Counter;
 
   private readonly httpRequestDurationSeconds: Histogram;
+
+  private readonly reputationRequestsTotal: Counter;
+
+  private readonly reputationRequestDurationSeconds: Histogram;
+
+  private readonly reputationErrorsTotal: Counter;
 
   private readonly serviceHealthStatus: Gauge;
 
@@ -127,6 +165,28 @@ export class MetricsService implements MetricsServiceLike {
       help: 'Duration of HTTP requests in seconds.',
       labelNames: ['method', 'route', 'status_code'],
       buckets: resolvedBuckets,
+      registers: [this.register],
+    });
+
+    this.reputationRequestsTotal = new Counter({
+      name: 'reputation_requests_total',
+      help: 'Total reputation endpoint requests by operation, status, and error cause.',
+      labelNames: ['operation', 'status', 'status_code', 'error_cause'],
+      registers: [this.register],
+    });
+
+    this.reputationRequestDurationSeconds = new Histogram({
+      name: 'reputation_request_duration_seconds',
+      help: 'Duration of reputation endpoint requests in seconds.',
+      labelNames: ['operation', 'status', 'status_code', 'error_cause'],
+      buckets: resolvedBuckets,
+      registers: [this.register],
+    });
+
+    this.reputationErrorsTotal = new Counter({
+      name: 'reputation_errors_total',
+      help: 'Total reputation endpoint errors by operation and error cause.',
+      labelNames: ['operation', 'error_cause'],
       registers: [this.register],
     });
 
@@ -234,6 +294,27 @@ export class MetricsService implements MetricsServiceLike {
     return this.register.metrics();
   }
 
+  recordReputationRequest(metric: ReputationRequestMetric): void {
+    assertReputationRequestMetric(metric);
+
+    const labels = {
+      operation: metric.operation,
+      status: metric.status,
+      status_code: String(metric.statusCode),
+      error_cause: metric.errorCause,
+    };
+
+    this.reputationRequestsTotal.inc(labels);
+    this.reputationRequestDurationSeconds.observe(labels, metric.durationSeconds);
+
+    if (metric.errorCause !== 'none') {
+      this.reputationErrorsTotal.inc({
+        operation: metric.operation,
+        error_cause: metric.errorCause,
+      });
+    }
+  }
+
   private boundRouteLabel(route: string): string {
     // Never collapse unmatched routes — they are not user-controlled and must
     // always be tracked separately so operators can monitor 404 rates.
@@ -251,6 +332,28 @@ export class MetricsService implements MetricsServiceLike {
     }
 
     return OTHER_ROUTE_LABEL;
+  }
+}
+
+function assertReputationRequestMetric(metric: ReputationRequestMetric): void {
+  if (!REPUTATION_OPERATIONS.includes(metric.operation)) {
+    throw new Error('Invalid reputation operation');
+  }
+
+  if (!REPUTATION_STATUSES.includes(metric.status)) {
+    throw new Error('Invalid reputation request status');
+  }
+
+  if (!REPUTATION_ERROR_CAUSES.includes(metric.errorCause)) {
+    throw new Error('Invalid reputation error cause');
+  }
+
+  if (!Number.isInteger(metric.statusCode) || metric.statusCode < 100 || metric.statusCode > 599) {
+    throw new Error('Invalid reputation status code');
+  }
+
+  if (!Number.isFinite(metric.durationSeconds) || metric.durationSeconds < 0) {
+    throw new Error('Invalid reputation request duration');
   }
 }
 
@@ -337,5 +440,4 @@ function joinRouteParts(baseUrl: string, routePath: string): string {
 
   return `${baseUrl}${routePath}`;
 }
-
 
