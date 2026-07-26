@@ -44,6 +44,12 @@ export const envSchema = z.object({
       return val.split(',').map(o => o.trim()).filter(Boolean);
     }),
 
+  // Feature Flags
+  CONTRACTS_ENABLED: z.string()
+    .optional()
+    .transform((val) => val !== 'false')
+    .pipe(z.boolean()),
+
   // Database
   DATABASE_URL: z.string().optional(),
 
