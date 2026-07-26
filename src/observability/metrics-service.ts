@@ -41,10 +41,7 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'webhook_dlq_depth',
   'webhook_rate_limit_tokens',
   'webhook_rate_limit_queue_depth',
-  'contract_cache_hits_total',
-  'contract_cache_misses_total',
-  'contract_cache_invalidations_total',
-  'contract_cache_entries',
+  'cache_operations_total',
 ] as const;
 
 export const REPUTATION_OPERATIONS = ['get_profile', 'create_rating'] as const;
@@ -83,6 +80,8 @@ export interface MetricsServiceLike {
   recordHealthStatus: (status: ServiceStatus) => void;
   recordWebhookDelivery: (outcome: WebhookOutcome) => void;
   setWebhookDlqDepth: (depth: number) => void;
+  recordCacheHit: (cacheType: string) => void;
+  recordCacheMiss: (cacheType: string) => void;
   startRateLimitMetricsSampling?: (limiter: any, intervalMs?: number) => void;
   stopRateLimitMetricsSampling?: () => void;
 }
@@ -135,6 +134,8 @@ export class MetricsService implements MetricsServiceLike {
   private readonly webhookRateLimitTokens: Gauge;
 
   private readonly webhookRateLimitQueueDepth: Gauge;
+
+  private readonly cacheOperationsTotal: Counter;
 
   private readonly httpRouteLabelLimit: number;
 
@@ -232,6 +233,13 @@ export class MetricsService implements MetricsServiceLike {
       labelNames: ['provider_id'],
       registers: [this.register],
     });
+
+    this.cacheOperationsTotal = new Counter({
+      name: 'cache_operations_total',
+      help: 'Total cache operations (hits and misses) by cache type.',
+      labelNames: ['cache_type', 'operation'],
+      registers: [this.register],
+    });
   }
 
   trackHttpRequest(req: Request, res: Response, next: NextFunction): void {
@@ -274,6 +282,14 @@ export class MetricsService implements MetricsServiceLike {
     // large values that would indicate a bug or injection attempt.
     const validated = assertDlqDepth(depth);
     this.webhookDlqDepth.set(validated);
+  }
+
+  recordCacheHit(cacheType: string): void {
+    this.cacheOperationsTotal.inc({ cache_type: cacheType, operation: 'hit' });
+  }
+
+  recordCacheMiss(cacheType: string): void {
+    this.cacheOperationsTotal.inc({ cache_type: cacheType, operation: 'miss' });
   }
 
   startRateLimitMetricsSampling(limiter: any, intervalMs: number = 10000): void {
@@ -377,7 +393,7 @@ function resolveHistogramBuckets(buckets: number[] | undefined): number[] {
   const result = validateHistogramBuckets(buckets);
   if (!result.valid) {
     console.warn(
-      `[MetricsService] Invalid histogramBuckets option; falling back to defaults.`,
+      `[MetricsService] Invalid histogramBuckets option (${(result as any).reason}); falling back to defaults.`,
     );
     return [...DEFAULT_HISTOGRAM_BUCKETS];
   }

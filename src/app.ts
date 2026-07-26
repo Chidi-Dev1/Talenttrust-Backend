@@ -14,7 +14,8 @@
 import express from 'express';
 import { applySecurityMiddleware } from './middleware/security';
 import { MetricsService } from './observability/metrics-service';
-import { apiKeysRateLimitStore, rateLimitStore } from './config/rateLimit';
+import { setMetricsService } from './observability/registry';
+import { rateLimitStore } from './config/rateLimit';
 import { notFoundHandler, errorHandler } from './middleware/errorHandlers';
 import { healthRouter as legacyHealthRouter } from './routes/health';
 import { healthRouter as readinessHealthRouter } from './health';
@@ -73,6 +74,9 @@ export function createApp(options?: AppFactoryOptions): express.Application {
     undefined,
     { httpRouteLabelLimit: env.HTTP_METRICS_ROUTE_LABEL_LIMIT },
   );
+
+  // Initialize the global metrics service registry
+  setMetricsService(metricsService);
 
   // ── Middleware ────────────────────────────────────────────────────────────
   app.use(requestIdMiddleware);

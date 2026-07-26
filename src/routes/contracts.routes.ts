@@ -17,6 +17,9 @@ import { validateUpdateContract } from '../modules/contracts/validation.middlewa
 import { eventIngestionService } from '../events/registry';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { createCachedContractsService } from '../lib/contractsCacheInterceptor';
+import { loadCacheConfig } from '../config/cache';
+import { metricsService } from '../observability/registry';
 
 // ─── Inline route-param validator ────────────────────────────────────────────
 
@@ -119,12 +122,16 @@ function createContractsRouter(): Router {
 
   const db = getDb();
   const repo = new ContractRepository(db);
-  const contractCache = new ContractCacheService({
-    ttlMs: parseInt(process.env['CONTRACT_CACHE_TTL_MS'] ?? '', 10) || DEFAULT_CACHE_TTL_MS,
-    swrMs: parseInt(process.env['CONTRACT_CACHE_SWR_MS'] ?? '', 10) || DEFAULT_CACHE_SWR_MS,
-    maxEntries: parseInt(process.env['CONTRACT_CACHE_MAX_ENTRIES'] ?? '', 10) || DEFAULT_CACHE_MAX_ENTRIES,
+  const baseService = new ContractsService(repo);
+  
+  // Wrap the service with caching and invalidation logic
+  const cacheConfig = loadCacheConfig();
+  const cachedService = createCachedContractsService(baseService, {
+    ...cacheConfig,
+    metricsService,
   });
-  const controller = createContractsController(new ContractsService(repo, contractCache));
+  
+  const controller = createContractsController(cachedService);
 
   /**
    * Resolves the owner (clientId) of a contract from the DB.
