@@ -18,12 +18,34 @@
  *  - Abuse guard hard-blocks repeat offenders.
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { validateRequest, validateParams, validateQuery } from '../middleware/validate.middleware';
+import {
+  createDisputeSchema,
+  updateDisputeSchema,
+  disputeParamsSchema,
+  listDisputesQuerySchema,
+} from './disputes.validation';
+import { features } from '../config/features';
 
 const router = Router();
+
+// ── Feature flag — gate all disputes routes ───────────────────────────────────
+router.use((_req: Request, res: Response, next: NextFunction) => {
+  if (!features.disputesEnabled) {
+    return res.status(404).json({
+      error: {
+        code: 'feature_disabled',
+        message: 'Disputes feature is currently disabled.',
+        requestId: res.locals?.requestId || 'unknown',
+      },
+    });
+  }
+  next();
+});
 
 // ── Rate limiter (disputes tier) ──────────────────────────────────────────────
 const disputesLimiter = createRateLimiter(rateLimitConfig.disputes);
@@ -39,6 +61,7 @@ router.use(requireAuth);
 router.get(
   '/',
   requirePermission('disputes', 'list'),
+  validateQuery(listDisputesQuerySchema),
   (_req: Request, res: Response) => {
     res.status(200).json({ disputes: [], total: 0 });
   },
@@ -49,6 +72,7 @@ router.get(
 router.get(
   '/:id',
   requirePermission('disputes', 'read'),
+  validateParams(disputeParamsSchema),
   (req: Request, res: Response) => {
     res.status(200).json({
       dispute: {
@@ -65,6 +89,7 @@ router.get(
 router.post(
   '/',
   requirePermission('disputes', 'create'),
+  validateRequest(createDisputeSchema),
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(201).json({
@@ -83,6 +108,7 @@ router.post(
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
+  validateRequest(updateDisputeSchema),
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(200).json({

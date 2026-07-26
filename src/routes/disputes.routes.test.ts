@@ -34,10 +34,20 @@ jest.mock('../middleware/authorization', () => ({
   requirePermission: () => (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
+// ── Mutable feature flag mock ─────────────────────────────────────────────
+let mockDisputesEnabled = true;
+jest.mock('../config/features', () => ({
+  features: {
+    get disputesEnabled() { return mockDisputesEnabled; },
+  },
+}));
+
 // Import the actual disputes router AFTER the mock is registered
 import disputesRouter from './disputes.routes';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+const testUuid = '550e8400-e29b-41d4-a716-446655440000';
 
 function buildApp() {
   const app = express();
@@ -57,8 +67,10 @@ async function fireRequests(
   const results: request.Response[] = [];
   for (let i = 0; i < n; i++) {
     const reqBuilder = request(app)[method](path).set('X-Forwarded-For', ip);
-    if (method !== 'get') {
-      reqBuilder.send({ reason: 'test-dispute' });
+    if (method === 'post') {
+      reqBuilder.send({ contractId: testUuid, reason: 'test-dispute' });
+    } else if (method !== 'get') {
+      reqBuilder.send({ status: 'resolved' });
     }
     results.push(await reqBuilder);
   }
@@ -68,6 +80,10 @@ async function fireRequests(
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('Disputes endpoints — rate limiting', () => {
+  beforeEach(() => {
+    mockDisputesEnabled = true;
+  });
+
   // ── Within limit ────────────────────────────────────────────────────────
 
   describe('within rate limit', () => {
@@ -84,7 +100,7 @@ describe('Disputes endpoints — rate limiting', () => {
       const res = await request(app)
         .post('/api/v1/disputes')
         .set('X-Forwarded-For', '10.0.0.2')
-        .send({ reason: 'test' });
+        .send({ contractId: testUuid, reason: 'test' });
       expect(res.status).toBe(201);
     });
 
@@ -233,7 +249,7 @@ describe('Disputes endpoints — rate limiting', () => {
         await request(app)
           .post('/api/v1/disputes')
           .set('X-Forwarded-For', ip)
-          .send({ reason: 'test' });
+          .send({ contractId: testUuid, reason: 'test' });
       }
       const over = await request(app)
         .get('/api/v1/disputes')
@@ -251,7 +267,7 @@ describe('Disputes endpoints — rate limiting', () => {
 
       for (let i = 0; i < limit; i++) {
         await request(app)
-          .patch('/api/v1/disputes/test-id')
+          .patch(`/api/v1/disputes/${testUuid}`)
           .set('X-Forwarded-For', ip)
           .send({ status: 'resolved' });
       }
@@ -271,7 +287,7 @@ describe('Disputes endpoints — rate limiting', () => {
 
       for (let i = 0; i < limit; i++) {
         await request(app)
-          .delete('/api/v1/disputes/test-id')
+          .delete(`/api/v1/disputes/${testUuid}`)
           .set('X-Forwarded-For', ip);
       }
       const over = await request(app)
@@ -444,6 +460,79 @@ describe('Disputes endpoints — rate limiting', () => {
     });
   });
 
+  // ── Feature flag ─────────────────────────────────────────────────────────
+
+  describe('feature flag', () => {
+    beforeEach(() => {
+      mockDisputesEnabled = true;
+    });
+
+    it('returns 200 when feature is enabled', async () => {
+      mockDisputesEnabled = true;
+      const app = buildApp();
+      const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.1');
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 404 with feature_disabled when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.2');
+      expect(res.status).toBe(404);
+      expect(res.body).toHaveProperty('error');
+      expect(res.body.error.code).toBe('feature_disabled');
+      expect(res.body.error.message).toBe('Disputes feature is currently disabled.');
+    });
+
+    it('returns 404 for POST when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.3')
+        .send({ contractId: testUuid, reason: 'test' });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('feature_disabled');
+    });
+
+    it('returns 404 for PATCH when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .patch(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '20.0.0.4')
+        .send({ status: 'resolved' });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('feature_disabled');
+    });
+
+    it('returns 404 for DELETE when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .delete(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '20.0.0.5');
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('feature_disabled');
+    });
+
+    it('uses "unknown" requestId when res.locals is missing', async () => {
+      mockDisputesEnabled = false;
+      const app = express();
+      app.use(express.json());
+      app.use('/api/v1/disputes', disputesRouter);
+      const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.6');
+      expect(res.status).toBe(404);
+      expect(res.body.error.requestId).toBe('unknown');
+    });
+  });
+
   // ── Cross-route counting ────────────────────────────────────────────────
 
   describe('cross-route rate limit aggregation', () => {
@@ -460,7 +549,9 @@ describe('Disputes endpoints — rate limiting', () => {
       // is exactly at the limit (limit-th request = allowed).
       await request(app).get('/api/v1/disputes').set('X-Forwarded-For', ip);
       for (let i = 2; i < limit - 1; i++) {
-        await request(app).get(`/api/v1/disputes/${i}`).set('X-Forwarded-For', ip);
+        await request(app)
+          .get(`/api/v1/disputes/${testUuid}`)
+          .set('X-Forwarded-For', ip);
       }
 
       // At-limit request succeeds (the limit-th request)
