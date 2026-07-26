@@ -24,18 +24,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import { validateSchema } from '../middleware/validate.middleware';
-import {
-  batchDisputeRequestSchema,
-  batchDisputeResponseSchema,
-  DisputeStatus,
-} from '../modules/disputes/dto/dispute.dto';
-import {
-  disputesService,
-  DisputeError,
-  DisputeRecord,
-} from '../services/disputes.service';
-import { logger } from '../logger';
+import { idempotencyMiddleware } from '../middleware/idempotency';
 
 const router = Router();
 
@@ -120,7 +109,7 @@ router.get(
 router.post(
   '/',
   requirePermission('disputes', 'create'),
-  validateRequest(createDisputeSchema),
+  idempotencyMiddleware,
   (req: Request, res: Response) => {
     const body = req.body ?? {};
     res.status(201).json({
@@ -139,32 +128,16 @@ router.post(
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
-  async (req: Request, res: Response, next) => {
-    try {
-      const dispute = await disputesService.updateDispute(req.params.id, req.body);
-      res.status(200).json({
-        dispute: {
-          id: dispute.id,
-          contractId: dispute.contractId,
-          status: dispute.status,
-          resolution: dispute.resolution,
-          createdAt: dispute.createdAt.toISOString(),
-          updatedAt: dispute.updatedAt.toISOString(),
-        },
-      });
-    } catch (err) {
-      if (err instanceof DisputeError) {
-        res.status(err.statusCode).json({
-          error: {
-            code: err.code,
-            message: err.message,
-            requestId: res.locals.requestId ?? 'unknown',
-          },
-        });
-      } else {
-        next(err);
-      }
-    }
+  idempotencyMiddleware,
+  (req: Request, res: Response) => {
+    const body = req.body ?? {};
+    res.status(200).json({
+      dispute: {
+        id: req.params.id,
+        ...body,
+        updatedAt: new Date().toISOString(),
+      },
+    });
   },
 );
 
@@ -173,6 +146,7 @@ router.patch(
 router.delete(
   '/:id',
   requirePermission('disputes', 'delete'),
+  idempotencyMiddleware,
   (req: Request, res: Response) => {
     res.status(200).json({
       message: `Dispute ${req.params.id} deleted successfully`,
