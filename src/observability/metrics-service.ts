@@ -11,8 +11,10 @@ import { logger } from '../logger';
 import { ServiceStatus } from './types';
 import {
   assertDlqDepth,
+  assertDisputesErrorCause,
   assertServiceStatus,
   assertWebhookOutcome,
+  DisputesErrorCause,
   WebhookOutcome as ValidatedWebhookOutcome,
 } from './metrics-validation';
 import { DEFAULT_HISTOGRAM_BUCKETS, validateHistogramBuckets } from './observability-config';
@@ -44,34 +46,15 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'webhook_dlq_depth',
   'webhook_rate_limit_tokens',
   'webhook_rate_limit_queue_depth',
-  'cache_operations_total',
+  'disputes_requests_total',
+  'disputes_request_duration_seconds',
 ] as const;
 
-export const REPUTATION_OPERATIONS = ['get_profile', 'create_rating'] as const;
-export type ReputationOperation = (typeof REPUTATION_OPERATIONS)[number];
-
-export const REPUTATION_STATUSES = ['success', 'client_error', 'server_error'] as const;
-export type ReputationRequestStatus = (typeof REPUTATION_STATUSES)[number];
-
-export const REPUTATION_ERROR_CAUSES = [
-  'none',
-  'bad_request',
-  'authentication',
-  'authorization',
-  'not_found',
-  'conflict',
-  'validation',
-  'rate_limit',
-  'client_error',
-  'internal_error',
-] as const;
-export type ReputationErrorCause = (typeof REPUTATION_ERROR_CAUSES)[number];
-
-export interface ReputationRequestMetric {
-  operation: ReputationOperation;
-  status: ReputationRequestStatus;
+export interface DisputesRequestMetricInput {
+  method: string;
+  route: string;
   statusCode: number;
-  errorCause: ReputationErrorCause;
+  errorCause: DisputesErrorCause;
   durationSeconds: number;
 }
 
@@ -84,8 +67,7 @@ export interface MetricsServiceLike {
   recordHealthStatus: (status: ServiceStatus) => void;
   recordWebhookDelivery: (outcome: WebhookOutcome) => void;
   setWebhookDlqDepth: (depth: number) => void;
-  recordCacheHit: (cacheType: string) => void;
-  recordCacheMiss: (cacheType: string) => void;
+  recordDisputesRequest: (input: DisputesRequestMetricInput) => void;
   startRateLimitMetricsSampling?: (limiter: any, intervalMs?: number) => void;
   stopRateLimitMetricsSampling?: () => void;
 }
@@ -139,7 +121,9 @@ export class MetricsService implements MetricsServiceLike {
 
   private readonly webhookRateLimitQueueDepth: Gauge;
 
-  private readonly cacheOperationsTotal: Counter;
+  private readonly disputesRequestsTotal: Counter;
+
+  private readonly disputesRequestDurationSeconds: Histogram;
 
   private readonly httpRouteLabelLimit: number;
 
@@ -238,10 +222,18 @@ export class MetricsService implements MetricsServiceLike {
       registers: [this.register],
     });
 
-    this.cacheOperationsTotal = new Counter({
-      name: 'cache_operations_total',
-      help: 'Total cache operations (hits and misses) by cache type.',
-      labelNames: ['cache_type', 'operation'],
+    this.disputesRequestsTotal = new Counter({
+      name: 'disputes_requests_total',
+      help: 'Total disputes API requests by method, route, status, and error cause.',
+      labelNames: ['method', 'route', 'status_code', 'error_cause'],
+      registers: [this.register],
+    });
+
+    this.disputesRequestDurationSeconds = new Histogram({
+      name: 'disputes_request_duration_seconds',
+      help: 'Duration of disputes API requests in seconds.',
+      labelNames: ['method', 'route', 'status_code', 'error_cause'],
+      buckets: resolvedBuckets,
       registers: [this.register],
     });
   }
@@ -347,12 +339,25 @@ export class MetricsService implements MetricsServiceLike {
     this.webhookDlqDepth.set(validated);
   }
 
-  recordCacheHit(cacheType: string): void {
-    this.cacheOperationsTotal.inc({ cache_type: cacheType, operation: 'hit' });
-  }
+  /**
+   * Record a disputes API request observation (counter + duration histogram).
+   * Labels are bounded: route must be an Express template, error_cause a finite enum.
+   */
+  recordDisputesRequest(input: DisputesRequestMetricInput): void {
+    const errorCause = assertDisputesErrorCause(input.errorCause);
+    const duration =
+      Number.isFinite(input.durationSeconds) && input.durationSeconds >= 0
+        ? input.durationSeconds
+        : 0;
+    const labels = {
+      method: input.method,
+      route: this.boundRouteLabel(input.route || UNMATCHED_ROUTE_LABEL),
+      status_code: String(input.statusCode),
+      error_cause: errorCause,
+    };
 
-  recordCacheMiss(cacheType: string): void {
-    this.cacheOperationsTotal.inc({ cache_type: cacheType, operation: 'miss' });
+    this.disputesRequestsTotal.inc(labels);
+    this.disputesRequestDurationSeconds.observe(labels, duration);
   }
 
   startRateLimitMetricsSampling(limiter: any, intervalMs: number = 10000): void {

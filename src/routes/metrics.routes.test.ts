@@ -32,6 +32,7 @@ function buildMockService(overrides?: Partial<MetricsServiceLike>): jest.Mocked<
     recordHealthStatus: jest.fn(),
     recordWebhookDelivery: jest.fn(),
     setWebhookDlqDepth: jest.fn(),
+    recordDisputesRequest: jest.fn(),
     ...overrides,
   } as jest.Mocked<MetricsServiceLike>;
 }

@@ -25,6 +25,7 @@ import apiKeysRouter from './routes/apiKeys.routes';
 
 import contractsModuleRouter from './routes/contracts.routes';
 import eventsRouter from './routes/events.routes';
+import { createDisputesRouter } from './routes/disputes.routes';
 import { createMetricsRouter } from './routes/metrics.routes';
 import { metricsAuthMiddleware } from './middleware/metricsAuth';
 
@@ -105,12 +106,8 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/v1/api-keys', metricsService.trackApiKeysRequest.bind(metricsService));
   app.use('/api/v1', apiKeysRouter);
   app.use('/api/v1/contracts', contractsModuleRouter);
-  app.use('/api/v1/disputes', disputesRouter);
-  const configuredReputationRouter =
-    typeof createReputationRouter === 'function'
-      ? createReputationRouter({ metricsService })
-      : reputationRouter;
-  app.use('/api/v1/reputation', configuredReputationRouter);
+  app.use('/api/v1/disputes', createDisputesRouter({ metricsService }));
+  app.use('/api/v1/reputation', reputationRouter);
   app.use('/api/v1/dependency-scan', dependencyScanRouter);
   app.use('/api/v1', apiKeysRouter);
   app.use('/api/v1/admin', adminRouter);
