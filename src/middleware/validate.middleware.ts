@@ -16,7 +16,7 @@ export interface ValidationErrorResponse {
   };
 }
 
-const mapZodErrorToDetails = (error: ZodError): ValidationErrorDetail[] => {
+export const mapZodErrorToDetails = (error: ZodError): ValidationErrorDetail[] => {
   return error.issues.map((issue) => ({
     path: issue.path.map((p) => String(p)),
     message: issue.message,

@@ -22,11 +22,14 @@
  */
 
 import { Router, Request, Response, type RequestHandler } from 'express';
+import type { ZodError } from 'zod';
 import { pipeline } from 'stream/promises';
 import { z } from 'zod';
 import { auditService, AuditService } from './service';
-import { auditExportService, AuditExportService, type AuditExportResult } from './exportService';
-import type { CreateAuditEntryInput } from './types';
+import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
+import type { AuditQuery } from './types';
+import { buildAuditQuerySchema, createAuditEntryBodySchema, type AuditQueryParams } from './schemas';
+import { mapZodErrorToDetails, type ValidationErrorResponse } from '../middleware/validate.middleware';
 import { idempotencyMiddleware } from '../middleware/idempotency';
 import { validateRequest } from '../middleware/validate.middleware';
 
@@ -44,96 +47,47 @@ export interface AuditRouterOptions {
   integrityMiddleware?: RequestHandler[];
 }
 
-const VALID_ACTIONS = new Set<AuditAction>([
-  'CONTRACT_CREATED', 'CONTRACT_UPDATED', 'CONTRACT_CANCELLED', 'CONTRACT_COMPLETED',
-  'PAYMENT_INITIATED', 'PAYMENT_RELEASED', 'PAYMENT_DISPUTED',
-  'REPUTATION_UPDATED',
-  'USER_CREATED', 'USER_UPDATED', 'USER_DELETED',
-  'AUTH_LOGIN', 'AUTH_LOGOUT', 'AUTH_FAILED',
-  'ADMIN_ACTION',
-  'ENDPOINT_ACCESS', 'ENDPOINT_MUTATION',
-  'DEPLOYMENT_PROMOTED', 'DEPLOYMENT_ROLLED_BACK',
-  'MILESTONES_CREATED', 'MILESTONES_UPDATED', 'MILESTONES_DELETED',
-]);
+function buildValidationErrorResponse(requestId: string, error: ZodError): ValidationErrorResponse {
+  return {
+    error: {
+      code: 'validation_error',
+      message: 'Request validation failed',
+      requestId,
+      details: mapZodErrorToDetails(error),
+    },
+  };
+}
 
-const VALID_SEVERITIES = new Set<AuditSeverity>(['INFO', 'WARNING', 'CRITICAL']);
+function getRequestId(res: Response): string {
+  return typeof res.locals['requestId'] === 'string' ? res.locals['requestId'] : 'unknown';
+}
 
-function parseOptionalIsoDate(
-  value: string | undefined,
-  fieldName: 'from' | 'to',
-): string | undefined {
-  if (value === undefined) {
+/**
+ * Parses and validates query filters against the audit query schema and, on
+ * failure, writes the shared structured 400 validation response directly
+ * instead of throwing. Used by every handler below that accepts query
+ * filters, so the "parse, then reject" preamble lives in one place instead
+ * of being repeated per-route.
+ */
+function parseAuditQueryOrRespond(
+  req: Request,
+  res: Response,
+  options: { defaultLimit?: number; maxLimit: number },
+): { query: AuditQuery; limit?: number; offset: number } | undefined {
+  const result = buildAuditQuerySchema(options).safeParse(req.query);
+
+  if (!result.success) {
+    res.status(400).json(buildValidationErrorResponse(getRequestId(res), result.error));
     return undefined;
   }
 
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    throw new Error(`Invalid ${fieldName} timestamp`);
-  }
-
-  return new Date(parsed).toISOString();
-}
-
-function parseOffset(value: string | undefined): number {
-  if (value === undefined) {
-    return 0;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error('Invalid offset');
-  }
-
-  return parsed;
-}
-
-function parseLimit(value: string | undefined, maxLimit: number, defaultLimit?: number): number | undefined {
-  if (value === undefined) {
-    return defaultLimit;
-  }
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    throw new Error('Invalid limit');
-  }
-
-  return Math.min(parsed, maxLimit);
-}
-
-function parseAuditQuery(
-  req: Request,
-  options: { defaultLimit?: number; maxLimit: number },
-): { query: AuditQuery; limit?: number; offset: number } {
-  const {
-    action, severity, actor, resource, resourceId, cursor,
-  } = req.query as Record<string, string | undefined>;
-
-  if (action && !VALID_ACTIONS.has(action as AuditAction)) {
-    throw new Error(`Invalid action: ${action}`);
-  }
-
-  if (severity && !VALID_SEVERITIES.has(severity as AuditSeverity)) {
-    throw new Error(`Invalid severity: ${severity}`);
-  }
-
-  const limit = parseLimit(req.query['limit'] as string | undefined, options.maxLimit, options.defaultLimit);
-  const offset = parseOffset(req.query['offset'] as string | undefined);
-  const from = parseOptionalIsoDate(req.query['from'] as string | undefined, 'from');
-  const to = parseOptionalIsoDate(req.query['to'] as string | undefined, 'to');
-
-  // Validate cursor format if provided
-  if (cursor) {
-    try {
-      decodeCursor(cursor);
-    } catch (_error) {
-      throw new Error('Invalid cursor format');
-    }
-  }
+  const params: AuditQueryParams = result.data;
+  const { action, severity, actor, resource, resourceId, from, to, limit, offset, cursor } = params;
 
   return {
     query: {
-      ...(action && { action: action as AuditAction }),
-      ...(severity && { severity: severity as AuditSeverity }),
+      ...(action && { action }),
+      ...(severity && { severity }),
       ...(actor && { actor }),
       ...(resource && { resource }),
       ...(resourceId && { resourceId }),
@@ -146,26 +100,6 @@ function parseAuditQuery(
     limit,
     offset,
   };
-}
-
-/**
- * Runs `parseAuditQuery` and, on failure, writes the shared 400 validation
- * response directly instead of throwing. Used by every handler below that
- * accepts query filters, so the "parse, then reject with a 400 on the same
- * shape of error" preamble lives in one place instead of being repeated
- * per-route.
- */
-function parseAuditQueryOrRespond(
-  req: Request,
-  res: Response,
-  options: { defaultLimit?: number; maxLimit: number },
-): { query: AuditQuery; limit?: number; offset: number } | undefined {
-  try {
-    return parseAuditQuery(req, options);
-  } catch (error) {
-    res.status(400).json({ error: (error as Error).message });
-    return undefined;
-  }
 }
 
 export function createAuditRouter(options: AuditRouterOptions = {}): Router {
@@ -189,8 +123,14 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
     ...accessMiddleware,
     (req: Request, res: Response): void => {
       try {
-        const input = req.body as CreateAuditEntryInput;
-        const entry = service.createEntry(input);
+        const parseResult = createAuditEntryBodySchema.safeParse(req.body);
+
+        if (!parseResult.success) {
+          res.status(400).json(buildValidationErrorResponse(getRequestId(res), parseResult.error));
+          return;
+        }
+
+        const entry = service.log(parseResult.data);
         res.status(201).json(entry);
       } catch (error) {
         const message = (error as Error).message;
