@@ -245,6 +245,16 @@ export const envSchema = z.object({
     .default('1000')
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().int().positive('AUTH_CACHE_MAX_ENTRIES must be greater than 0').max(100_000)),
+
+  // Audit Cache Configuration
+  AUDIT_CACHE_TTL_MS: z.string()
+    .default('10000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('AUDIT_CACHE_TTL_MS must be greater than 0').max(300_000)),
+  AUDIT_CACHE_MAX_ENTRIES: z.string()
+    .default('500')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('AUDIT_CACHE_MAX_ENTRIES must be greater than 0').max(100_000)),
 }).superRefine((obj, ctx) => {
   const requireForEmailProvider = (field: keyof typeof obj, message: string): void => {
     if (!obj[field]) {
