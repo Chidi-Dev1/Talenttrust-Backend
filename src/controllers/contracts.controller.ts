@@ -16,18 +16,11 @@ import { BulkMilestoneOperationDto } from '../modules/contracts/dto/contract.dto
 import { ContractsService } from '../services/contracts.service';
 import { WebhookService } from '../services/webhook.service';
 import { fail, ok } from '../utils/apiResponse';
+import { applyPagination, parsePaginationQuery } from '../utils/pagination';
+import type { AuthenticatedRequest } from '../auth/authenticate';
 
-export const MILESTONE_EVENTS = {
-  CREATED: 'milestone.created',
-  UPDATED: 'milestone.updated',
-  DELETED: 'milestone.deleted',
-} as const;
-
-type ContractRequest<TBody = unknown> = Request<
-  Record<string, string>,
-  unknown,
-  TBody
->;
+type ContractRequest<TBody = unknown> = AuthenticatedRequest &
+  Request<Record<string, string>, unknown, TBody>;
 
 /**
  * Presentation layer for contracts. Transport DTOs are mapped explicitly at
@@ -183,20 +176,10 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const dto = toCreateContractDto(req.body);
-      const contract = await this.service.createContract(dto);
-
-      // Fire-and-forget milestone webhook if milestones are present
-      if (dto.milestones && dto.milestones.length > 0) {
-        this.webhookService
-          .trigger(
-            MILESTONE_EVENTS.CREATED,
-            { contractId: contract.id, milestones: dto.milestones },
-            req.headers['x-correlation-id'] as string | undefined,
-          )
-          .catch(() => { /* webhook delivery errors are logged by the service */ });
-      }
-
+      const contract = await this.service.createContract(
+        toCreateContractDto(req.body),
+        req.user?.userId,
+      );
       ok(res, toContractResponseDto(contract), undefined, 201);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
@@ -216,7 +199,8 @@ export class ContractsController {
       const dto = toUpdateContractDto(req.body);
       const contract = await this.service.updateContract(
         req.params.id!,
-        dto,
+        toUpdateContractDto(req.body),
+        req.user?.userId,
       );
 
       // Fire-and-forget milestone webhook if milestones are being updated
@@ -246,21 +230,7 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const contract = await this.service.getContractById(req.params.id!);
-
-      await this.service.deleteContract(req.params.id!);
-
-      // Fire-and-forget milestone webhook if the deleted contract had milestones
-      if (contract && contract.milestones && contract.milestones.length > 0) {
-        this.webhookService
-          .trigger(
-            MILESTONE_EVENTS.DELETED,
-            { contractId: contract.id },
-            req.headers['x-correlation-id'] as string | undefined,
-          )
-          .catch(() => { /* webhook delivery errors are logged by the service */ });
-      }
-
+      await this.service.deleteContract(req.params.id!, req.user?.userId);
       ok(res, { message: 'Contract deleted successfully' });
     } catch (error) {
       next(error);

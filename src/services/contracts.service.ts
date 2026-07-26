@@ -8,6 +8,12 @@ import { ContractCacheService } from './contractCache.service';
 import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
+import { auditService } from '../audit/service';
+import { redactBody } from '../audit/redact';
+import type { AuditAction } from '../audit/types';
+
+/** Actor recorded when a mutation has no authenticated caller attached (tests, internal callers). */
+const UNKNOWN_ACTOR = 'system';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -73,7 +79,7 @@ export class ContractsService {
    * @returns The newly created contract object.
    * @throws ContractBoundsError if budget or milestone totals exceed policy limits.
    */
-  public async createContract(data: CreateContractDto): Promise<Contract> {
+  public async createContract(data: CreateContractDto, actorId?: string): Promise<Contract> {
     const boundsCheck = validateContractBounds(data.budget, data.milestones);
     if (!boundsCheck.valid) {
       throw new ContractBoundsError(boundsCheck.error);
@@ -102,6 +108,11 @@ export class ContractsService {
       freelancerId: data.freelancerId ?? '',
       amount: data.budget,
       status: data.status || 'draft',
+    });
+
+    this.logMutation('CONTRACT_CREATED', actorId ?? data.clientId, newContract.id, {
+      before: null,
+      after: summarizeContract(newContract),
     });
 
     // Notify the Soroban service to prepare the transaction
@@ -144,7 +155,7 @@ export class ContractsService {
    * omitting the version field because this method validates it before calling
    * the repository.
    */
-  public async updateContract(id: string, dto: UpdateContractDto): Promise<Contract> {
+  public async updateContract(id: string, dto: UpdateContractDto, actorId?: string): Promise<Contract> {
     const { version, ...fields } = dto;
 
     // Defense-in-depth: validate version even though middleware already checked
@@ -180,10 +191,28 @@ export class ContractsService {
     if (fields.budget !== undefined) updateFields.amount = fields.budget;
     if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
 
+    // Read the pre-mutation row for the audit before/after summary. Not used
+    // for the OCC check itself — that stays a single atomic
+    // `UPDATE ... WHERE version = ?` inside the repository — this is purely
+    // for the audit trail and may reflect a row that a concurrent writer
+    // beats us to (in which case updateWithVersion throws VersionConflictError
+    // below and no audit entry is written for this call).
+    const before = await this.contractRepository.findById(id);
+
     const updated = await this.contractRepository.updateWithVersion(id, updateFields, version);
 
-    this.cache?.invalidateContract(id);
-    this.cache?.invalidateLists();
+    const action: AuditAction =
+      updateFields.status === 'cancelled'
+        ? 'CONTRACT_CANCELLED'
+        : updateFields.status === 'completed'
+          ? 'CONTRACT_COMPLETED'
+          : 'CONTRACT_UPDATED';
+
+    this.logMutation(action, actorId ?? before?.clientId ?? UNKNOWN_ACTOR, id, {
+      before: before ? summarizeContract(before) : null,
+      after: summarizeContract(updated),
+      changedFields: Object.keys(updateFields),
+    });
 
     return updated;
   }
@@ -191,14 +220,45 @@ export class ContractsService {
   /**
    * Deletes a contract by ID.
    */
-  public async deleteContract(id: string): Promise<void> {
+  public async deleteContract(id: string, actorId?: string): Promise<void> {
+    const before = await this.contractRepository.findById(id);
+
     const deleted = await this.contractRepository.delete(id);
     if (!deleted) {
       throw new NotFoundError(`Contract with id ${id} not found`);
     }
 
-    this.cache?.invalidateContract(id);
-    this.cache?.invalidateLists();
+    this.logMutation('CONTRACT_DELETED', actorId ?? before?.clientId ?? UNKNOWN_ACTOR, id, {
+      before: before ? summarizeContract(before) : null,
+      after: null,
+    });
+  }
+
+  /**
+   * Records a contract mutation in the immutable audit log. Failures are
+   * logged and swallowed rather than thrown: unlike reputation writes,
+   * losing an audit entry here must not roll back or block a contract
+   * mutation that has already committed to the database — the alternative
+   * (leaving the DB and the audit trail permanently disagreeing about
+   * whether the write happened) is worse than a gap flagged for
+   * investigation via console.error.
+   */
+  private logMutation(
+    action: AuditAction,
+    actor: string,
+    contractId: string,
+    metadata: Record<string, unknown>,
+  ): void {
+    try {
+      auditService.logContractEvent(
+        action as Extract<AuditAction, `CONTRACT_${string}`>,
+        actor,
+        contractId,
+        redactBody(metadata) as Record<string, unknown>,
+      );
+    } catch (error) {
+      console.error(`[ContractsService] Audit logging failed for contract ${contractId}:`, error);
+    }
   }
 
   /**
@@ -314,4 +374,16 @@ export class ContractsService {
 
     return results;
   }
+}
+
+/** Reduces a Contract to the fields relevant for an audit before/after summary. */
+function summarizeContract(contract: Contract): Record<string, unknown> {
+  return {
+    title: contract.title,
+    clientId: contract.clientId,
+    freelancerId: contract.freelancerId,
+    amount: contract.amount,
+    status: contract.status,
+    version: contract.version,
+  };
 }

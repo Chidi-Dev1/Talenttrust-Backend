@@ -185,6 +185,10 @@ describe('ContractsService', () => {
         createdAt: new Date().toISOString(),
       };
       const mockRepository = {
+        // findById is called once beforehand to build the audit before/after
+        // summary (see #853) — the update itself still goes through the
+        // single atomic updateWithVersion call asserted below.
+        findById: jest.fn().mockReturnValue({ ...fakeUpdatedContract, version: 0 }),
         updateWithVersion: jest.fn().mockReturnValue(fakeUpdatedContract),
       } as any;
       const service = new ContractsService(mockRepository);
@@ -202,6 +206,9 @@ describe('ContractsService', () => {
   describe('deleteContract', () => {
     it('delegates to the repository delete implementation and throws when missing', async () => {
       const mockRepository = {
+        // findById is called once beforehand to capture the audit "before"
+        // summary (see #853); returns undefined here, matching "missing".
+        findById: jest.fn().mockReturnValue(undefined),
         delete: jest.fn().mockReturnValue(false),
       } as any;
       const service = new ContractsService(mockRepository);
