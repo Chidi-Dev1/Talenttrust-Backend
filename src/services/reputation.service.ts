@@ -1,4 +1,5 @@
-import { ReputationProfile, UpdateReputationPayload } from '../types/reputation';
+import { ReputationProfile, PaginatedReputationProfile } from '../types/reputation';
+import type { CursorPaginationInput } from '../contracts/cursor.types';
 import { ReputationRepository, ReputationEntry } from '../repositories/reputationRepository';
 import { auditService } from '../audit/service';
 import {
@@ -385,6 +386,67 @@ export class ReputationService {
 
     const entries = this.repository.findByTargetId(targetId);
 
+    return this.buildProfile(targetId, entries);
+  }
+
+  /**
+   * Retrieves a freelancer's reputation profile with cursor-paginated reviews.
+   *
+   * Aggregated statistics (score, weightedScore, totalRatings) are always
+   * computed from the **full** dataset for correctness. Only the `reviews`
+   * array is windowed to the requested page.
+   *
+   * @param targetId - The target user's ID.
+   * @param input    - Optional {@link CursorPaginationInput}.
+   * @returns PaginatedReputationProfile with `nextCursor` and `hasNextPage`.
+   */
+  public static getProfilePaginated(
+    targetId: string,
+    input: CursorPaginationInput = {},
+  ): PaginatedReputationProfile {
+    // Ensure repository is initialized
+    if (!this.repository) {
+      throw new Error('ReputationService not initialized. Call initialize() first.');
+    }
+
+    if (!targetId) {
+      throw new Error('Target ID is required');
+    }
+
+    // Fetch full dataset for accurate aggregate stats
+    const allEntries = this.repository.findByTargetId(targetId);
+
+    // Fetch paginated page of reviews
+    const page = this.repository.findByTargetIdPaginated(targetId, input);
+
+    const baseProfile = this.buildProfile(targetId, allEntries);
+
+    // Replace reviews with the paginated window
+    baseProfile.reviews = page.data.map(entry => ({
+      reviewerId: entry.reviewerId,
+      rating: entry.rating,
+      comment: entry.comment,
+      createdAt: entry.createdAt,
+    }));
+
+    return {
+      ...baseProfile,
+      nextCursor: page.nextCursor,
+      hasNextPage: page.hasNextPage,
+      limit: page.limit,
+    };
+  }
+
+  /**
+   * Builds a {@link ReputationProfile} from a set of entries.
+   *
+   * Extracted as a private helper so both `getProfile` and `getProfilePaginated`
+   * share the same aggregation logic.
+   */
+  private static buildProfile(
+    targetId: string,
+    entries: ReputationEntry[],
+  ): ReputationProfile {
     // Aggregate statistics
     const totalRatings = entries.length;
     const score = totalRatings > 0
@@ -399,7 +461,7 @@ export class ReputationService {
       const config = validateEnv(process.env);
       lambda = config.REPUTATION_DECAY_LAMBDA;
       algorithmVersion = config.REPUTATION_SCORE_ALGORITHM_VERSION;
-    } catch (error) {
+    } catch (_error) {
       // In test environment or when env validation fails, use defaults
       // This allows tests to run without setting all env vars
     }

@@ -3,7 +3,8 @@ import { ReputationService } from '../services/reputation.service';
 import { mapErrorToPayload } from '../errors/appError';
 import { AuthenticatedRequest } from '../auth/authenticate';
 import { isValidReputationRatingPayload } from './reputation.validation';
-import { isValidReputationBulkItem } from './reputation.validation';
+import { resolveCursorQueryParam, parseLimit } from '../contracts/cursor.repository';
+import { CURSOR_DEFAULT_LIMIT } from '../contracts/cursor.types';
 
 /**
  * @title Reputation Controller
@@ -22,14 +23,79 @@ import { isValidReputationBulkItem } from './reputation.validation';
 export class ReputationController {
   /**
    * GET /api/v1/reputation/:id
-   * Retrieve a freelancer's aggregated reputation profile.
+   * Retrieve a freelancer's reputation profile with optional cursor pagination.
+   *
+   * Query params:
+   *   - cursor  (optional, opaque string): anchor for the next page.
+   *   - limit   (optional, positive integer 1-100, default 20): page size.
    */
   public static async getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const profile = ReputationService.getProfile(req.params.id);
-      res.status(200).json({ status: 'success', data: profile });
-    } catch (error) {
-      sendError(res, error);
+      const { id } = req.params;
+      const requestId =
+        typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+
+      // ── Resolve cursor query parameter ──────────────────────────────────
+      const cursorResult = resolveCursorQueryParam(req.query['cursor']);
+      if (!cursorResult.ok) {
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: cursorResult.message,
+            requestId,
+          },
+        });
+        return;
+      }
+
+      // ── Resolve limit query parameter ───────────────────────────────────
+      let limit = CURSOR_DEFAULT_LIMIT;
+      try {
+        limit = parseLimit(req.query['limit']);
+      } catch (err: any) {
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: err.message,
+            requestId,
+          },
+        });
+        return;
+      }
+
+      const isPaginated =
+        cursorResult.cursor !== undefined || req.query['limit'] !== undefined;
+
+      if (isPaginated) {
+        const profile = ReputationService.getProfilePaginated(id, {
+          cursor: cursorResult.cursor,
+          limit,
+        });
+        res.status(200).json({ status: 'success', data: profile });
+      } else {
+        const profile = ReputationService.getProfile(id);
+        res.status(200).json({ status: 'success', data: profile });
+      }
+    } catch (error: any) {
+      const requestId =
+        typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+      if (error.message === 'Freelancer ID is required') {
+        res.status(400).json({
+          error: {
+            code: 'bad_request',
+            message: error.message,
+            requestId,
+          },
+        });
+      } else {
+        res.status(500).json({
+          error: {
+            code: 'internal_error',
+            message: 'An unexpected error occurred',
+            requestId,
+          },
+        });
+      }
     }
   }
 

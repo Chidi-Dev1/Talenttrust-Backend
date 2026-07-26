@@ -77,6 +77,61 @@ describe('Reputation API Integration Tests', () => {
       expect(response.body.data.score).toBe(0);
       expect(response.body.data.totalRatings).toBe(0);
     });
+
+    // ── Cursor pagination query param tests ───────────────────────────
+    it('should accept limit query param and return paginated response', async () => {
+      const response = await request(app)
+        .get(`/api/v1/reputation/${freelancerId}?limit=5`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      
+      expect(response.status).toBe(200);
+      expect(response.body.data).toHaveProperty('nextCursor');
+      expect(response.body.data).toHaveProperty('hasNextPage');
+      expect(response.body.data).toHaveProperty('limit');
+      expect(response.body.data.limit).toBe(5);
+    });
+
+    it('should return 400 for invalid cursor', async () => {
+      const response = await request(app)
+        .get(`/api/v1/reputation/${freelancerId}?cursor=invalid!!!`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('bad_request');
+    });
+
+    it('should return 400 for limit exceeding max (101)', async () => {
+      const response = await request(app)
+        .get(`/api/v1/reputation/${freelancerId}?limit=101`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('bad_request');
+    });
+
+    it('should return 400 for limit = 0', async () => {
+      const response = await request(app)
+        .get(`/api/v1/reputation/${freelancerId}?limit=0`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      
+      expect(response.status).toBe(400);
+    });
+
+    it('should return 400 for negative limit', async () => {
+      const response = await request(app)
+        .get(`/api/v1/reputation/${freelancerId}?limit=-5`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      
+      expect(response.status).toBe(400);
+    });
+
+    it('should return 400 for non-numeric limit', async () => {
+      const response = await request(app)
+        .get(`/api/v1/reputation/${freelancerId}?limit=abc`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      
+      expect(response.status).toBe(400);
+    });
   });
 
   describe('PUT /api/v1/reputation/:id', () => {

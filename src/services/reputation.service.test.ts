@@ -639,26 +639,30 @@ describe('computeWeightedReputationScore — mathematical edge cases', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// ReputationService — uninitialized state
-// ---------------------------------------------------------------------------
+// Save original ReputationRepository before mocking
+type RepoType = typeof ReputationRepository;
+const OriginalRepo: RepoType = ReputationRepository;
 
-describe('ReputationService — methods throw when repository is uninitialized', () => {
-  // The static class holds onto the last `initialize()` call across tests.
-  // Snapshot and restore the repository so we can assert the uninit path
-  // without polluting other suites.
-  const originalInit = (ReputationService as unknown as {
-    initialize: (db: unknown) => void;
+describe('ReputationService.getProfile', () => {
+  const mockFindByTargetId = jest.fn();
+  const mockDb = {} as any;
+
+  beforeAll(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ReputationRepository as any) = jest.fn().mockImplementation(() => ({
+      findByTargetId: mockFindByTargetId
+    }));
+  });
+
+  afterAll(() => {
+    // Restore original ReputationRepository for subsequent suites
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ReputationRepository as any) = OriginalRepo;
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // Reset by simulating the post-shutdown state — every method checks for
-    // null before doing any DB work, so we just need a fresh instance. We
-    // achieve that by re-creating the class property via the test-only
-    // initialize(null-cast) shortcut: the field type forbids null assignment
-    // via TypeScript, but at runtime the property is simply `null` again.
-    Object.defineProperty(ReputationService, 'repository', { value: null, writable: true });
+    ReputationService.initialize(mockDb);
   });
 
   afterAll(() => {
@@ -1205,5 +1209,159 @@ describe('ReputationService — feature flag (REPUTATION_ENABLED)', () => {
         'Great work!'
       );
     }).toThrow('Reputation system is currently disabled');
+  });
+});
+
+// ─── Cursor-paginated getProfilePaginated ──────────────────────────────────
+
+describe('ReputationService.getProfilePaginated', () => {
+  let db: ReturnType<typeof Database>;
+  const PAG_TARGET = 'paginated-target-svc';
+
+  beforeAll(() => {
+    db = getDb(':memory:');
+    ReputationService.initialize(db);
+
+    // Seed users
+    db.exec(`
+      INSERT OR IGNORE INTO users (id, username, email, role, created_at)
+      VALUES
+        ('rev-svc-a', 'rva', 'rva@test.com', 'client', datetime('now')),
+        ('${PAG_TARGET}', 'pgtargetsvc', 'pgtargetsvc@test.com', 'freelancer', datetime('now'));
+    `);
+
+    // Create 15 entries with staggered timestamps for deterministic order
+    for (let i = 0; i < 15; i++) {
+      const createdAt = new Date(Date.UTC(2024, 0, 1 + i)).toISOString();
+      const contractId = `ctx-svc-${String(i).padStart(3, '0')}`;
+      db.prepare(
+        `INSERT OR IGNORE INTO contracts (id, title, client_id, freelancer_id, amount, status, version, created_at)
+         VALUES (?, ?, 'rev-svc-a', ?, 100, 'completed', 0, datetime('now'))`
+      ).run(contractId, `C-${i}`, PAG_TARGET);
+
+      const { randomUUID } = require('crypto');
+      db.prepare(
+        `INSERT INTO reputation_entries (id, reviewer_id, target_id, rating, comment, context_id, created_at)
+         VALUES (?, 'rev-svc-a', ?, ?, NULL, ?, ?)`
+      ).run(
+        randomUUID(),
+        PAG_TARGET,
+        (i % 5) + 1,
+        contractId,
+        createdAt,
+      );
+    }
+  });
+
+  describe('aggregation correctness', () => {
+    it('score and totalRatings reflect ALL entries, not just the page', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 3 });
+      // totalRatings must come from the full dataset (15), not the page (3)
+      expect(profile.totalRatings).toBe(15);
+      expect(profile.reviews).toHaveLength(3);
+    });
+
+    it('weightedScore is computed from all entries', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 3 });
+      expect(profile.weightedScore).toBeGreaterThanOrEqual(1);
+      expect(profile.weightedScore).toBeLessThanOrEqual(5);
+    });
+  });
+
+  describe('pagination behaviour', () => {
+    it('returns default page size of 20 reviews', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET);
+      expect(profile.limit).toBe(20);
+      expect(profile.reviews.length).toBeLessThanOrEqual(20);
+    });
+
+    it('returns nextCursor when there are more reviews', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 5 });
+      expect(profile.hasNextPage).toBe(true);
+      expect(profile.nextCursor).not.toBeNull();
+      expect(typeof profile.nextCursor).toBe('string');
+    });
+
+    it('returns null nextCursor on the last page', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 15 });
+      expect(profile.hasNextPage).toBe(false);
+      expect(profile.nextCursor).toBeNull();
+    });
+  });
+
+  describe('cursor traversal', () => {
+    it('traverses all pages correctly', () => {
+      const collected: string[] = [];
+      let cursor: string | undefined;
+
+      do {
+        const profile = ReputationService.getProfilePaginated(PAG_TARGET, {
+          limit: 4,
+          cursor,
+        });
+        collected.push(...profile.reviews.map(r => r.reviewerId + '|' + r.createdAt));
+        cursor = profile.nextCursor ?? undefined;
+      } while (cursor);
+
+      // All 15 reviews collected
+      expect(collected).toHaveLength(15);
+      // No duplicates
+      expect(new Set(collected).size).toBe(15);
+    });
+
+    it('successive pages have no overlapping reviews', () => {
+      const page1 = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 8 });
+      const page2 = ReputationService.getProfilePaginated(PAG_TARGET, {
+        limit: 8,
+        cursor: page1.nextCursor!,
+      });
+
+      const keys1 = new Set(page1.reviews.map(r => r.createdAt + r.reviewerId));
+      const keys2 = new Set(page2.reviews.map(r => r.createdAt + r.reviewerId));
+      for (const k of keys2) {
+        expect(keys1.has(k)).toBe(false);
+      }
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns empty reviews for target with no ratings', () => {
+      const profile = ReputationService.getProfilePaginated('no-ratings-svc');
+      expect(profile.reviews).toEqual([]);
+      expect(profile.totalRatings).toBe(0);
+      expect(profile.score).toBe(0);
+      expect(profile.weightedScore).toBe(0);
+      expect(profile.hasNextPage).toBe(false);
+      expect(profile.nextCursor).toBeNull();
+    });
+
+    it('throws for empty targetId', () => {
+      expect(() => ReputationService.getProfilePaginated('')).toThrow('Target ID is required');
+    });
+
+    it('preserves all profile fields in paginated response', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 5 });
+      expect(profile.freelancerId).toBe(PAG_TARGET);
+      expect(typeof profile.score).toBe('number');
+      expect(typeof profile.weightedScore).toBe('number');
+      expect(Array.isArray(profile.reviews)).toBe(true);
+      expect(typeof profile.scoreAlgorithm).toBe('string');
+      expect(typeof profile.lastUpdated).toBe('string');
+      // Pagination-specific fields
+      expect('nextCursor' in profile).toBe(true);
+      expect('hasNextPage' in profile).toBe(true);
+      expect('limit' in profile).toBe(true);
+    });
+
+    it('review item shape is unchanged', () => {
+      const profile = ReputationService.getProfilePaginated(PAG_TARGET, { limit: 2 });
+      for (const review of profile.reviews) {
+        expect(typeof review.reviewerId).toBe('string');
+        expect(typeof review.rating).toBe('number');
+        expect(typeof review.createdAt).toBe('string');
+        // comment may be undefined
+        expect(review.hasOwnProperty('comment')).toBe(true);
+      }
+    });
   });
 });
