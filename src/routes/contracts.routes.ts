@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import compression from 'compression';
 
 import { createContractsController } from '../controllers/contracts.controller';
 import { ContractsService } from '../services/contracts.service';
@@ -109,6 +110,11 @@ function validateContractQuery(req: Request, res: Response, next: NextFunction):
  */
 function createContractsRouter(): Router {
   const router = Router();
+
+  // Enable compression for large payloads (e.g. milestones arrays)
+  // The threshold is 1KB by default, but we set it explicitly here.
+  router.use(compression({ threshold: 1024 }));
+
   const db = getDb();
   const repo = new ContractRepository(db);
   const controller = createContractsController(new ContractsService(repo));
