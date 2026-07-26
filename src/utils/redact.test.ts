@@ -192,16 +192,21 @@ describe('redactObject', () => {
     expect(JSON.stringify(input)).toBe(snapshot);
   });
 
-  it('preserves arrays inside objects as-is (does not recurse into array elements)', () => {
+  it('recursively processes arrays containing objects', () => {
     const input = {
       tags: ['a', 'b'],
-      secrets: ['fake-secret-1', 'fake-secret-2'],
+      users: [
+        { name: 'alice', password: 'secret1' },
+        { name: 'bob', password: 'secret2' },
+      ],
     };
     const output = redactObject(input);
 
-    // Arrays are not recursively processed by redactObject
     expect(output.tags).toEqual(['a', 'b']);
-    expect(output.secrets).toEqual(['fake-secret-1', 'fake-secret-2']);
+    expect(output.users).toEqual([
+      { name: 'alice', password: '[REDACTED]' },
+      { name: 'bob', password: '[REDACTED]' },
+    ]);
   });
 
   it('handles null values gracefully', () => {
