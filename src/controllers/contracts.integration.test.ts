@@ -238,7 +238,12 @@ describe('GET /api/v1/contracts', () => {
     expect(res.body.data.hasNextPage).toBe(false);
   });
 
-  it('returns empty page for a cursor past the last item', async () => {
+  // The block below was previously mis-nested (an `it()` wrapping further
+  // `it()` calls, with an unrelated POST test spliced into the middle) as
+  // the result of a prior merge conflict — restored as a `describe()` with
+  // its two coherent cursor-pagination cases; see the milestone-bounds
+  // schema-validation test moved down to the POST describe block instead.
+  describe('cursor pagination — page boundary cases', () => {
     it('returns 200 with empty data array when no contracts exist', async () => {
       const res = await request(app)
         .get('/api/v1/contracts')
@@ -262,43 +267,9 @@ describe('GET /api/v1/contracts', () => {
       await createContractAsAdmin();
       await createContractAsAdmin();
 
-  it('returns 400 for total milestone amount exceeding bounds (schema validation)', async () => {
-    const excessiveAmountMilestones = [
-      {
-        title: 'Milestone 1',
-        description: 'Valid description',
-        amount: 999_000_000_000_000_000,
-      },
-    ];
-    const res = await request(app)
-      .post('/api/v1/contracts')
-      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
-      .send({ ...validPayload, milestones: excessiveAmountMilestones });
-    // The DTO schema now catches this at validation time (400) before the
-    // service can apply the 422 bounds check.
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatchObject({ code: 'validation_error' });
-  });
-});
-
-      if (first.body.data.nextCursor) {
-        const second = await request(app)
-          .get(`/api/v1/contracts?limit=2&cursor=${encodeURIComponent(first.body.data.nextCursor)}`)
-          .set(auth(adminToken()));
-        expect(second.status).toBe(200);
-        expect(second.body.data.data).toHaveLength(0);
-        expect(second.body.data.hasNextPage).toBe(false);
-      }
-
-      expect(first.body).toMatchObject({
-        status: 'success',
-        data: expect.objectContaining({
-          data: expect.any(Array),
-          nextCursor: expect.any(String),
-          hasNextPage: true,
-          limit: 2,
-        }),
-      });
+      const first = await request(app)
+        .get('/api/v1/contracts?limit=2')
+        .set(auth(adminToken()));
 
       const cursor = first.body.data.nextCursor;
 
@@ -508,7 +479,7 @@ describe('GET /api/v1/contracts', () => {
       expect(res.body.error).toMatchObject({ code: 'contract_bounds_error' });
     });
 
-    it('returns 422 for total milestone amount exceeding bounds', async () => {
+    it('returns 400 for total milestone amount exceeding bounds (schema validation)', async () => {
       const excessiveAmountMilestones = [
         {
           title: 'Milestone 1',
@@ -520,8 +491,10 @@ describe('GET /api/v1/contracts', () => {
         .post('/api/v1/contracts')
         .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
         .send({ ...validPayload, milestones: excessiveAmountMilestones });
-      expect(res.status).toBe(422);
-      expect(res.body.error).toMatchObject({ code: 'contract_bounds_error' });
+      // The DTO schema's per-milestone amount cap catches this at validation
+      // time (400) before the service can apply the 422 bounds check.
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatchObject({ code: 'validation_error' });
     });
   });
 
@@ -534,6 +507,8 @@ describe('GET /api/v1/contracts', () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toMatchObject({ code: 'bad_request' });
     });
+  });
+});
 
 afterAll(() => {
   closeDb();
@@ -568,8 +543,12 @@ describe('POST /api/v1/contracts — unknown field stripping', () => {
   });
 });
 
-describe('PATCH /api/v1/contracts/:id — unknown field stripping', () => {
-  it('strips unknown fields from update body and still succeeds', async () => {
+describe('PATCH /api/v1/contracts/:id — unknown field rejection', () => {
+  // Unlike POST (which strips unknown fields), PATCH rejects them outright:
+  // this is the write path used to initiate/resolve disputes via `status`,
+  // so a typo'd or unexpected field must surface as an error rather than be
+  // silently dropped. See the `.strict()` rationale on updateContractBodySchema.
+  it('rejects unknown fields in the update body with a structured 400', async () => {
     const contractId = await createContractAsAdmin();
     const fetched = await request(app)
       .get(`/api/v1/contracts/${contractId}`)
@@ -586,10 +565,8 @@ describe('PATCH /api/v1/contracts/:id — unknown field stripping', () => {
         __inject: 'payload',
         extraField: 'should-be-dropped',
       });
-    expect(res.status).toBe(200);
-    expect(res.body.data).not.toHaveProperty('__admin');
-    expect(res.body.data).not.toHaveProperty('__inject');
-    expect(res.body.data).not.toHaveProperty('extraField');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'validation_error' });
   });
 });
 
