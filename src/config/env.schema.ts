@@ -323,6 +323,22 @@ export const envSchema = z.object({
 
   SENDGRID_API_KEY: z.string().optional(),
 
+  // ── Webhooks Feature Flag ───────────────────────────────────────────────────
+  /**
+   * WEBHOOKS_ENABLED — master switch for the webhooks subsystem.
+   *
+   * When `false`:
+   *  - `WebhookService.trigger()` is a no-op and returns immediately without
+   *    delivering any events or touching subscriptions.
+   *  - The `/api/v1/webhook-subscriptions` router is not mounted on the
+   *    Express app and all subscription endpoints return `404`.
+   *
+   * Default: `true` (webhooks are on unless explicitly disabled).
+   */
+  WEBHOOKS_ENABLED: z.string()
+    .optional()
+    .transform((val) => val !== 'false'),
+
   // ── Audit Feature Flag ──────────────────────────────────────────────────────
   /**
    * AUDIT_ENABLED — master switch for the audit subsystem.

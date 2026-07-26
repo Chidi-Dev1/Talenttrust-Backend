@@ -479,6 +479,14 @@ All configuration is managed through `src/config/` and validated at startup usin
 | `GREEN_PORT` | `3002` | Port for the 'green' backend |
 | `HTTP_METRICS_ROUTE_LABEL_LIMIT` | `100` | Maximum distinct HTTP route template labels before new routes are recorded as `other` |
 
+## Webhooks Feature Flag
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBHOOKS_ENABLED` | `true` | Enable/disable the webhooks subsystem at runtime. When `false`, `WebhookService.trigger()` becomes a no-op (no subscriptions queried, no deliveries attempted, no DLQ writes), and the `/api/v1/webhook-subscriptions` router is not mounted (all subscription management endpoints return `404`). Omit the variable to keep webhooks enabled (safe default). |
+
+See [docs/webhooks.md](docs/webhooks.md) for full webhook documentation and [docs/backend/config.md](docs/backend/config.md) for all configuration options.
+
 ## Milestones Feature Flag
 
 | Variable | Default | Description |

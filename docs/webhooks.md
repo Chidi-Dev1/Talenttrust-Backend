@@ -878,3 +878,43 @@ We recommend always providing a `secret` for security.
 - [queue-system.md](backend/queue-system.md) — Background job queue architecture
 - [DLQ Implementation](../DLQ_IMPLEMENTATION_SUMMARY.md) — Dead-letter queue design and operations
 
+
+
+---
+
+## Feature Flag: WEBHOOKS_ENABLED
+
+The entire webhooks subsystem is gated behind the `WEBHOOKS_ENABLED` environment variable.
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEBHOOKS_ENABLED` | `true` | Enable/disable the webhooks subsystem at runtime. |
+
+### Behaviour
+
+| State | `WEBHOOKS_ENABLED=true` | `WEBHOOKS_ENABLED=false` |
+|-------|------------------------|--------------------------|
+| `WebhookService.trigger()` | Queries subscriptions and delivers events | Immediate no-op — no subscriptions queried, no HTTP deliveries, no DLQ writes |
+| `/api/v1/webhook-subscriptions` router | Mounted and functional | Not mounted — all endpoints return `404` |
+
+### Safe default
+
+Omitting `WEBHOOKS_ENABLED` from the environment is equivalent to `WEBHOOKS_ENABLED=true`. Webhooks remain enabled unless explicitly disabled.
+
+### Usage examples
+
+```bash
+# Disable webhooks (e.g. during an incident or maintenance window)
+WEBHOOKS_ENABLED=false npm start
+
+# Re-enable (default — also achieved by omitting the variable)
+WEBHOOKS_ENABLED=true npm start
+```
+
+### Notes
+
+- The flag is read once at process startup via `parseBoolEnv`. Changing the variable at runtime requires a restart.
+- The `features.webhooksEnabled` field in `src/config/features.ts` exposes the resolved boolean for use outside the service constructor.
+- All non-trigger methods on `WebhookService` (DLQ reads, replays, stats) remain functional regardless of the flag.
