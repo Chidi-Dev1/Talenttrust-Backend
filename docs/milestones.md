@@ -10,6 +10,7 @@ Milestones in TalentTrust are a first-class field on the Contract resource. Ther
 
 - [Milestone Object Shape](#milestone-object-shape)
 - [Policy Bounds](#policy-bounds)
+- [Feature Flag: MILESTONES_ENABLED](#feature-flag-milestones_enabled)
 - [Endpoints](#endpoints)
   - [Create Contract with Milestones](#create-contract-with-milestones)
   - [Update Contract (Including Milestones)](#update-contract-including-milestones)
@@ -56,6 +57,57 @@ Defined in [`src/contracts/bounds.ts:9-10`](../src/contracts/bounds.ts#L9-L10):
 
 **Additional business rule** (enforced in [`contracts.service.ts:71-81`](../src/services/contracts.service.ts#L71-L81)):
 - The sum of all milestone `amount` values must not exceed the contract's `budget`.
+
+---
+
+## Feature Flag: MILESTONES_ENABLED
+
+The milestones feature is controlled by the `MILESTONES_ENABLED` environment variable. This allows the feature to be toggled at runtime **without a deploy**.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `MILESTONES_ENABLED` | `boolean` | `true` | Enables or disables milestones behaviour at runtime. |
+
+### Behaviour when `MILESTONES_ENABLED=true` (default)
+
+Milestones flow through the contracts API as normal:
+
+- Milestone fields supplied in `POST /api/v1/contracts` and `PATCH /api/v1/contracts/:id` are validated and enforced.
+- Milestone count is capped at `MAX_MILESTONES_PER_CONTRACT` (20).
+- The sum of milestone amounts must not exceed the contract `budget`.
+- Violations return `422 contract_bounds_error`.
+
+### Behaviour when `MILESTONES_ENABLED=false`
+
+Milestone support is fully disabled without a deploy:
+
+- Any `milestones` field supplied in a request body is **silently stripped** before reaching the service layer.
+- No milestone validation (bounds checks, budget cap) is performed.
+- The contract is created or updated as if no milestones were included in the request.
+- **Callers receive a successful response** — the strip is transparent.
+
+### Configuration
+
+Set the flag in your environment or `.env` file:
+
+```bash
+# Disable milestones (e.g. during a feature rollout pause)
+MILESTONES_ENABLED=false
+
+# Re-enable (or omit entirely — defaults to enabled)
+MILESTONES_ENABLED=true
+```
+
+Accepted values (case-insensitive): `true`, `false`, `1`, `0`.
+
+### Source references
+
+| Concern | File |
+|---------|------|
+| Flag declaration (Zod schema) | [`src/config/env.schema.ts`](../src/config/env.schema.ts) |
+| Flag in `AppConfig` / `loadConfig` | [`src/appConfiguration.ts`](../src/appConfiguration.ts) |
+| Service-layer enforcement | [`src/services/contracts.service.ts`](../src/services/contracts.service.ts) |
+| Flag unit tests | [`src/services/milestones.flag.test.ts`](../src/services/milestones.flag.test.ts) |
 
 ---
 

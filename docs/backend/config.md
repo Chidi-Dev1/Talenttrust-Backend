@@ -25,6 +25,28 @@ npm run dev             # config is validated on startup
 | `SOROBAN_CONTRACT_ID` | No | *(empty)* | Deployed escrow contract ID |
 | `REPUTATION_ENABLED` | No | `false` | Feature flag to enable/disable the reputation scoring system at runtime |
 
+## Feature Flags
+
+Feature flags are boolean environment variables that toggle product behaviour at runtime without a deploy. They follow the same Zod-validated config pipeline as all other variables.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MILESTONES_ENABLED` | `true` | Enable or disable the milestones feature. When `false`, any `milestones` field in a request body is silently stripped before the service layer — no validation errors are raised and contracts are processed as if no milestones were provided. Set to `false` to disable the feature during a rollout pause. |
+
+### Toggling `MILESTONES_ENABLED`
+
+```bash
+# Disable milestones
+MILESTONES_ENABLED=false
+
+# Enable milestones (default — omitting the variable has the same effect)
+MILESTONES_ENABLED=true
+```
+
+Accepted values are case-insensitive: `true`, `false`, `1`, `0`.
+
+See [`docs/milestones.md`](../milestones.md#feature-flag-milestones_enabled) for the full behavioural specification.
+
 ## How It Works
 
 ### Module Structure

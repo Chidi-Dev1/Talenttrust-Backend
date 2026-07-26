@@ -25,7 +25,7 @@ The backend includes dependency-level chaos testing to simulate upstream outages
 - On upstream failures with graceful degradation enabled, it returns a safe fallback payload with `degraded: true`.
 - If graceful degradation is disabled, it returns `503` with `contracts_unavailable`.
 
-### Configuration
+### Chaos Testing Configuration
 
 - `GRACEFUL_DEGRADATION_ENABLED=true|false` (default `true`)
 - `UPSTREAM_CONTRACTS_URL` (default `https://example.invalid/contracts`)
@@ -478,6 +478,14 @@ All configuration is managed through `src/config/` and validated at startup usin
 | `BLUE_PORT` | `3001` | Port for the 'blue' backend |
 | `GREEN_PORT` | `3002` | Port for the 'green' backend |
 | `HTTP_METRICS_ROUTE_LABEL_LIMIT` | `100` | Maximum distinct HTTP route template labels before new routes are recorded as `other` |
+
+## Milestones Feature Flag
+
+| Variable | Default | Description |
+|---|---|---|
+| `MILESTONES_ENABLED` | `true` | Enable/disable the milestones feature at runtime. When `false`, any `milestones` field in a contract create/update request is silently stripped — no validation errors are raised. Omit the variable to keep the feature enabled (safe default). |
+
+See [docs/milestones.md — Feature Flag](docs/milestones.md#feature-flag-milestones_enabled) for full details.
 
 
 ## API Endpoints

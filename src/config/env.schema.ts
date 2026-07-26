@@ -323,36 +323,24 @@ export const envSchema = z.object({
 
   SENDGRID_API_KEY: z.string().optional(),
 
-  // ── Retention Policy Overrides ────────────────────────────────────────────
-  // JSON object mapping DataEntityType → RetentionPeriod.
-  // Example: '{"contract":"2y","transaction":"1y","audit_log":"indefinite"}'
-  // Overrides are merged on top of built-in defaults at startup.
-  // Values below the per-entity legal minimum are rejected at startup.
-  RETENTION_OVERRIDES: z.string()
+  // Feature Flags
+  /**
+   * MILESTONES_ENABLED controls whether the milestones feature is active.
+   *
+   * - `true`  (default) — milestones are validated, enforced, and persisted
+   *   through the contracts API as normal.
+   * - `false` — any milestones supplied in a request body are silently
+   *   stripped before reaching the service layer. No milestone validation
+   *   (bounds, budget cap) is performed, and the contract is created/updated
+   *   as if no milestones were included.
+   *
+   * Set `MILESTONES_ENABLED=false` to disable the feature entirely without
+   * a deploy.  The safe default is `true` so existing deployments are
+   * unaffected by the introduction of this flag.
+   */
+  MILESTONES_ENABLED: z.string()
     .optional()
-    .refine((val) => {
-      if (val === undefined || val === '') return true;
-      try {
-        const parsed = JSON.parse(val);
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
-        const validEntityTypes = ['contract', 'user_profile', 'transaction', 'audit_log', 'document', 'message'];
-        const validPeriods = ['30d', '90d', '6m', '1y', '2y', 'indefinite'];
-        for (const [key, value] of Object.entries(parsed)) {
-          if (!validEntityTypes.includes(key)) return false;
-          if (!validPeriods.includes(value as string)) return false;
-        }
-        return true;
-      } catch {
-        return false;
-      }
-    }, {
-      message: 'RETENTION_OVERRIDES must be a JSON object mapping DataEntityType (contract|user_profile|transaction|audit_log|document|message) to RetentionPeriod (30d|90d|6m|1y|2y|indefinite)',
-    })
-    .transform((val) => {
-      if (val === undefined || val === '') return undefined;
-      return JSON.parse(val) as Record<string, string>;
-    })
-    .pipe(z.record(z.string(), z.string()).optional()),
+    .transform((val) => val === undefined || val.toLowerCase() !== 'false'),
 }).superRefine((obj, ctx) => {
   const requireForEmailProvider = (field: keyof typeof obj, message: string): void => {
     if (!obj[field]) {
