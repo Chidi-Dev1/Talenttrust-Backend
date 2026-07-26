@@ -11,6 +11,7 @@ import {
 import type BetterSqlite3 from 'better-sqlite3';
 import { createHash } from 'crypto';
 import { validateEnv } from '../config/env.schema';
+import { getReputationWebhookService } from '../modules/reputation/webhook/reputation-webhook.service';
 
 /**
  * Defense-in-depth runtime validation predicate for a reputation rating payload.
@@ -291,6 +292,33 @@ export class ReputationService {
       // In production, this would trigger an alert
       console.error('[ReputationService] Audit logging failed:', auditError);
       throw new Error('Failed to create audit trail. Rating not persisted.');
+    }
+
+    // Emit webhook notification for reputation event
+    // This is fire-and-forget: webhook delivery failures should not block the rating creation
+    try {
+      const webhookService = getReputationWebhookService();
+      const updatedProfile = this.getProfile(targetId);
+      
+      // Emit asynchronously without awaiting
+      webhookService.emitRatingCreated(
+        targetId,
+        reviewerId,
+        rating,
+        contextId,
+        entry.id,
+        updatedProfile.score,
+        updatedProfile.totalRatings,
+        updatedProfile.weightedScore,
+        updatedProfile.scoreAlgorithm,
+        comment,
+      ).catch((webhookError) => {
+        // Log webhook delivery failures but don't fail the rating creation
+        console.error('[ReputationService] Webhook emission failed:', webhookError);
+      });
+    } catch (webhookError) {
+      // If webhook service is not initialized or fails, log and continue
+      console.error('[ReputationService] Webhook service unavailable:', webhookError);
     }
 
     return entry;
