@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { ReputationController } from '../controllers/reputation.controller';
 import { registry } from '../docs/openapi-registry';
-import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
+import { updateReputationSchema, bulkReputationSchema } from '../modules/reputation/dto/reputation.dto';
 import { validateSchema } from '../middleware/validate.middleware';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { requireAuth, requirePermission } from '../middleware/authorization';
@@ -19,6 +19,17 @@ const reputationLimiter = createRateLimiter({
 router.use(reputationLimiter);
 
 // ── Authentication guard — all reputation routes require a valid JWT ──────────
+router.use(requireAuth);
+
+// POST /api/v1/reputation/bulk — batch create reputation ratings
+// Must be registered before the /:id routes to avoid being captured by the param route.
+router.post(
+  '/bulk',
+  requirePermission('reviews', 'create'),
+  validateSchema(bulkReputationSchema),
+  ReputationController.createBulkRatings
+);
+
 registry.registerPath({
   method: 'get',
   path: '/reputation/{id}',

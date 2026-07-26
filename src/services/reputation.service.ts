@@ -459,6 +459,53 @@ export class ReputationService {
   }
 
   /**
+   * Creates multiple reputation ratings in a single call.
+   *
+   * Each item is processed independently — a failure on one item does not
+   * prevent other items from being processed. The returned results array
+   * contains one entry per input item with per-item success/error status.
+   *
+   * @param items - Array of rating payloads to process.
+   * @returns Array of per-item results with index, success flag, and data/error.
+   */
+  public static createBulkRatings(
+    items: Array<{ reviewerId: string; targetId: string; rating: number; contextId: string; comment?: string }>
+  ): Array<{ index: number; success: boolean; data?: ReputationEntry; error?: { code: string; message: string } }> {
+    if (!this.repository) {
+      throw new Error('ReputationService not initialized. Call initialize() first.');
+    }
+
+    const results: Array<{ index: number; success: boolean; data?: ReputationEntry; error?: { code: string; message: string } }> = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      try {
+        const entry = this.createRating(
+          item.reviewerId,
+          item.targetId,
+          item.rating,
+          item.contextId,
+          item.comment
+        );
+        results.push({ index: i, success: true, data: entry });
+      } catch (error: unknown) {
+        const err = error instanceof Error ? error : new Error('Unknown error');
+        let code = 'internal_error';
+        if (err.constructor.name === 'ForbiddenError') code = 'forbidden';
+        else if (err.constructor.name === 'ConflictError') code = 'conflict';
+        else if (err.constructor.name === 'ValidationError') code = 'validation_error';
+        results.push({
+          index: i,
+          success: false,
+          error: { code, message: err.message },
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
    * Creates a SHA-256 hash of the comment for audit logging.
    * Prevents storing sensitive comment text in audit logs.
    */
