@@ -23,6 +23,7 @@ npm run dev             # config is validated on startup
 | `STELLAR_NETWORK_PASSPHRASE` | No | `Test SDF Network ; September 2015` | Network passphrase for transaction signing |
 | `SOROBAN_RPC_URL` | No | `https://soroban-testnet.stellar.org` | Soroban JSON-RPC endpoint |
 | `SOROBAN_CONTRACT_ID` | No | *(empty)* | Deployed escrow contract ID |
+| `REPUTATION_ENABLED` | No | `false` | Feature flag to enable/disable the reputation scoring system at runtime |
 
 ## How It Works
 

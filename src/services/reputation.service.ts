@@ -7,6 +7,20 @@ import { createHash } from 'crypto';
 import { validateEnv } from '../config/env.schema';
 
 /**
+ * Checks if the reputation system is enabled via the REPUTATION_ENABLED feature flag.
+ * @returns true if reputation is enabled, false otherwise
+ */
+function isReputationEnabled(): boolean {
+  try {
+    const config = validateEnv(process.env);
+    return config.REPUTATION_ENABLED;
+  } catch (error) {
+    // If config validation fails, default to disabled for safety
+    return false;
+  }
+}
+
+/**
  * Computes a recency-weighted reputation score using exponential time decay.
  *
  * Each rating's contribution is weighted by exp(-λ * ageInDays), where ageInDays
@@ -118,6 +132,11 @@ export class ReputationService {
     contextId: string,
     comment?: string
   ): ReputationEntry {
+    // Feature flag check - reputation must be enabled
+    if (!isReputationEnabled()) {
+      throw new ForbiddenError('Reputation system is currently disabled');
+    }
+
     // Ensure repository is initialized
     if (!this.repository) {
       throw new Error('ReputationService not initialized. Call initialize() first.');
@@ -232,6 +251,11 @@ export class ReputationService {
    * @returns ReputationProfile with aggregated stats and reviews
    */
   public static getProfile(targetId: string): ReputationProfile {
+    // Feature flag check - reputation must be enabled
+    if (!isReputationEnabled()) {
+      throw new ForbiddenError('Reputation system is currently disabled');
+    }
+
     // Ensure repository is initialized
     if (!this.repository) {
       throw new Error('ReputationService not initialized. Call initialize() first.');
