@@ -34,6 +34,14 @@ jest.mock('../middleware/authorization', () => ({
   requirePermission: () => (_req: Request, _res: Response, next: NextFunction) => next(),
 }));
 
+// ── Mutable feature flag mock ─────────────────────────────────────────────
+let mockDisputesEnabled = true;
+jest.mock('../config/features', () => ({
+  features: {
+    get disputesEnabled() { return mockDisputesEnabled; },
+  },
+}));
+
 // Import the actual disputes router AFTER the mock is registered
 import disputesRouter from './disputes.routes';
 
@@ -72,6 +80,10 @@ async function fireRequests(
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('Disputes endpoints — rate limiting', () => {
+  beforeEach(() => {
+    mockDisputesEnabled = true;
+  });
+
   // ── Within limit ────────────────────────────────────────────────────────
 
   describe('within rate limit', () => {
@@ -445,6 +457,79 @@ describe('Disputes endpoints — rate limiting', () => {
       expect(over.body.error.message).toBeTruthy();
       expect(over.body.error.message).not.toContain('Error');
       expect(over.body.error.message).not.toContain('at ');
+    });
+  });
+
+  // ── Feature flag ─────────────────────────────────────────────────────────
+
+  describe('feature flag', () => {
+    beforeEach(() => {
+      mockDisputesEnabled = true;
+    });
+
+    it('returns 200 when feature is enabled', async () => {
+      mockDisputesEnabled = true;
+      const app = buildApp();
+      const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.1');
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 404 with feature_disabled when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.2');
+      expect(res.status).toBe(404);
+      expect(res.body).toHaveProperty('error');
+      expect(res.body.error.code).toBe('feature_disabled');
+      expect(res.body.error.message).toBe('Disputes feature is currently disabled.');
+    });
+
+    it('returns 404 for POST when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.3')
+        .send({ contractId: testUuid, reason: 'test' });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('feature_disabled');
+    });
+
+    it('returns 404 for PATCH when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .patch(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '20.0.0.4')
+        .send({ status: 'resolved' });
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('feature_disabled');
+    });
+
+    it('returns 404 for DELETE when feature is disabled', async () => {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      const res = await request(app)
+        .delete(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '20.0.0.5');
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('feature_disabled');
+    });
+
+    it('uses "unknown" requestId when res.locals is missing', async () => {
+      mockDisputesEnabled = false;
+      const app = express();
+      app.use(express.json());
+      app.use('/api/v1/disputes', disputesRouter);
+      const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '20.0.0.6');
+      expect(res.status).toBe(404);
+      expect(res.body.error.requestId).toBe('unknown');
     });
   });
 

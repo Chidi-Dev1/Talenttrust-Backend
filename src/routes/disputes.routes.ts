@@ -18,7 +18,7 @@
  *  - Abuse guard hard-blocks repeat offenders.
  */
 
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
@@ -29,8 +29,23 @@ import {
   disputeParamsSchema,
   listDisputesQuerySchema,
 } from './disputes.validation';
+import { features } from '../config/features';
 
 const router = Router();
+
+// ── Feature flag — gate all disputes routes ───────────────────────────────────
+router.use((_req: Request, res: Response, next: NextFunction) => {
+  if (!features.disputesEnabled) {
+    return res.status(404).json({
+      error: {
+        code: 'feature_disabled',
+        message: 'Disputes feature is currently disabled.',
+        requestId: res.locals?.requestId || 'unknown',
+      },
+    });
+  }
+  next();
+});
 
 // ── Rate limiter (disputes tier) ──────────────────────────────────────────────
 const disputesLimiter = createRateLimiter(rateLimitConfig.disputes);
