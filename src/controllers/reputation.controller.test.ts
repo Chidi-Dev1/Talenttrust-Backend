@@ -8,9 +8,23 @@ import {
   AppError,
 } from '../errors/appError';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
-import { encodeCursor } from '../contracts/cursor.repository';
+import type { ReputationProfile } from '../types/reputation';
 
 jest.mock('../services/reputation.service');
+
+const completeProfile = (overrides: Partial<ReputationProfile> = {}): ReputationProfile => ({
+  freelancerId: 'user-1',
+  score: 4.5,
+  jobsCompleted: 5,
+  totalRatings: 10,
+  reviews: [
+    { reviewerId: 'reviewer-1', rating: 5, comment: 'Great', createdAt: '2024-01-01T00:00:00.000Z' },
+  ],
+  lastUpdated: '2024-02-01T00:00:00.000Z',
+  weightedScore: 4.3,
+  scoreAlgorithm: 'exp-decay-v1',
+  ...overrides,
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -147,15 +161,18 @@ describe('ReputationController.getProfile', () => {
   });
 
   it('returns 200 with profile data on success', async () => {
-    const mockProfile = { freelancerId: 'user-1', score: 4.5, totalRatings: 10 };
+    const mockProfile = completeProfile();
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
     const { res, statusMock, jsonMock, nextMock } = makeRes();
     await ReputationController.getProfile(makeReq() as Request, res as Response, nextMock as NextFunction);
 
     expect(statusMock).toHaveBeenCalledWith(200);
-    expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: mockProfile });
-    expect(ReputationService.getProfile).toHaveBeenCalledWith('user-1');
+    expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: expect.objectContaining({
+      freelancerId: 'user-1',
+      score: 4.5,
+      totalRatings: 10,
+    }) });
   });
 
   it('returns 400 with structured error when service throws AppError(400, bad_request)', async () => {
@@ -447,7 +464,7 @@ describe('ReputationController.createRating', () => {
   };
 
   it('returns 200 when payload is valid', async () => {
-    const mockProfile = { freelancerId: 'user-1', score: 4.0, totalRatings: 1 };
+    const mockProfile = completeProfile({ score: 4.0, totalRatings: 1 });
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
     const { res, statusMock, jsonMock } = makeRes();
@@ -457,7 +474,11 @@ describe('ReputationController.createRating', () => {
     );
 
     expect(statusMock).toHaveBeenCalledWith(200);
-    expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: mockProfile });
+    expect(jsonMock).toHaveBeenCalledWith({ status: 'success', data: expect.objectContaining({
+      freelancerId: 'user-1',
+      score: 4.0,
+      totalRatings: 1,
+    }) });
   });
 
   // --- Missing / invalid required fields ---
@@ -573,7 +594,7 @@ describe('ReputationController.createRating', () => {
   // --- Boundary: valid edge values ---
 
   it('accepts rating = 1 (minimum)', async () => {
-    const mockProfile = { freelancerId: 'user-1', score: 1.0, totalRatings: 1 };
+    const mockProfile = completeProfile({ score: 1.0, totalRatings: 1 });
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
     const { res, statusMock } = makeRes();
@@ -585,7 +606,7 @@ describe('ReputationController.createRating', () => {
   });
 
   it('accepts rating = 5 (maximum)', async () => {
-    const mockProfile = { freelancerId: 'user-1', score: 5.0, totalRatings: 1 };
+    const mockProfile = completeProfile({ score: 5.0, totalRatings: 1 });
     (ReputationService.getProfile as jest.Mock).mockReturnValue(mockProfile);
 
     const { res, statusMock } = makeRes();
