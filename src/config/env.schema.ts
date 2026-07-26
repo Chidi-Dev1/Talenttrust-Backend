@@ -60,6 +60,14 @@ export const envSchema = z.object({
     .transform((val) => val ? val.split(',') : ['deploy:*', '*', 'jobs:admin', 'jobs:*'])
     .pipe(z.array(z.string()).optional()),
 
+  // API-key management rate limiting
+  RL_API_KEYS_MAX: z.string().optional(),
+  RL_API_KEYS_WINDOW_MS: z.string().optional(),
+  RL_API_KEYS_ABUSE_THRESHOLD: z.string().optional(),
+  RL_API_KEYS_BLOCK_WINDOW_MS: z.string().optional(),
+  RL_API_KEYS_BLOCK_DURATION_MS: z.string().optional(),
+  RL_API_KEYS_MAX_BLOCK_MS: z.string().optional(),
+
   // Stellar/Soroban Configuration
   STELLAR_HORIZON_URL: z.string().url()
     .refine(val => {
