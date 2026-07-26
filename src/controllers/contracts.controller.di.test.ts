@@ -1,15 +1,12 @@
 
 import { Request, Response, NextFunction } from 'express';
-import { ContractsController, createContractsController } from './contracts.controller';
+import { createContractsController } from './contracts.controller';
 import { ContractBoundsError } from '../contracts/bounds';
 
-// Mock the pagination utils
-jest.mock('../utils/pagination', () => ({
-  parsePaginationQuery: jest.fn().mockReturnValue({
-    ok: true,
-    value: { page: 1, limit: 10, offset: 0 },
-  }),
-  applyPagination: jest.fn().mockImplementation((items) => items),
+// Mock cursor repository helpers
+jest.mock('../contracts/cursor.repository', () => ({
+  resolveCursorQueryParam: jest.fn().mockReturnValue({ ok: true, cursor: undefined }),
+  parseLimit: jest.fn().mockReturnValue(20),
 }));
 
 // Mock apiResponse helpers
@@ -19,6 +16,7 @@ jest.mock('../utils/apiResponse', () => ({
 }));
 
 import { ok, fail } from '../utils/apiResponse';
+import { resolveCursorQueryParam, parseLimit } from '../contracts/cursor.repository';
 
 function makeMockRes() {
   return {
@@ -43,6 +41,7 @@ const mockService = {
   getAllContracts: jest.fn(),
   getContractById: jest.fn(),
   createContract: jest.fn(),
+  getContractsPage: jest.fn(),
   updateContract: jest.fn(),
   deleteContract: jest.fn(),
   getContractStats: jest.fn(),
@@ -57,20 +56,33 @@ describe('ContractsController (DI)', () => {
   });
 
   describe('getContracts', () => {
-    it('returns paginated contracts', async () => {
-      mockService.getAllContracts.mockResolvedValueOnce([{ id: '1' }, { id: '2' }]);
+    it('returns paginated contracts using cursor pagination', async () => {
+      const fakePage = { data: [{ id: '1' }, { id: '2' }], nextCursor: null, hasNextPage: false, limit: 20 };
+      mockService.getContractsPage.mockResolvedValueOnce(fakePage);
       await controller.getContracts(makeMockReq(), makeMockRes(), next);
       expect(ok).toHaveBeenCalledWith(
         expect.anything(),
         [{ id: '1' }, { id: '2' }],
-        expect.objectContaining({ page: 1, limit: 10, total: 2 }),
+        { limit: 20, nextCursor: null, hasNextPage: false },
       );
     });
 
     it('calls next on service error', async () => {
-      mockService.getAllContracts.mockRejectedValueOnce(new Error('DB error'));
+      mockService.getContractsPage.mockRejectedValueOnce(new Error('DB error'));
       await controller.getContracts(makeMockReq(), makeMockRes(), next);
       expect(next).toHaveBeenCalledWith(expect.any(Error));
+    });
+
+    it('returns 400 for invalid cursor', async () => {
+      (resolveCursorQueryParam as jest.Mock).mockReturnValueOnce({ ok: false, message: 'bad cursor' });
+      await controller.getContracts(makeMockReq({ query: { cursor: 'bad' } }), makeMockRes(), next);
+      expect(fail).toHaveBeenCalledWith(expect.anything(), 'bad_request', 'bad cursor', 400);
+    });
+
+    it('returns 400 for invalid limit', async () => {
+      (parseLimit as jest.Mock).mockImplementationOnce(() => { throw new Error('limit too big'); });
+      await controller.getContracts(makeMockReq({ query: { limit: '999' } }), makeMockRes(), next);
+      expect(fail).toHaveBeenCalledWith(expect.anything(), 'bad_request', 'limit too big', 400);
     });
   });
 
