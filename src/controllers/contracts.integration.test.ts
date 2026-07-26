@@ -531,10 +531,10 @@ describe('GET /api/v1/contracts', () => {
         .post('/api/v1/contracts')
         .set(auth(adminToken()))
         .send(validPayload);
-      expect(res.status).toBe(400);
-      expect(res.body.error).toMatchObject({ code: 'bad_request' });
-    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({ code: 'bad_request' });
   });
+});
 
 afterAll(() => {
   closeDb();

@@ -83,15 +83,13 @@ router.get(
         eventType: filters.eventType,
         active: filters.active,
       };
-      const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit });
+      const page = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
       res.status(200).json({
         status: 'success',
-        data: {
-          data: list.data.map((subscription) => toWebhookSubscriptionResponseDto(subscription)),
-          nextCursor: list.nextCursor,
-          hasNextPage: list.hasNextPage,
-          limit: list.limit,
-        },
+        data: page.data.map(sanitizeSubscription),
+        nextCursor: page.nextCursor,
+        hasNextPage: page.hasNextPage,
+        limit: page.limit,
       });
     } catch (error) {
       next(error);

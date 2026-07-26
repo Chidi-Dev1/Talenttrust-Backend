@@ -3,12 +3,20 @@ import { ReputationController } from '../controllers/reputation.controller';
 import { registry } from '../docs/openapi-registry';
 import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
 import { validateSchema } from '../middleware/validate.middleware';
+import { createRateLimiter } from '../middleware/rateLimiter';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { rateLimitConfig } from '../config/rateLimit';
+import { authRateLimitKeyFn } from '../auth/rateLimitKey';
 import { z } from 'zod';
-import {
-  createReputationObservabilityMiddleware,
-  ReputationObservabilityOptions,
-} from '../observability/reputation-observability';
+
+const router = Router();
+const reputationLimiter = createRateLimiter({
+  ...rateLimitConfig.reputation,
+  keyFn: req => `reputation:${authRateLimitKeyFn(req)}`,
+});
+
+// Dedicated per-client limiter. Keys are namespaced because the store is shared.
+router.use(reputationLimiter);
 
 // ── Authentication guard — all reputation routes require a valid JWT ──────────
 registry.registerPath({

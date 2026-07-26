@@ -1,9 +1,6 @@
 import { z } from 'zod';
 import { registry } from '../../../docs/openapi-registry';
-import {
-  MAX_CONTRACT_AMOUNT_STROOPS,
-  MAX_CONTRACT_TERMS_LENGTH,
-} from '../../../contracts/bounds';
+import { MAX_CONTRACT_AMOUNT_STROOPS } from '../../../contracts/bounds';
 
 // ─── Field-level constants ────────────────────────────────────────────────────
 
@@ -161,7 +158,7 @@ export const createContractSchema = z
  * Schema for the body of PATCH /api/v1/contracts/:id.
  *
  * All fields are optional except `version` (OCC requirement).
- * `.strip()` silently drops undeclared keys.
+ * `.strict()` rejects undeclared keys instead of silently dropping them.
  */
 const updateContractBodySchema = z
   .object({

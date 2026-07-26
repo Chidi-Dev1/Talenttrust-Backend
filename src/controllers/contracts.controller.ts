@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
 import { resolveCursorQueryParam, parseLimit } from '../contracts/cursor.repository';
 import { CURSOR_DEFAULT_LIMIT } from '../contracts/cursor.types';
+import { parseLimit, resolveCursorQueryParam } from '../contracts/cursor.repository';
 import { NotFoundError } from '../errors/appError';
 import {
   CreateContractRequestDto,
@@ -45,10 +46,16 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const rawCursor = (req.query ?? {}).cursor;
-      const cursorResult = resolveCursorQueryParam(rawCursor);
-      if (!cursorResult.ok) {
-        fail(res, 'bad_request', cursorResult.message, 400);
+      if (req.query.page === undefined && (req.query.cursor !== undefined || req.query.limit !== undefined)) {
+        await this.getContractsCursor(req, res, next);
+        return;
+      }
+
+      const pagination = parsePaginationQuery(
+        (req.query ?? {}) as Record<string, unknown>,
+      );
+      if (!pagination.ok) {
+        fail(res, 'bad_request', pagination.error, 400);
         return;
       }
 
@@ -72,6 +79,42 @@ export class ContractsController {
         nextCursor: page.nextCursor,
         hasNextPage: page.hasNextPage,
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  public async getContractsCursor(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      let limit: number;
+      try {
+        limit = parseLimit(req.query.limit);
+      } catch (error) {
+        res.status(400).json({
+          status: 'error',
+          message: (error as Error).message,
+        });
+        return;
+      }
+
+      const cursor = resolveCursorQueryParam(req.query.cursor);
+      if (!cursor.ok) {
+        res.status(400).json({
+          status: 'error',
+          message: cursor.message,
+        });
+        return;
+      }
+
+      const page = await this.service.getContractsPage({
+        limit,
+        cursor: cursor.cursor,
+      });
+      res.status(200).json({ status: 'success', data: page });
     } catch (error) {
       next(error);
     }
@@ -203,32 +246,8 @@ export class ContractsController {
     ok(res, CONTRACT_BOUNDS);
   }
 
-  public async bulkMilestones(
-    req: Request,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> {
-    try {
-      const { operations } = req.body as { operations: BulkMilestoneOperationDto[] };
-
-      const results = await this.service.bulkMilestones(operations);
-
-      const succeeded = results.filter((r) => r.status === 'success').length;
-      const failed = results.filter((r) => r.status === 'error').length;
-
-      const response: BulkMilestonesResponseDto = {
-        results,
-        summary: {
-          total: results.length,
-          succeeded,
-          failed,
-        },
-      };
-
-      ok(res, response);
-    } catch (error) {
-      next(error);
-    }
+  public static getBounds(_req: Request, res: Response): void {
+    ok(res, CONTRACT_BOUNDS);
   }
 }
 
@@ -244,6 +263,6 @@ export function createContractsController(service: ContractsService) {
     deleteContract: controller.deleteContract.bind(controller),
     getContractStats: controller.getContractStats.bind(controller),
     getBounds: controller.getBounds.bind(controller),
-    bulkMilestones: controller.bulkMilestones.bind(controller),
+    getContractsCursor: controller.getContractsCursor.bind(controller),
   };
 }
