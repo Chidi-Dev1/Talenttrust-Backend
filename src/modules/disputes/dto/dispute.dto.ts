@@ -1,3 +1,5 @@
+export type DisputeStatus = 'open' | 'under_review' | 'resolved' | 'escalated';
+
 export interface CreateDisputeDto {
   contractId?: string;
   reason?: string;
@@ -12,6 +14,19 @@ export interface UpdateDisputeDto {
   freelancerReleaseAmount?: number;
 }
 
+/** Payload used by DisputesService.updateDispute / processBatch. */
+export interface UpdateDisputePayload {
+  status?: DisputeStatus;
+  resolution?: string;
+}
+
+/** Single operation in a batch dispute update. */
+export interface BatchDisputeOperation {
+  id: string;
+  status?: DisputeStatus;
+  resolution?: string;
+}
+
 export interface DisputeResponseDto {
   id: string;
   status: string;
@@ -24,6 +39,7 @@ export interface DisputeResponseDto {
   freelancerReleaseAmount?: number;
   createdAt?: string;
   updatedAt?: string;
+  deletedAt?: string | null;
 }
 
 export function mapToDisputeResponse(data: any): DisputeResponseDto {
@@ -41,6 +57,12 @@ export function mapToDisputeResponse(data: any): DisputeResponseDto {
   if (data?.freelancerReleaseAmount !== undefined) response.freelancerReleaseAmount = data.freelancerReleaseAmount;
   if (data?.createdAt !== undefined) response.createdAt = data.createdAt;
   if (data?.updatedAt !== undefined) response.updatedAt = data.updatedAt;
+  if (data?.deletedAt !== undefined) {
+    response.deletedAt =
+      data.deletedAt instanceof Date
+        ? data.deletedAt.toISOString()
+        : data.deletedAt;
+  }
 
   return response;
 }
