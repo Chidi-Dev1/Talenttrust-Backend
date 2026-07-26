@@ -18,9 +18,8 @@ import { bulkCreateContractsSchema } from '../modules/contracts/dto/bulk-operati
 import { validateUpdateContract } from '../modules/contracts/validation.middleware';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import { createCachedContractsService } from '../lib/contractsCacheInterceptor';
-import { loadCacheConfig } from '../config/cache';
-import { metricsService } from '../observability/registry';
+import { createRateLimiter } from '../middleware/rateLimiter';
+import { rateLimitConfig } from '../config/rateLimit';
 
 // ─── Inline route-param validator ────────────────────────────────────────────
 
@@ -56,7 +55,7 @@ function validateContractId(req: Request, res: Response, next: NextFunction): vo
   next();
 }
 
-// ─── Inline query-param validator ────────────────────────────────────────────
+  // ─── Inline query-param validator ────────────────────────────────────────────
 
 /**
  * Validates query parameters on GET /api/v1/contracts against contractQuerySchema.
@@ -136,6 +135,27 @@ function createContractsRouter(): Router {
     const contract = await repo.findById(req.params?.id ?? '');
     return contract ? contract.clientId : null;
   };
+
+  // ─── Rate limiter ───────────────────────────────────────────────────────────
+  // Per-client rate limiting using X-API-Key if available, otherwise client IP.
+  // Applied before auth to protect server resources from unauthenticated abuse.
+  const milestonesLimiter = createRateLimiter({
+    ...rateLimitConfig.milestones,
+    keyFn: (req) => {
+      const apiKey = req.headers['x-api-key'];
+      if (apiKey) {
+        const key = Array.isArray(apiKey) ? apiKey[0] : apiKey;
+        return `milestones:apikey:${key}`;
+      }
+      const xff = req.headers['x-forwarded-for'];
+      if (xff) {
+        const first = Array.isArray(xff) ? xff[0] : (xff as string).split(',')[0];
+        return `milestones:ip:${first.trim()}`;
+      }
+      return `milestones:ip:${req.ip ?? req.socket?.remoteAddress ?? 'unknown'}`;
+    },
+  });
+  router.use(milestonesLimiter);
 
   // GET /bounds — public-facing bounds, still requires auth
   /** @permission contracts:read — admin, client (ownOnly), freelancer (ownOnly) */
