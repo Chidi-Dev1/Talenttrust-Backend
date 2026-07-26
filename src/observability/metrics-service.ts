@@ -42,6 +42,10 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'webhook_dlq_depth',
   'webhook_rate_limit_tokens',
   'webhook_rate_limit_queue_depth',
+  'contract_cache_hits_total',
+  'contract_cache_misses_total',
+  'contract_cache_invalidations_total',
+  'contract_cache_entries',
 ] as const;
 
 export const REPUTATION_OPERATIONS = ['get_profile', 'create_rating'] as const;

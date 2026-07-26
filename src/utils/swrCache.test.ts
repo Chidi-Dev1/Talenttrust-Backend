@@ -446,6 +446,66 @@ describe('SWRCache with bounded LRU eviction (#416)', () => {
     expect(cache.size).toBe(2);
   });
 
+  describe('invalidate and clear', () => {
+    const opts = { ttlMs: 60_000, swrMs: 0 };
+
+    it('invalidate removes a cached entry so the next read calls the fetcher', async () => {
+      const fetcher = jest.fn().mockResolvedValue('v1');
+      const key = 'test:invalidate';
+
+      await cache.get(key, fetcher, opts);
+      expect(cache.size).toBe(1);
+
+      cache.invalidate(key);
+      expect(cache.size).toBe(0);
+
+      const result = await cache.get(key, () => Promise.resolve('v2'), opts);
+      expect(result).toEqual({ data: 'v2', degraded: false, source: 'upstream' });
+      expect(result.data).toBe('v2');
+    });
+
+    it('invalidate is a no-op for non-existent keys', async () => {
+      expect(() => cache.invalidate('does-not-exist')).not.toThrow();
+      expect(cache.size).toBe(0);
+    });
+
+    it('invalidate removes the entry and allows a fresh fetch on next read', async () => {
+      const key = 'test:active';
+      await cache.get(key, () => Promise.resolve('initial'), opts);
+      expect(cache.size).toBe(1);
+
+      cache.invalidate(key);
+      expect(cache.size).toBe(0);
+
+      // Ensure activeFetches is also cleaned up
+      const internal = cache as unknown as { activeFetches: Map<string, unknown> };
+      expect(internal.activeFetches.has(key)).toBe(false);
+
+      const newFetcher = jest.fn().mockResolvedValue('fresh');
+      const result = await cache.get(key, newFetcher, opts);
+      expect(result.source).toBe('upstream');
+      expect(result.data).toBe('fresh');
+      expect(newFetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('clear removes all entries and active fetches', async () => {
+      await cache.get('a', () => Promise.resolve('vA'), opts);
+      await cache.get('b', () => Promise.resolve('vB'), opts);
+      expect(cache.size).toBe(2);
+
+      cache.clear();
+      expect(cache.size).toBe(0);
+
+      const resultA = await cache.get('a', () => Promise.resolve('vA-new'), opts);
+      expect(resultA.source).toBe('upstream');
+    });
+
+    it('clear is safe on an already-empty cache', async () => {
+      expect(() => cache.clear()).not.toThrow();
+      expect(cache.size).toBe(0);
+    });
+  });
+
   it('does not corrupt in-flight revalidation when the cache entry is evicted mid-flight', async () => {
     cache = new SWRCache({ maxEntries: 2 });
 
