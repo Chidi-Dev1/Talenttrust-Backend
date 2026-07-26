@@ -6,8 +6,8 @@ import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.type
 import { ContractCacheService } from './contractCache.service';
 
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
-import { NotFoundError, MissingVersionError, InvalidVersionError } from '../errors/appError';
-import { MilestonesService } from './milestones.service';
+import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
+import { eventIngestionService } from '../events/registry';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -272,89 +272,10 @@ export class ContractsService {
   }
 
   /**
-   * Processes a batch of milestone operations, returning per-item results.
-   * Each operation is processed independently; a failure in one does not
-   * prevent subsequent operations from being attempted.
-   *
-   * @param operations - Validated bulk operations (create, update, delete).
-   * @returns Array of per-item results with index, status, and data or error.
+   * Retrieves contract event history by contract ID.
+   * @param id - UUID of the contract.
    */
-  public async bulkMilestones(
-    operations: BulkMilestoneOperationDto[],
-  ): Promise<
-    Array<{
-      index: number;
-      status: 'success' | 'error';
-      contractId?: string;
-      error?: { code: string; message: string };
-    }>
-  > {
-    const results: Array<{
-      index: number;
-      status: 'success' | 'error';
-      contractId?: string;
-      error?: { code: string; message: string };
-    }> = [];
-
-    for (let i = 0; i < operations.length; i++) {
-      const op = operations[i]!;
-      try {
-        switch (op.action) {
-          case 'create': {
-            const contract = await this.createContract({
-              title: op.title!,
-              description: op.description!,
-              clientId: op.clientId!,
-              budget: op.budget!,
-              ...(op.freelancerId !== undefined && { freelancerId: op.freelancerId }),
-              milestones: op.milestones!.map((m) => ({ ...m })),
-            });
-            results.push({ index: i, status: 'success', contractId: contract.id });
-            break;
-          }
-          case 'update': {
-            const contract = await this.updateContract(op.contractId!, {
-              version: op.version!,
-              milestones: op.milestones!.map((m) => ({ ...m })),
-            });
-            results.push({ index: i, status: 'success', contractId: contract.id });
-            break;
-          }
-          case 'delete': {
-            const contract = await this.updateContract(op.contractId!, {
-              version: op.version!,
-              milestones: [],
-            });
-            results.push({ index: i, status: 'success', contractId: contract.id });
-            break;
-          }
-        }
-      } catch (error) {
-        const code =
-          error instanceof ContractBoundsError
-            ? 'contract_bounds_error'
-            : error instanceof NotFoundError
-              ? 'not_found'
-              : error instanceof VersionConflictError
-                ? 'ERR_CONFLICT'
-                : 'internal_error';
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        results.push({ index: i, status: 'error', error: { code, message } });
-      }
-    }
-
-    return results;
+  public async getContractHistory(id: string) {
+    return eventIngestionService.getContractHistory(id);
   }
-}
-
-/** Reduces a Contract to the fields relevant for an audit before/after summary. */
-function summarizeContract(contract: Contract): Record<string, unknown> {
-  return {
-    title: contract.title,
-    clientId: contract.clientId,
-    freelancerId: contract.freelancerId,
-    amount: contract.amount,
-    status: contract.status,
-    version: contract.version,
-  };
 }

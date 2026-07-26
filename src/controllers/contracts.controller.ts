@@ -253,8 +253,21 @@ export class ContractsController {
     }
   }
 
-  public static getBounds(_req: Request, res: Response): void {
-    ok(res, CONTRACT_BOUNDS);
+  public getBounds(_req: Request, res: Response): void {
+    ok(res, this.service.getBounds());
+  }
+
+  public async getContractHistory(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const history = await this.service.getContractHistory(req.params.id!);
+      res.status(200).json(history);
+    } catch (error) {
+      next(error);
+    }
   }
 
   public getBounds(req: Request, res: Response): void {
@@ -275,6 +288,6 @@ export function createContractsController(service: ContractsService) {
     deleteContract: controller.deleteContract.bind(controller),
     getContractStats: controller.getContractStats.bind(controller),
     getBounds: controller.getBounds.bind(controller),
-    getContractsCursor: controller.getContractsCursor.bind(controller),
+    getContractHistory: controller.getContractHistory.bind(controller),
   };
 }

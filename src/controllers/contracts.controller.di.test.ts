@@ -45,6 +45,8 @@ const mockService = {
   updateContract: jest.fn(),
   deleteContract: jest.fn(),
   getContractStats: jest.fn(),
+  getContractHistory: jest.fn(),
+  getBounds: jest.fn(),
 };
 
 describe('ContractsController (DI)', () => {
@@ -203,6 +205,32 @@ describe('ContractsController (DI)', () => {
     it('returns CONTRACT_BOUNDS', () => {
       controller.getBounds(makeMockReq(), makeMockRes());
       expect(ok).toHaveBeenCalled();
+    });
+  });
+
+  describe('getContractHistory', () => {
+    it('delegates to service.getContractHistory and returns 200 json', async () => {
+      const history = [{ id: 'evt-1' }];
+      mockService.getContractHistory.mockResolvedValueOnce(history);
+      const res = makeMockRes();
+      await controller.getContractHistory(
+        makeMockReq({ params: { id: 'c-1' } }),
+        res,
+        next,
+      );
+      expect(mockService.getContractHistory).toHaveBeenCalledWith('c-1');
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(history);
+    });
+
+    it('calls next on service error', async () => {
+      mockService.getContractHistory.mockRejectedValueOnce(new Error('History error'));
+      await controller.getContractHistory(
+        makeMockReq({ params: { id: 'c-1' } }),
+        makeMockRes(),
+        next,
+      );
+      expect(next).toHaveBeenCalledWith(expect.any(Error));
     });
   });
 

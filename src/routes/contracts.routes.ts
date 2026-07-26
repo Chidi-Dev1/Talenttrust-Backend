@@ -16,7 +16,6 @@ import {
 } from '../modules/contracts/dto/contract.dto';
 import { bulkCreateContractsSchema } from '../modules/contracts/dto/bulk-operations.dto';
 import { validateUpdateContract } from '../modules/contracts/validation.middleware';
-import { eventIngestionService } from '../events/registry';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
 import { requireAuth, requirePermission } from '../middleware/authorization';
 import { createCachedContractsService } from '../lib/contractsCacheInterceptor';
@@ -157,14 +156,7 @@ function createContractsRouter(): Router {
   );
 
   // GET /:id/history — fetch contract event history (param validation first)
-  router.get('/:id/history', validateContractId, async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const history = await eventIngestionService.getContractHistory(req.params.id);
-      res.status(200).json(history);
-    } catch (error) {
-      next(error);
-    }
-  });
+  router.get('/:id/history', validateContractId, controller.getContractHistory);
 
   // GET /:id — fetch single contract (param validation before auth to reject clearly invalid IDs)
   /** @permission contracts:read — admin, client (ownOnly), freelancer (ownOnly) */
