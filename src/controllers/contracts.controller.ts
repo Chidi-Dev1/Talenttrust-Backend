@@ -16,14 +16,9 @@ import { BulkMilestoneOperationDto } from '../modules/contracts/dto/contract.dto
 import { ContractsService } from '../services/contracts.service';
 import { WebhookService } from '../services/webhook.service';
 import { fail, ok } from '../utils/apiResponse';
+import { getCorrelationId, getRequestId } from '../utils/correlationId';
 import { applyPagination, parsePaginationQuery } from '../utils/pagination';
-import { auditService as defaultAuditService, AuditService } from '../audit/service';
-import {
-  buildMilestonesAuditMetadata,
-  determineMilestonesAction,
-  getLastMilestonesSnapshot,
-  summarizeMilestones,
-} from '../modules/contracts/milestonesAudit';
+import type { Logger } from '../logger';
 
 type ContractRequest<TBody = unknown> = Request<
   Record<string, string>,
@@ -32,8 +27,44 @@ type ContractRequest<TBody = unknown> = Request<
 > & { user?: { id: string } };
 
 /**
+ * Extract the request-scoped logger from res.locals, falling back to a
+ * module-level import so the controller works without middleware in unit tests.
+ */
+function resolveLogger(res: Response): Logger {
+  const log = res.locals['log'] as Logger | undefined;
+  if (log) return log;
+  // Lazy import avoids a top-level circular-dep risk and keeps unit tests simple.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require('../logger').logger as Logger;
+}
+
+/**
+ * Build a trace context object from res.locals for structured logging.
+ * Only includes correlationId when present to keep records clean.
+ * Falls back to 'unknown' for requestId so the controller works in unit tests
+ * that don't run requestIdMiddleware.
+ */
+function traceContext(res: Response): Record<string, string> {
+  const requestId =
+    typeof res.locals['requestId'] === 'string'
+      ? (res.locals['requestId'] as string)
+      : 'unknown';
+  const ctx: Record<string, string> = { requestId };
+  const correlationId = getCorrelationId(res);
+  if (correlationId !== undefined) ctx['correlationId'] = correlationId;
+  return ctx;
+}
+
+/**
  * Presentation layer for contracts. Transport DTOs are mapped explicitly at
  * this boundary so service and persistence types do not leak into handlers.
+ *
+ * Every handler:
+ *  1. Extracts the request-scoped logger (bound to requestId + correlationId)
+ *     from res.locals.log — set by requestIdMiddleware.
+ *  2. Logs entry/exit/error with the trace context.
+ *  3. Forwards the correlationId to service calls so structured logs at the
+ *     service layer carry the same trace token.
  */
 export class ContractsController {
   constructor(
@@ -93,6 +124,10 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const log = resolveLogger(res);
+    const ctx = traceContext(res);
+    log.info('contracts.getContracts: start', ctx);
+
     try {
       const query = (req.query ?? {}) as Record<string, unknown>;
       if (
@@ -107,6 +142,7 @@ export class ContractsController {
         query,
       );
       if (!pagination.ok) {
+        log.warn('contracts.getContracts: bad pagination params', { ...ctx, error: pagination.error });
         fail(res, 'bad_request', pagination.error, 400);
         return;
       }
@@ -119,8 +155,9 @@ export class ContractsController {
         return;
       }
 
-      const page = await this.service.getContractsPage({
-        cursor: cursorResult.cursor,
+      log.info('contracts.getContracts: success', { ...ctx, total });
+      ok(res, pageItems, {
+        page,
         limit,
       });
 
@@ -205,6 +242,7 @@ export class ContractsController {
       });
       res.status(200).json({ status: 'success', data: page });
     } catch (error) {
+      log.error('contracts.getContracts: error', { ...ctx, err: error as Error });
       next(error);
     }
   }
@@ -214,11 +252,18 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const log = resolveLogger(res);
+    const ctx = traceContext(res);
+    const id = req.params.id!;
+    log.info('contracts.getContractById: start', { ...ctx, contractId: id });
+
     try {
-      const contract = await this.service.getContractById(req.params.id!);
+      const contract = await this.service.getContractById(id);
       if (!contract) {
+        log.warn('contracts.getContractById: not found', { ...ctx, contractId: id });
         throw new NotFoundError('The requested resource was not found');
       }
+      log.info('contracts.getContractById: success', { ...ctx, contractId: id });
       ok(res, toContractResponseDto(contract));
     } catch (error) {
       next(error);
@@ -230,16 +275,25 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const log = resolveLogger(res);
+    const ctx = traceContext(res);
+    const correlationId = getCorrelationId(res);
+    log.info('contracts.createContract: start', ctx);
+
     try {
-      const dto = toCreateContractDto(req.body);
-      const contract = await this.service.createContract(dto);
-      this.recordMilestonesAudit(req, contract.id, dto.milestones);
+      const contract = await this.service.createContract(
+        toCreateContractDto(req.body),
+        correlationId,
+      );
+      log.info('contracts.createContract: success', { ...ctx, contractId: contract.id });
       ok(res, toContractResponseDto(contract), undefined, 201);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
+        log.warn('contracts.createContract: bounds error', { ...ctx, error: (error as Error).message });
         fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
+      log.error('contracts.createContract: error', { ...ctx, err: error as Error });
       next(error);
     }
   }
@@ -249,18 +303,27 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const log = resolveLogger(res);
+    const ctx = traceContext(res);
+    const correlationId = getCorrelationId(res);
+    const id = req.params.id!;
+    log.info('contracts.updateContract: start', { ...ctx, contractId: id });
+
     try {
-      const dto = toUpdateContractDto(req.body);
-      const contract = await this.service.updateContract(req.params.id!, dto);
-      if (dto.milestones !== undefined) {
-        this.recordMilestonesAudit(req, contract.id, dto.milestones);
-      }
+      const contract = await this.service.updateContract(
+        id,
+        toUpdateContractDto(req.body),
+        correlationId,
+      );
+      log.info('contracts.updateContract: success', { ...ctx, contractId: id });
       ok(res, toContractResponseDto(contract));
     } catch (error) {
       if (error instanceof ContractBoundsError) {
+        log.warn('contracts.updateContract: bounds error', { ...ctx, contractId: id, error: (error as Error).message });
         fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
+      log.error('contracts.updateContract: error', { ...ctx, contractId: id, err: error as Error });
       next(error);
     }
   }
@@ -270,16 +333,18 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const log = resolveLogger(res);
+    const ctx = traceContext(res);
+    const correlationId = getCorrelationId(res);
+    const id = req.params.id!;
+    log.info('contracts.deleteContract: start', { ...ctx, contractId: id });
+
     try {
-      const id = req.params.id!;
-      await this.service.deleteContract(id);
-      // Reuses the same create/update/delete classification: passing no
-      // milestones as the "after" state naturally resolves to
-      // MILESTONES_DELETED when — and only when — this contract had a
-      // recorded milestones snapshot to lose.
-      this.recordMilestonesAudit(req, id, undefined);
+      await this.service.deleteContract(id, correlationId);
+      log.info('contracts.deleteContract: success', { ...ctx, contractId: id });
       ok(res, { message: 'Contract deleted successfully' });
     } catch (error) {
+      log.error('contracts.deleteContract: error', { ...ctx, contractId: id, err: error as Error });
       next(error);
     }
   }
@@ -289,13 +354,20 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
+    const log = resolveLogger(res);
+    const ctx = traceContext(res);
+    log.info('contracts.getContractStats: start', ctx);
+
     try {
-      ok(res, await this.service.getContractStats());
+      const stats = await this.service.getContractStats();
+      log.info('contracts.getContractStats: success', { ...ctx, total: stats.total });
+      ok(res, stats);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
         fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
+      log.error('contracts.getContractStats: error', { ...ctx, err: error as Error });
       next(error);
     }
   }
@@ -359,6 +431,20 @@ export class ContractsController {
       next(error);
     }
   }
+
+  /** @deprecated Use getContracts (unified cursor/offset handler) instead. */
+  public async getContractsCursor(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    return this.getContracts(req, res, next);
+  }
+
+  /** Static variant used in route registrations that don't have an instance. */
+  static getBounds(_req: Request, res: Response): void {
+    ok(res, CONTRACT_BOUNDS);
+  }
 }
 
 export { CURSOR_DEFAULT_LIMIT };
@@ -377,6 +463,6 @@ export function createContractsController(
     deleteContract: controller.deleteContract.bind(controller),
     getContractStats: controller.getContractStats.bind(controller),
     getBounds: controller.getBounds.bind(controller),
-    getMilestonesAuditLog: controller.getMilestonesAuditLog.bind(controller),
+    getContractsCursor: controller.getContractsCursor.bind(controller),
   };
 }

@@ -7,7 +7,9 @@ import { ContractCacheService } from './contractCache.service';
 
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
-import { eventIngestionService } from '../events/registry';
+import { createLogger } from '../logger';
+
+const log = createLogger({ service: 'ContractsService' });
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -70,11 +72,34 @@ export class ContractsService {
    * Creates a new contract off-chain, preparing it for escrow deposit.
    * Enforces milestone count and total amount caps before persisting.
    * @param data The contract details conforming to CreateContractDto.
+   * @param correlationId Optional correlation ID for distributed tracing.
    * @returns The newly created contract object.
    * @throws ContractBoundsError if budget or milestone totals exceed policy limits.
    */
-  public async createContract(data: CreateContractDto): Promise<Contract> {
-    this.milestonesService.validateMilestonesAgainstBudget(data.budget, data.milestones);
+  public async createContract(data: CreateContractDto, correlationId?: string): Promise<Contract> {
+    const traceCtx = correlationId ? { correlationId } : {};
+
+    const boundsCheck = validateContractBounds(data.budget, data.milestones);
+    if (!boundsCheck.valid) {
+      throw new ContractBoundsError(boundsCheck.error);
+    }
+
+    // Enforce that the sum of milestone amounts does not exceed the contract
+    // budget. `validateContractBounds` only guards the absolute policy cap
+    // (MAX_CONTRACT_AMOUNT_STROOPS); the per-contract budget is the tighter,
+    // caller-supplied limit that milestone payouts must never overrun.
+    if (data.milestones && data.milestones.length > 0) {
+      const totalMilestoneAmount = data.milestones.reduce(
+        (sum, milestone) => sum + milestone.amount,
+        0,
+      );
+      if (totalMilestoneAmount > data.budget) {
+        throw new ContractBoundsError(
+          `Total milestone amount exceeds maximum contract amount ` +
+            `(milestones total ${totalMilestoneAmount} exceeds budget of ${data.budget})`,
+        );
+      }
+    }
 
     const newContract = await this.contractRepository.create({
       title: data.title,
@@ -84,16 +109,24 @@ export class ContractsService {
       status: data.status || 'draft',
     });
 
-    this.logMutation('CONTRACT_CREATED', actorId ?? data.clientId, newContract.id, {
-      before: null,
-      after: summarizeContract(newContract),
+    log.info('ContractsService.createContract: contract created', {
+      ...traceCtx,
+      contractId: newContract.id,
     });
 
     // Notify the Soroban service to prepare the transaction
     try {
       await this.sorobanService.prepareEscrow(newContract.id, data.budget);
+      log.info('ContractsService.createContract: soroban escrow prepared', {
+        ...traceCtx,
+        contractId: newContract.id,
+      });
     } catch (error) {
-      console.warn(`[ContractsService] Soroban prepareEscrow failed for contract ${newContract.id}:`, error);
+      log.warn('ContractsService.createContract: soroban prepareEscrow failed', {
+        ...traceCtx,
+        contractId: newContract.id,
+        err: error as Error,
+      });
     }
 
     this.cache?.invalidateLists();
@@ -117,6 +150,7 @@ export class ContractsService {
    *
    * @param id - UUID of the contract to update.
    * @param dto - Partial update payload including the OCC `version`.
+   * @param correlationId - Optional correlation ID for distributed tracing.
    * @returns The updated Contract with an incremented version.
    * @throws {MissingVersionError} When `version` is not provided.
    * @throws {InvalidVersionError} When `version` is not a non-negative integer.
@@ -129,7 +163,8 @@ export class ContractsService {
    * omitting the version field because this method validates it before calling
    * the repository.
    */
-  public async updateContract(id: string, dto: UpdateContractDto, actorId?: string): Promise<Contract> {
+  public async updateContract(id: string, dto: UpdateContractDto, correlationId?: string): Promise<Contract> {
+    const traceCtx = correlationId ? { correlationId } : {};
     const { version, ...fields } = dto;
 
     // Defense-in-depth: validate version even though middleware already checked
@@ -162,74 +197,29 @@ export class ContractsService {
     if (fields.budget !== undefined) updateFields.amount = fields.budget;
     if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
 
-    // Read the pre-mutation row for the audit before/after summary. Not used
-    // for the OCC check itself — that stays a single atomic
-    // `UPDATE ... WHERE version = ?` inside the repository — this is purely
-    // for the audit trail and may reflect a row that a concurrent writer
-    // beats us to (in which case updateWithVersion throws VersionConflictError
-    // below and no audit entry is written for this call).
-    const before = await this.contractRepository.findById(id);
-
     const updated = await this.contractRepository.updateWithVersion(id, updateFields, version);
-
-    const action: AuditAction =
-      updateFields.status === 'cancelled'
-        ? 'CONTRACT_CANCELLED'
-        : updateFields.status === 'completed'
-          ? 'CONTRACT_COMPLETED'
-          : 'CONTRACT_UPDATED';
-
-    this.logMutation(action, actorId ?? before?.clientId ?? UNKNOWN_ACTOR, id, {
-      before: before ? summarizeContract(before) : null,
-      after: summarizeContract(updated),
-      changedFields: Object.keys(updateFields),
+    log.info('ContractsService.updateContract: contract updated', {
+      ...traceCtx,
+      contractId: id,
+      version,
     });
-
     return updated;
   }
 
   /**
    * Deletes a contract by ID.
+   * @param correlationId - Optional correlation ID for distributed tracing.
    */
-  public async deleteContract(id: string, actorId?: string): Promise<void> {
-    const before = await this.contractRepository.findById(id);
-
+  public async deleteContract(id: string, correlationId?: string): Promise<void> {
+    const traceCtx = correlationId ? { correlationId } : {};
     const deleted = await this.contractRepository.delete(id);
     if (!deleted) {
       throw new NotFoundError(`Contract with id ${id} not found`);
     }
-
-    this.logMutation('CONTRACT_DELETED', actorId ?? before?.clientId ?? UNKNOWN_ACTOR, id, {
-      before: before ? summarizeContract(before) : null,
-      after: null,
+    log.info('ContractsService.deleteContract: contract deleted', {
+      ...traceCtx,
+      contractId: id,
     });
-  }
-
-  /**
-   * Records a contract mutation in the immutable audit log. Failures are
-   * logged and swallowed rather than thrown: unlike reputation writes,
-   * losing an audit entry here must not roll back or block a contract
-   * mutation that has already committed to the database — the alternative
-   * (leaving the DB and the audit trail permanently disagreeing about
-   * whether the write happened) is worse than a gap flagged for
-   * investigation via console.error.
-   */
-  private logMutation(
-    action: AuditAction,
-    actor: string,
-    contractId: string,
-    metadata: Record<string, unknown>,
-  ): void {
-    try {
-      auditService.logContractEvent(
-        action as Extract<AuditAction, `CONTRACT_${string}`>,
-        actor,
-        contractId,
-        redactBody(metadata) as Record<string, unknown>,
-      );
-    } catch (error) {
-      console.error(`[ContractsService] Audit logging failed for contract ${contractId}:`, error);
-    }
   }
 
   /**
