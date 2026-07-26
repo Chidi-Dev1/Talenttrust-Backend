@@ -10,15 +10,8 @@ import {
   toUpdateContractDto,
 } from '../modules/contracts/dto/contracts-boundary.dto';
 import { ContractsService } from '../services/contracts.service';
-import { WebhookService } from '../services/webhook.service';
 import { fail, ok } from '../utils/apiResponse';
 import { applyPagination, parsePaginationQuery } from '../utils/pagination';
-
-export const MILESTONE_EVENTS = {
-  CREATED: 'milestone.created',
-  UPDATED: 'milestone.updated',
-  DELETED: 'milestone.deleted',
-} as const;
 
 type ContractRequest<TBody = unknown> = Request<
   Record<string, string>,
@@ -31,11 +24,7 @@ type ContractRequest<TBody = unknown> = Request<
  * this boundary so service and persistence types do not leak into handlers.
  */
 export class ContractsController {
-  private readonly webhookService: WebhookService;
-
-  constructor(private readonly service: ContractsService) {
-    this.webhookService = new WebhookService();
-  }
+  constructor(private readonly service: ContractsService) {}
 
   public async getContracts(
     req: Request,
@@ -93,20 +82,9 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const dto = toCreateContractDto(req.body);
-      const contract = await this.service.createContract(dto);
-
-      // Fire-and-forget milestone webhook if milestones are present
-      if (dto.milestones && dto.milestones.length > 0) {
-        this.webhookService
-          .trigger(
-            MILESTONE_EVENTS.CREATED,
-            { contractId: contract.id, milestones: dto.milestones },
-            req.headers['x-correlation-id'] as string | undefined,
-          )
-          .catch(() => { /* webhook delivery errors are logged by the service */ });
-      }
-
+      const contract = await this.service.createContract(
+        toCreateContractDto(req.body),
+      );
       ok(res, toContractResponseDto(contract), undefined, 201);
     } catch (error) {
       if (error instanceof ContractBoundsError) {
@@ -123,23 +101,10 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const dto = toUpdateContractDto(req.body);
       const contract = await this.service.updateContract(
         req.params.id!,
-        dto,
+        toUpdateContractDto(req.body),
       );
-
-      // Fire-and-forget milestone webhook if milestones are being updated
-      if (dto.milestones) {
-        this.webhookService
-          .trigger(
-            MILESTONE_EVENTS.UPDATED,
-            { contractId: contract.id, milestones: dto.milestones },
-            req.headers['x-correlation-id'] as string | undefined,
-          )
-          .catch(() => { /* webhook delivery errors are logged by the service */ });
-      }
-
       ok(res, toContractResponseDto(contract));
     } catch (error) {
       if (error instanceof ContractBoundsError) {
@@ -156,21 +121,7 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const contract = await this.service.getContractById(req.params.id!);
-
       await this.service.deleteContract(req.params.id!);
-
-      // Fire-and-forget milestone webhook if the deleted contract had milestones
-      if (contract && contract.milestones && contract.milestones.length > 0) {
-        this.webhookService
-          .trigger(
-            MILESTONE_EVENTS.DELETED,
-            { contractId: contract.id },
-            req.headers['x-correlation-id'] as string | undefined,
-          )
-          .catch(() => { /* webhook delivery errors are logged by the service */ });
-      }
-
       ok(res, { message: 'Contract deleted successfully' });
     } catch (error) {
       next(error);
