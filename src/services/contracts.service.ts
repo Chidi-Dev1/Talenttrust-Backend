@@ -1,4 +1,4 @@
-import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
+import { CreateContractDto, UpdateContractDto, BulkMilestoneOperationDto } from '../modules/contracts/dto/contract.dto';
 import { Contract } from '../db/types';
 import type { IContractRepository } from '../repositories/contractRepository';
 import { SorobanService } from './soroban.service';
@@ -200,5 +200,80 @@ export class ContractsService {
       maxMilestones: MAX_MILESTONES_PER_CONTRACT,
       maxAmount: MAX_CONTRACT_AMOUNT_STROOPS,
     };
+  }
+
+  /**
+   * Processes a batch of milestone operations, returning per-item results.
+   * Each operation is processed independently; a failure in one does not
+   * prevent subsequent operations from being attempted.
+   *
+   * @param operations - Validated bulk operations (create, update, delete).
+   * @returns Array of per-item results with index, status, and data or error.
+   */
+  public async bulkMilestones(
+    operations: BulkMilestoneOperationDto[],
+  ): Promise<
+    Array<{
+      index: number;
+      status: 'success' | 'error';
+      contractId?: string;
+      error?: { code: string; message: string };
+    }>
+  > {
+    const results: Array<{
+      index: number;
+      status: 'success' | 'error';
+      contractId?: string;
+      error?: { code: string; message: string };
+    }> = [];
+
+    for (let i = 0; i < operations.length; i++) {
+      const op = operations[i]!;
+      try {
+        switch (op.action) {
+          case 'create': {
+            const contract = await this.createContract({
+              title: op.title!,
+              description: op.description!,
+              clientId: op.clientId!,
+              budget: op.budget!,
+              ...(op.freelancerId !== undefined && { freelancerId: op.freelancerId }),
+              milestones: op.milestones!.map((m) => ({ ...m })),
+            });
+            results.push({ index: i, status: 'success', contractId: contract.id });
+            break;
+          }
+          case 'update': {
+            const contract = await this.updateContract(op.contractId!, {
+              version: op.version!,
+              milestones: op.milestones!.map((m) => ({ ...m })),
+            });
+            results.push({ index: i, status: 'success', contractId: contract.id });
+            break;
+          }
+          case 'delete': {
+            const contract = await this.updateContract(op.contractId!, {
+              version: op.version!,
+              milestones: [],
+            });
+            results.push({ index: i, status: 'success', contractId: contract.id });
+            break;
+          }
+        }
+      } catch (error) {
+        const code =
+          error instanceof ContractBoundsError
+            ? 'contract_bounds_error'
+            : error instanceof NotFoundError
+              ? 'not_found'
+              : error instanceof VersionConflictError
+                ? 'ERR_CONFLICT'
+                : 'internal_error';
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        results.push({ index: i, status: 'error', error: { code, message } });
+      }
+    }
+
+    return results;
   }
 }

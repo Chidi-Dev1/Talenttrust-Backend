@@ -6,10 +6,12 @@ import { NotFoundError } from '../errors/appError';
 import {
   CreateContractRequestDto,
   UpdateContractRequestDto,
+  BulkMilestonesResponseDto,
   toContractResponseDto,
   toCreateContractDto,
   toUpdateContractDto,
 } from '../modules/contracts/dto/contracts-boundary.dto';
+import { BulkMilestoneOperationDto } from '../modules/contracts/dto/contract.dto';
 import { ContractsService } from '../services/contracts.service';
 import { WebhookService } from '../services/webhook.service';
 import { fail, ok } from '../utils/apiResponse';
@@ -200,6 +202,34 @@ export class ContractsController {
   public getBounds(_req: Request, res: Response): void {
     ok(res, CONTRACT_BOUNDS);
   }
+
+  public async bulkMilestones(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const { operations } = req.body as { operations: BulkMilestoneOperationDto[] };
+
+      const results = await this.service.bulkMilestones(operations);
+
+      const succeeded = results.filter((r) => r.status === 'success').length;
+      const failed = results.filter((r) => r.status === 'error').length;
+
+      const response: BulkMilestonesResponseDto = {
+        results,
+        summary: {
+          total: results.length,
+          succeeded,
+          failed,
+        },
+      };
+
+      ok(res, response);
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export { CURSOR_DEFAULT_LIMIT };
@@ -214,5 +244,6 @@ export function createContractsController(service: ContractsService) {
     deleteContract: controller.deleteContract.bind(controller),
     getContractStats: controller.getContractStats.bind(controller),
     getBounds: controller.getBounds.bind(controller),
+    bulkMilestones: controller.bulkMilestones.bind(controller),
   };
 }
