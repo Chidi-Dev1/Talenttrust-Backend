@@ -380,8 +380,10 @@ describe('GET /api/v1/webhook-subscriptions', () => {
     const res = await request(app).get(BASE).set(auth(adminToken()));
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('success');
-    expect(Array.isArray(res.body.data)).toBe(true);
-    expect(res.body.data).toHaveLength(0);
+    expect(Array.isArray(res.body.data.data)).toBe(true);
+    expect(res.body.data.data).toHaveLength(0);
+    expect(res.body.data.nextCursor).toBeNull();
+    expect(res.body.data.hasNextPage).toBe(false);
   });
 
   it('returns 200 with all subscriptions', async () => {
@@ -390,7 +392,7 @@ describe('GET /api/v1/webhook-subscriptions', () => {
 
     const res = await request(app).get(BASE).set(auth(adminToken()));
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(2);
+    expect(res.body.data.data).toHaveLength(2);
   });
 
   it('filters by eventType', async () => {
@@ -402,8 +404,8 @@ describe('GET /api/v1/webhook-subscriptions', () => {
       .set(auth(adminToken()))
       .query({ eventType: 'contract.created' });
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(1);
-    expect(res.body.data[0].eventType).toBe('contract.created');
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].eventType).toBe('contract.created');
   });
 
   it('filters by active=false', async () => {
@@ -421,8 +423,8 @@ describe('GET /api/v1/webhook-subscriptions', () => {
       .set(auth(adminToken()))
       .query({ active: 'false' });
     expect(res.status).toBe(200);
-    expect(res.body.data).toHaveLength(1);
-    expect(res.body.data[0].active).toBe(false);
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].active).toBe(false);
   });
 
   it('filters by active=true', async () => {
@@ -438,7 +440,73 @@ describe('GET /api/v1/webhook-subscriptions', () => {
       .set(auth(adminToken()))
       .query({ active: 'true' });
     expect(res.status).toBe(200);
-    expect(res.body.data.every((s: { active: boolean }) => s.active)).toBe(true);
+    expect(res.body.data.data.every((s: { active: boolean }) => s.active)).toBe(true);
+  });
+
+  it('respects limit parameter', async () => {
+    await createSub({ eventType: 'cursor.test', url: 'https://example.com/c1' });
+    await createSub({ eventType: 'cursor.test', url: 'https://example.com/c2' });
+
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 1, eventType: 'cursor.test' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.limit).toBe(1);
+    expect(res.body.data.hasNextPage).toBe(true);
+    expect(res.body.data.nextCursor).toBeTruthy();
+  });
+
+  it('paginates across multiple pages', async () => {
+    for (let i = 0; i < 5; i++) {
+      await createSub({ eventType: 'cursor.test', url: `https://example.com/cursor-${i}` });
+    }
+
+    const page1 = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 2, eventType: 'cursor.test' });
+    expect(page1.status).toBe(200);
+    expect(page1.body.data.data).toHaveLength(2);
+    expect(page1.body.data.hasNextPage).toBe(true);
+    expect(page1.body.data.nextCursor).toBeTruthy();
+
+    const page2 = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 2, cursor: page1.body.data.nextCursor, eventType: 'cursor.test' });
+    expect(page2.status).toBe(200);
+    expect(page2.body.data.data).toHaveLength(2);
+    expect(page2.body.data.hasNextPage).toBe(true);
+    expect(page2.body.data.nextCursor).toBeTruthy();
+
+    const page3 = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 2, cursor: page2.body.data.nextCursor, eventType: 'cursor.test' });
+    expect(page3.status).toBe(200);
+    expect(page3.body.data.data).toHaveLength(1);
+    expect(page3.body.data.hasNextPage).toBe(false);
+    expect(page3.body.data.nextCursor).toBeNull();
+  });
+
+  it('rejects invalid cursor with 400', async () => {
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ cursor: 'invalid-cursor-value' });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('invalid_cursor');
+  });
+
+  it('rejects limit exceeding maximum', async () => {
+    const res = await request(app)
+      .get(BASE)
+      .set(auth(adminToken()))
+      .query({ limit: 200 });
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('validation_error');
   });
 
   // ── Validation failures ─────────────────────────────────────────────────────

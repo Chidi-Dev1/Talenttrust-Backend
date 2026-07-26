@@ -9,6 +9,10 @@ import {
   updateWebhookSubscriptionSchema,
   getWebhookSubscriptionSchema,
   listWebhookSubscriptionsQuerySchema,
+  toCreateWebhookSubscriptionDto,
+  toUpdateWebhookSubscriptionDto,
+  toWebhookSubscriptionResponseDto,
+  toListWebhookSubscriptionsQueryDto,
 } from '../modules/webhooks/dto/webhook-subscription.dto';
 import { AuthenticatedRequest } from '../lib/types';
 import { validateWebhookUrl, findSubscriptionOrFail } from './webhook-subscription.validation';
@@ -18,14 +22,6 @@ const router = Router();
 // DB and Repository setup is resolved at registration / execution time
 const getRepo = () => new SqliteWebhookSubscriptionRepository(getDb());
 
-/**
- * Removes the webhook secret from a subscription object before sending to the client.
- * Secrets must never be exposed in API responses.
- */
-function sanitizeSubscription(sub: any): any {
-  const { secret: _secret, ...rest } = sub;
-  return rest;
-}
 
 /**
  * POST /api/v1/webhook-subscriptions
@@ -43,10 +39,11 @@ router.post(
       if (!validateWebhookUrl(url, res)) return;
 
       const repo = getRepo();
-      const subscription = await repo.create(req.body);
+      const createDto = toCreateWebhookSubscriptionDto(req.body);
+      const subscription = await repo.create(createDto);
       res.status(201).json({
         status: 'success',
-        data: sanitizeSubscription(subscription),
+        data: toWebhookSubscriptionResponseDto(subscription),
       });
     } catch (error) {
       next(error);
@@ -66,8 +63,8 @@ router.get(
   async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const repo = getRepo();
-      const { cursor, limit, ...filters } = req.query;
-      const cursorStr = cursor as string | undefined;
+      const query = toListWebhookSubscriptionsQueryDto(req.query as any);
+      const { cursor: cursorStr, limit, ...filters } = query;
       if (cursorStr !== undefined) {
         try {
           decodeCursor(cursorStr);
@@ -82,14 +79,19 @@ router.get(
         }
       }
       const filter = {
-        consumerId: filters.consumerId as string | undefined,
-        eventType: filters.eventType as string | undefined,
-        active: filters.active as boolean | undefined,
+        consumerId: filters.consumerId,
+        eventType: filters.eventType,
+        active: filters.active,
       };
-      const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit: limit as number | undefined });
+      const list = await repo.findAllPaginated(filter, { cursor: cursorStr, limit });
       res.status(200).json({
         status: 'success',
-        data: page.data.map(sanitizeSubscription),
+        data: {
+          data: list.data.map((subscription) => toWebhookSubscriptionResponseDto(subscription)),
+          nextCursor: list.nextCursor,
+          hasNextPage: list.hasNextPage,
+          limit: list.limit,
+        },
       });
     } catch (error) {
       next(error);
@@ -115,7 +117,7 @@ router.get(
 
       res.status(200).json({
         status: 'success',
-        data: sanitizeSubscription(subscription),
+        data: toWebhookSubscriptionResponseDto(subscription),
       });
     } catch (error) {
       next(error);
@@ -143,10 +145,11 @@ router.patch(
       const existing = await findSubscriptionOrFail(id, repo, res);
       if (!existing) return;
 
-      const updated = await repo.update(id, req.body);
+      const updateDto = toUpdateWebhookSubscriptionDto(req.body);
+      const updated = await repo.update(id, updateDto);
       res.status(200).json({
         status: 'success',
-        data: sanitizeSubscription(updated),
+        data: toWebhookSubscriptionResponseDto(updated),
       });
     } catch (error) {
       next(error);
