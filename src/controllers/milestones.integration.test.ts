@@ -343,6 +343,47 @@ describe('Milestone validation-failure paths', () => {
     expect(res.body.error).toHaveProperty('message');
     expect(res.body.error).toHaveProperty('requestId');
   });
+
+  // ── Regression: malformed milestones shape (issue #923) ───────────────
+  //
+  // These document that the DTO/Zod layer rejects malformed `milestones`
+  // shapes before the request ever reaches validateContractBounds — the
+  // same malformed shapes that, at the unit level (src/contracts/bounds.test.ts),
+  // previously threw an uncaught TypeError instead of a graceful result when
+  // passed directly to that function. Two independent layers now guard
+  // against the same class of malformed input.
+  it('returns 400 (not a 500 crash) when milestones is null', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...basePayload, milestones: null });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 (not a 500 crash) when milestones is a string, not an array', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...basePayload, milestones: 'not-an-array' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 (not a 500 crash) when the milestones array contains a null entry', async () => {
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...basePayload, milestones: [null] });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 (not a 500 crash) when a milestone amount is NaN-producing (non-numeric string)', async () => {
+    const milestones = [{ title: 'Bad Amount', description: 'Non-numeric amount', amount: 'lots' }];
+    const res = await request(app)
+      .post('/api/v1/contracts')
+      .set({ ...auth(adminToken()), 'Idempotency-Key': randomUUID() })
+      .send({ ...basePayload, milestones });
+    expect(res.status).toBe(400);
+  });
 });
 
 // ─── Idempotent-repeat paths ──────────────────────────────────────────────────
