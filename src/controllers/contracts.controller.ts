@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { CONTRACT_BOUNDS, ContractBoundsError } from '../contracts/bounds';
+import { resolveCursorQueryParam, parseLimit } from '../contracts/cursor.repository';
 import { CURSOR_DEFAULT_LIMIT } from '../contracts/cursor.types';
 import { NotFoundError } from '../errors/appError';
 import {
@@ -11,7 +12,6 @@ import {
 } from '../modules/contracts/dto/contracts-boundary.dto';
 import { ContractsService } from '../services/contracts.service';
 import { fail, ok } from '../utils/apiResponse';
-import { applyPagination, parsePaginationQuery } from '../utils/pagination';
 
 type ContractRequest<TBody = unknown> = Request<
   Record<string, string>,
@@ -32,28 +32,32 @@ export class ContractsController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const pagination = parsePaginationQuery(
-        (req.query ?? {}) as Record<string, unknown>,
-      );
-      if (!pagination.ok) {
-        fail(res, 'bad_request', pagination.error, 400);
+      const rawCursor = (req.query ?? {}).cursor;
+      const cursorResult = resolveCursorQueryParam(rawCursor);
+      if (!cursorResult.ok) {
+        fail(res, 'bad_request', cursorResult.message, 400);
         return;
       }
 
-      const allContracts = await this.service.getAllContracts();
-      const { page, limit, offset } = pagination.value;
-      const pageItems = applyPagination(allContracts, {
-        page,
-        limit,
-        offset,
-      }).map(toContractResponseDto);
-      const total = allContracts.length;
+      let limit: number;
+      try {
+        limit = parseLimit((req.query ?? {}).limit);
+      } catch (err) {
+        fail(res, 'bad_request', (err as Error).message, 400);
+        return;
+      }
 
-      ok(res, pageItems, {
-        page,
+      const page = await this.service.getContractsPage({
+        cursor: cursorResult.cursor,
         limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+      });
+
+      const items = page.data.map(toContractResponseDto);
+
+      ok(res, items, {
+        limit: page.limit,
+        nextCursor: page.nextCursor,
+        hasNextPage: page.hasNextPage,
       });
     } catch (error) {
       next(error);

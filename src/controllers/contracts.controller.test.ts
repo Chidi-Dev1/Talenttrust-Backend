@@ -67,10 +67,10 @@ describe('ContractsController', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getContracts — cursor path (no page param, cursor or limit present)
+  // getContracts — cursor pagination
   // -------------------------------------------------------------------------
 
-  describe('getContracts — cursor path', () => {
+  describe('getContracts — cursor pagination', () => {
     it('returns 200 with cursor page on first page (no cursor)', async () => {
       const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
       mockGetContractsPage.mockResolvedValue(fakePage);
@@ -84,7 +84,12 @@ describe('ContractsController', () => {
 
       expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
       expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: fakePage });
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        status: 'success',
+        data: [],
+        meta: { limit: 20, nextCursor: null, hasNextPage: false },
+        requestId: 'unknown',
+      });
     });
 
     it('defaults limit to CURSOR_DEFAULT_LIMIT when only cursor is provided', async () => {
@@ -130,7 +135,7 @@ describe('ContractsController', () => {
       expect(mockResponse.status).toHaveBeenCalledWith(200);
     });
 
-    it('returns cursor page with hasNextPage and nextCursor', async () => {
+    it('returns cursor page with hasNextPage and nextCursor in meta', async () => {
       const fakePage = {
         data: [{ id: '1', title: 'Test' }],
         nextCursor: 'next-cursor-value',
@@ -146,18 +151,36 @@ describe('ContractsController', () => {
         mockNext,
       );
 
-      expect(mockResponse.json).toHaveBeenCalledWith({ status: 'success', data: fakePage });
-      const responseData = (mockResponse.json as jest.Mock).mock.calls[0][0].data;
-      expect(responseData.hasNextPage).toBe(true);
-      expect(responseData.nextCursor).toBe('next-cursor-value');
+      const callArg = (mockResponse.json as jest.Mock).mock.calls[0][0];
+      expect(callArg.status).toBe('success');
+      expect(callArg.requestId).toBe('unknown');
+      expect(callArg.meta).toEqual({
+        limit: 5,
+        nextCursor: 'next-cursor-value',
+        hasNextPage: true,
+      });
+    });
+
+    it('defaults to cursor pagination with no params', async () => {
+      const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
+      mockGetContractsPage.mockResolvedValue(fakePage);
+      mockRequest.query = {};
+
+      await controller.getContracts(
+        mockRequest as Request,
+        mockResponse as Response,
+        mockNext,
+      );
+      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
+      expect(mockResponse.status).toHaveBeenCalledWith(200);
     });
   });
 
   // -------------------------------------------------------------------------
-  // getContracts — cursor path validation errors (400)
+  // getContracts — validation errors (400)
   // -------------------------------------------------------------------------
 
-  describe('getContracts — cursor validation errors', () => {
+  describe('getContracts — validation errors', () => {
     it('returns 400 when limit exceeds 100', async () => {
       mockRequest.query = { limit: '101' };
 
@@ -273,80 +296,11 @@ describe('ContractsController', () => {
   });
 
   // -------------------------------------------------------------------------
-  // getContracts — legacy offset path (page param present)
-  // -------------------------------------------------------------------------
-
-  describe('getContracts — legacy offset path', () => {
-    it('returns 200 with contracts list when no pagination params', async () => {
-      mockGetAllContracts.mockResolvedValue([]);
-      await controller.getContracts(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith(expect.objectContaining({
-        status: 'success',
-        data: [],
-        meta: expect.any(Object),
-      }));
-    });
-
-    it('returns 200 with paginated legacy metadata when page+limit provided', async () => {
-      const contracts = [
-        { id: '1', title: 'A' },
-        { id: '2', title: 'B' },
-        { id: '3', title: 'C' },
-      ];
-      mockGetAllContracts.mockResolvedValue(contracts);
-      mockRequest.query = { page: '1', limit: '2' };
-
-      await controller.getContracts(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      const callArg = (mockResponse.json as jest.Mock).mock.calls[0][0];
-      expect(callArg.status).toBe('success');
-      expect(callArg.data).toHaveLength(2);
-      expect(callArg.data[0].id).toBe('1');
-      expect(callArg.data[1].id).toBe('2');
-      expect(callArg.meta).toMatchObject({ page: 1, limit: 2, total: 3, totalPages: 2 });
-    });
-
-    it('returns 400 for invalid page parameter in legacy mode', async () => {
-      mockRequest.query = { page: '-1' };
-
-      await controller.getContracts(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-    });
-
-    it('returns 400 for invalid limit parameter in legacy mode', async () => {
-      mockRequest.query = { page: '1', limit: 'abc' };
-
-      await controller.getContracts(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-    });
-  });
-
-  // -------------------------------------------------------------------------
   // getContracts — error propagation
   // -------------------------------------------------------------------------
 
   describe('getContracts — error propagation', () => {
-    it('calls next() when cursor service throws', async () => {
+    it('calls next() when service throws', async () => {
       const mockError = new Error('DB Down');
       mockGetContractsPage.mockRejectedValue(mockError);
       mockRequest.query = { limit: '5' };
@@ -357,81 +311,6 @@ describe('ContractsController', () => {
         mockNext,
       );
       expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-
-    it('calls next() when legacy service throws', async () => {
-      const mockError = new Error('DB Down');
-      mockGetAllContracts.mockRejectedValue(mockError);
-
-      await controller.getContracts(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // getContractsCursor
-  // -------------------------------------------------------------------------
-
-  describe('getContractsCursor', () => {
-    it('returns 200 with cursor page', async () => {
-      const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
-      mockGetContractsPage.mockResolvedValue(fakePage);
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-    });
-
-    it('uses provided limit and cursor', async () => {
-      const validCursor = Buffer.from(
-        JSON.stringify({ createdAt: '2024-01-01T00:00:00.000Z', id: 'abc-123' }),
-        'utf8',
-      ).toString('base64url');
-      const fakePage = { data: [{ id: '1' }], nextCursor: null, hasNextPage: false, limit: 10 };
-      mockGetContractsPage.mockResolvedValue(fakePage);
-      mockRequest.query = { limit: '10', cursor: validCursor };
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 10, cursor: validCursor });
-    });
-
-    it('returns 400 for malformed cursor', async () => {
-      mockRequest.query = { cursor: 'invalid' };
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-    });
-
-    it('calls next() when service throws', async () => {
-      const error = new Error('Service error');
-      mockGetContractsPage.mockRejectedValue(error);
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockNext).toHaveBeenCalledWith(error);
     });
   });
 
@@ -652,8 +531,8 @@ describe('ContractsController', () => {
       });
     });
 
-    it('returns 200 with CONTRACT_BOUNDS (static)', () => {
-      ContractsController.getBounds(mockRequest as Request, mockResponse as Response);
+    it('returns 200 with CONTRACT_BOUNDS via instance', () => {
+      controller.getBounds(mockRequest as Request, mockResponse as Response);
       expect(mockResponse.status).toHaveBeenCalledWith(200);
     });
   });
@@ -673,224 +552,6 @@ describe('ContractsController', () => {
       expect(controller).toHaveProperty('deleteContract');
       expect(controller).toHaveProperty('getContractStats');
       expect(controller).toHaveProperty('getBounds');
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // getContractsCursor
-  // -------------------------------------------------------------------------
-
-  describe('getContractsCursor', () => {
-    it('returns 200 with cursor page when no cursor is provided', async () => {
-      const fakePage = { data: [], nextCursor: null, hasNextPage: false, limit: 20 };
-      mockGetContractsPage.mockResolvedValue(fakePage);
-      mockRequest.query = {};
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 20, cursor: undefined });
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: fakePage,
-      });
-    });
-
-    it('returns 200 with cursor page when a valid cursor is provided', async () => {
-      const fakePage = { data: [{ id: 'abc' }], nextCursor: null, hasNextPage: false, limit: 10 };
-      mockGetContractsPage.mockResolvedValue(fakePage);
-
-      const validCursor = Buffer.from(
-        JSON.stringify({ createdAt: '2024-01-01T00:00:00.000Z', id: 'abc-123' }),
-        'utf8',
-      ).toString('base64url');
-
-      mockRequest.query = { limit: '10', cursor: validCursor };
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockGetContractsPage).toHaveBeenCalledWith({ limit: 10, cursor: validCursor });
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-    });
-
-    it('returns 400 for a malformed cursor', async () => {
-      mockRequest.query = { cursor: 'not-a-valid-cursor' };
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(400);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'error',
-        message: expect.stringMatching(/invalid pagination cursor/i),
-      });
-    });
-
-    it('calls next() when service throws', async () => {
-      const mockError = new Error('DB Down');
-      mockGetContractsPage.mockRejectedValue(mockError);
-      mockRequest.query = {};
-
-      await controller.getContractsCursor(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // updateContract
-  // -------------------------------------------------------------------------
-
-  describe('updateContract', () => {
-    it('returns 200 on success', async () => {
-      const updatedContract = { id: 'abc', title: 'Updated', version: 1 };
-      mockRequest.params = { id: 'abc' };
-      mockRequest.body = { version: 0, title: 'Updated' };
-      mockUpdateContract.mockResolvedValue(updatedContract);
-
-      await controller.updateContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockUpdateContract).toHaveBeenCalledWith('abc', { version: 0, title: 'Updated' });
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: updatedContract,
-        requestId: 'unknown',
-      });
-    });
-
-    it('returns 422 on ContractBoundsError', async () => {
-      mockRequest.params = { id: 'abc' };
-      mockRequest.body = { version: 0, budget: 999_000_000_000_000_000 };
-      mockUpdateContract.mockRejectedValue(
-        new ContractBoundsError('Budget exceeds maximum contract amount'),
-      );
-
-      await controller.updateContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(422);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'error',
-        error: {
-          code: 'contract_bounds_error',
-          message: 'Budget exceeds maximum contract amount',
-          requestId: 'unknown',
-        },
-      });
-      expect(mockNext).not.toHaveBeenCalled();
-    });
-
-    it('delegates non-bounds errors to next()', async () => {
-      const mockError = new Error('Update failed');
-      mockRequest.params = { id: 'abc' };
-      mockUpdateContract.mockRejectedValue(mockError);
-
-      await controller.updateContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // deleteContract
-  // -------------------------------------------------------------------------
-
-  describe('deleteContract', () => {
-    it('returns 200 on success', async () => {
-      mockDeleteContract.mockResolvedValue(undefined);
-      mockRequest.params = { id: 'abc' };
-
-      await controller.deleteContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockDeleteContract).toHaveBeenCalledWith('abc');
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: { message: 'Contract deleted successfully' },
-        requestId: 'unknown',
-      });
-    });
-
-    it('delegates errors to next()', async () => {
-      const mockError = new Error('Delete failed');
-      mockDeleteContract.mockRejectedValue(mockError);
-      mockRequest.params = { id: 'abc' };
-
-      await controller.deleteContract(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockNext).toHaveBeenCalledWith(mockError);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // getContractStats
-  // -------------------------------------------------------------------------
-
-  describe('getContractStats', () => {
-    it('returns 200 with stats', async () => {
-      const stats = { total: 5, totalBudget: 10000, byStatus: { draft: 3, active: 2 } };
-      mockGetContractStats.mockResolvedValue(stats);
-
-      await controller.getContractStats(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockResponse.status).toHaveBeenCalledWith(200);
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        status: 'success',
-        data: stats,
-        requestId: 'unknown',
-      });
-    });
-
-    it('delegates errors to next()', async () => {
-      const mockError = new Error('Stats failed');
-      mockGetContractStats.mockRejectedValue(mockError);
-
-      await controller.getContractStats(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext,
-      );
-
-      expect(mockNext).toHaveBeenCalledWith(mockError);
     });
   });
 });
