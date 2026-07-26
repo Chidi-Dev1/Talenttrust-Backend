@@ -235,6 +235,24 @@ export const envSchema = z.object({
   AWS_REGION: z.string().optional(),
 
   SENDGRID_API_KEY: z.string().optional(),
+
+  // ── Audit Feature Flag ──────────────────────────────────────────────────────
+  /**
+   * AUDIT_ENABLED — master switch for the audit subsystem.
+   *
+   * When `false`:
+   *  - `auditMiddleware` attaches a no-op helper to `res.locals.audit` so
+   *    route handlers continue to compile and run without changes.
+   *  - `protectedEndpointAuditMiddleware` skips registering its `finish`
+   *    listener, so no entries are written for protected-endpoint traffic.
+   *  - The `/api/v1/audit` router is not mounted on the Express app.
+   *
+   * Default: `true` (audit is on unless explicitly disabled).
+   */
+  AUDIT_ENABLED: z.string()
+    .optional()
+    .transform((val) => val !== 'false'),
+
 }).superRefine((obj, ctx) => {
   const requireForEmailProvider = (field: keyof typeof obj, message: string): void => {
     if (!obj[field]) {

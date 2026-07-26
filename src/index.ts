@@ -18,6 +18,7 @@ import { requireAuth, requireRole } from './middleware/authorization';
 import { authMiddleware, type AuthenticatedRequest } from './middleware/auth';
 import { adminAuthGuard } from './middleware/adminAuthGuard';
 import { registerShutdownHandlers } from './shutdown';
+import { validateEnv } from './config/env.schema';
 
 const queueManager = QueueManager.getInstance();
 
@@ -46,14 +47,18 @@ const auditIntegrityLimiter = createRateLimiter({
   keyFn: auditActorKeyFn('audit-integrity'),
 });
 
-app.use(
-  '/api/v1/audit',
-  createAuditRouter({
-    accessMiddleware: [requireAuth, requireRole('admin', 'auditor'), auditQueryLimiter],
-    exportMiddleware: [auditExportLimiter],
-    integrityMiddleware: [auditIntegrityLimiter],
-  }),
-);
+// Mount the audit router only when the AUDIT_ENABLED feature flag is on.
+// When disabled, all /api/v1/audit/* requests fall through to the 404 handler.
+if (validateEnv().AUDIT_ENABLED) {
+  app.use(
+    '/api/v1/audit',
+    createAuditRouter({
+      accessMiddleware: [requireAuth, requireRole('admin', 'auditor'), auditQueryLimiter],
+      exportMiddleware: [auditExportLimiter],
+      integrityMiddleware: [auditIntegrityLimiter],
+    }),
+  );
+}
 
 const DLQ_DEFAULT_LIMIT = 50;
 const DLQ_MAX_LIMIT = 100;
