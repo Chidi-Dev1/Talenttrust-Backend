@@ -179,11 +179,8 @@ export class AuditStore implements AuditLogRepository {
             cursorData.filters.to !== query.to) {
           throw new Error('Cursor filters do not match query filters');
         }
-      } catch (error) {
-        if (error instanceof Error && error.message === 'Cursor filters do not match query filters') {
-          throw error;
-        }
-        // Malformed cursor — start from beginning
+      } catch {
+        // If cursor is invalid, start from beginning
         startIndex = 0;
       }
     }

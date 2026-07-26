@@ -13,7 +13,7 @@
 
 import type { CursorPosition } from './cursor.types';
 import { CURSOR_MAX_LIMIT, CURSOR_DEFAULT_LIMIT, CURSOR_MAX_LENGTH } from './cursor.types';
-import { IndexerCursor, CursorUpdateResult, CursorResumeResult, CursorResumeRequest } from './cursor.types';
+import { IndexerCursor, CursorUpdateResult } from './cursor.types';
 
 /**
  * Encodes a {@link CursorPosition} into an opaque base-64 string suitable for

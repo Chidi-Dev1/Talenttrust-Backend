@@ -246,6 +246,7 @@ All sensitive metadata fields (`password`, `token`, `secret`, `credential`, `api
 - [Escrow Contract Lifecycle & Bounds](docs/contracts-lifecycle.md)
 - [Contract Event Indexer Cursor Model & Replay Protection](INDEXER.md)
 - [Data Retention, Archival, and Purge Lifecycle](docs/DATA_RETENTION.md)
+- [Disputes Operations Runbook](docs/runbook-disputes.md) — Configuration, failure modes, alerts, and recovery procedures for the disputes subsystem
 
 ## CI/CD
 

@@ -154,8 +154,8 @@ function parseAuditQueryDto(
   // Validate cursor format before delegating — the DTO mapper doesn't decode it
   if (dto.cursor) {
     try {
-      decodeCursor(dto.cursor);
-    } catch (_error) {
+      decodeCursor(cursor);
+    } catch {
       throw new Error('Invalid cursor format');
     }
   }
