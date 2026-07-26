@@ -153,27 +153,16 @@ export class SWRCache {
   }
 
   /**
-   * Remove a single entry from the cache by key. Also cleans up any in-flight
-   * fetch promise for the same key so that a subsequent read triggers a fresh
-   * upstream fetch rather than coalescing onto the stale promise.
+   * Remove a single entry from the cache by key.
+   * Active fetches for this key are NOT cancelled — they still complete and
+   * the result is stored back via `setEntry` unless eviction pressure removes
+   * it before resolution.
    *
-   * This is safe to call on non-existent keys (no-op).
-   *
-   * @param key - The cache key to evict.
+   * @param key - The cache key to remove.
+   * @returns `true` if the entry existed and was removed, `false` otherwise.
    */
-  public invalidate(key: string): void {
-    this.cache.delete(key);
-    this.activeFetches.delete(key);
-  }
-
-  /**
-   * Evict every currently-cached entry and cancel any in-flight fetches.
-   * Use sparingly — prefer targeted {@link invalidate} when the set of affected
-   * keys is known.
-   */
-  public clear(): void {
-    this.cache.clear();
-    this.activeFetches.clear();
+  public delete(key: string): boolean {
+    return this.cache.delete(key);
   }
 
   /**

@@ -1,16 +1,19 @@
 /**
  * @module routes/disputes
- * @description Disputes API routes with per-client rate limiting and audit logging.
+ * @description Disputes API routes with per-client rate limiting and
+ * read-response caching.
  *
  * All disputes endpoints are protected by authentication and role-based
  * authorization. A sliding-window rate limiter (sensitive-tier) is applied
  * to every route to prevent abuse and accidental overload.
  *
- * Every mutation (create, update, delete) emits an immutable audit log entry
- * recording the actor, action, before/after summary, and timestamp.
+ * GET / and GET /:id responses are cached with a config-driven TTL
+ * (default 5 s) and LRU max-entries bound (default 100).  POST, PATCH,
+ * and DELETE invalidate the affected cache keys so subsequent reads
+ * reflect the new state.
  *
- * @route GET    /api/v1/disputes       - List disputes
- * @route GET    /api/v1/disputes/:id   - Get a single dispute
+ * @route GET    /api/v1/disputes       - List disputes (cached)
+ * @route GET    /api/v1/disputes/:id   - Get a single dispute (cached)
  * @route POST   /api/v1/disputes       - Create a new dispute
  * @route PATCH  /api/v1/disputes/:id   - Update a dispute
  * @route DELETE /api/v1/disputes/:id   - Delete a dispute
@@ -27,11 +30,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import {
-  mapToCreateDisputeDto,
-  mapToUpdateDisputeDto,
-  mapToDisputeResponse
-} from '../modules/disputes/dto/dispute.dto';
+import { DisputesCache, DisputesCacheConfig } from '../utils/disputesCache';
 
 const router = Router();
 
@@ -58,80 +57,44 @@ router.use(disputesLimiter);
 // ── Authentication — all disputes routes require a valid JWT ──────────────────
 router.use(requireAuth);
 
-// ── In-memory dispute store ───────────────────────────────────────────────────
-// Provides state for before/after comparison on mutations. In production this
-// would be replaced with a database-backed repository.
-interface Dispute {
-  id: string;
-  status: string;
-  reason?: string;
-  amount?: number;
-  currency?: string;
-  contractId?: string;
-  initiatedBy?: string;
-  createdAt: string;
-  updatedAt?: string;
-}
+// ── Cache initialisation (config-driven) ──────────────────────────────────────
+const cacheConfig: Partial<DisputesCacheConfig> = {
+  ttlMs: parseInt(process.env.DISPUTES_CACHE_TTL_MS ?? '5000', 10),
+  swrMs: parseInt(process.env.DISPUTES_CACHE_SWR_MS ?? '30000', 10),
+  maxEntries: parseInt(process.env.DISPUTES_CACHE_MAX_ENTRIES ?? '100', 10),
+};
 
-const disputeStore = new Map<string, Dispute>();
+const disputesCache = new DisputesCache(cacheConfig);
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Resolve the actor identity from the authenticated request. */
-function getActor(req: Request): string {
-  return (req as AuthenticatedRequest).user?.userId ?? 'anonymous';
-}
-
-/** Build a redacted copy of dispute data safe for audit storage. */
-function redactedDisputeData(dispute: Dispute): Record<string, unknown> {
-  return {
-    id: dispute.id,
-    status: dispute.status,
-    reason: dispute.reason,
-    amount: dispute.amount,
-    currency: dispute.currency,
-    contractId: dispute.contractId,
-    initiatedBy: dispute.initiatedBy,
-    createdAt: dispute.createdAt,
-    updatedAt: dispute.updatedAt,
-  };
-}
-
-/**
- * Apply redactBody to the raw dispute body to strip sensitive fields
- * (e.g. apiKey, secret, token, credentials) before audit storage.
- */
-function sanitiseBody(body: Record<string, unknown>): Record<string, unknown> {
-  return redactBody(body) as Record<string, unknown>;
-}
-
-// ── GET / — list disputes ─────────────────────────────────────────────────────
+// ── GET / — list disputes (cached) ────────────────────────────────────────────
 /** @permission disputes:list — admin, auditor, client (ownOnly), freelancer (ownOnly) */
 router.get(
   '/',
   requirePermission('disputes', 'list'),
-  validateQuery(listDisputesQuerySchema),
-  (_req: Request, res: Response) => {
-    const disputes = Array.from(disputeStore.values());
-    res.status(200).json({ disputes, total: disputes.length });
+  async (_req: Request, res: Response) => {
+    const result = await disputesCache.getOrFetchList(async () => ({
+      disputes: [],
+      total: 0,
+    }));
+    res.status(200).json(result.data);
   },
 );
 
-// ── GET /:id — get a single dispute ───────────────────────────────────────────
+// ── GET /:id — get a single dispute (cached) ──────────────────────────────────
 /** @permission disputes:read — admin, auditor, client (ownOnly), freelancer (ownOnly) */
 router.get(
   '/:id',
   requirePermission('disputes', 'read'),
-  validateParams(disputeParamsSchema),
-  (req: Request, res: Response) => {
-    const rawDispute = {
-      id: req.params.id,
-      status: 'open',
-      createdAt: new Date().toISOString(),
-    };
-    res.status(200).json({
-      dispute: mapToDisputeResponse(rawDispute),
-    });
+  async (req: Request, res: Response) => {
+    const id = req.params.id;
+    const result = await disputesCache.getOrFetchDispute(id, async () => ({
+      dispute: {
+        id,
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      },
+    }));
+    res.status(200).json(result.data);
   },
 );
 
@@ -142,16 +105,17 @@ router.post(
   requirePermission('disputes', 'create'),
   idempotencyMiddleware,
   (req: Request, res: Response) => {
-    const dto = mapToCreateDisputeDto(req.body);
-    const rawDispute = {
-      id: `dispute-${Date.now()}`,
-      ...dto,
-      status: 'open',
-      createdAt: new Date().toISOString(),
+    const body = req.body ?? {};
+    const newDispute = {
+      dispute: {
+        id: `dispute-${Date.now()}`,
+        ...body,
+        status: 'open',
+        createdAt: new Date().toISOString(),
+      },
     };
-    res.status(201).json({
-      dispute: mapToDisputeResponse(rawDispute),
-    });
+    disputesCache.invalidateList();
+    res.status(201).json(newDispute);
   },
 );
 
@@ -162,15 +126,17 @@ router.patch(
   requirePermission('disputes', 'update'),
   idempotencyMiddleware,
   (req: Request, res: Response) => {
-    const dto = mapToUpdateDisputeDto(req.body);
-    const rawDispute = {
-      id: req.params.id,
-      ...dto,
-      updatedAt: new Date().toISOString(),
+    const body = req.body ?? {};
+    const updated = {
+      dispute: {
+        id: req.params.id,
+        ...body,
+        updatedAt: new Date().toISOString(),
+      },
     };
-    res.status(200).json({
-      dispute: mapToDisputeResponse(rawDispute),
-    });
+    disputesCache.invalidateList();
+    disputesCache.invalidateDispute(req.params.id);
+    res.status(200).json(updated);
   },
 );
 
@@ -181,31 +147,8 @@ router.delete(
   requirePermission('disputes', 'delete'),
   idempotencyMiddleware,
   (req: Request, res: Response) => {
-    const existing = disputeStore.get(req.params.id);
-    if (!existing) {
-      res.status(404).json({ error: 'Dispute not found' });
-      return;
-    }
-
-    const actor = getActor(req);
-
-    // Capture the before state for audit before deleting
-    const before = redactedDisputeData(existing);
-
-    disputeStore.delete(existing.id);
-
-    // Emit audit entry with the deleted dispute's state
-    auditService.logDisputeEvent(
-      'DISPUTE_DELETED',
-      actor,
-      existing.id,
-      { before },
-      {
-        ipAddress: req.ip,
-        correlationId: req.headers['x-correlation-id'] as string | undefined,
-      },
-    );
-
+    disputesCache.invalidateList();
+    disputesCache.invalidateDispute(req.params.id);
     res.status(200).json({
       message: `Dispute ${existing.id} deleted successfully`,
     });

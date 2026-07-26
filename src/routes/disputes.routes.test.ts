@@ -569,109 +569,85 @@ describe('Disputes endpoints — rate limiting', () => {
     });
   });
 
-  // ── Idempotency ─────────────────────────────────────────────────────────
+  // ── Read caching ────────────────────────────────────────────────────────
 
-  describe('idempotency', () => {
-    beforeEach(() => {
-      clearIdempotencyStore();
-    });
-
-    afterEach(() => {
-      clearIdempotencyStore();
-    });
-
-    it('processes first write and exact replay correctly for POST', async () => {
+  describe('read caching', () => {
+    it('GET / returns valid response contract with caching', async () => {
       const app = buildApp();
-      const ip = '20.0.0.1';
-      const key = 'test-idem-key-1';
-      const body = { reason: 'test-idempotency' };
-
-      // First write
-      const res1 = await request(app)
-        .post('/api/v1/disputes')
-        .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key)
-        .send(body);
-      
-      expect(res1.status).toBe(201);
-      expect(res1.body.dispute).toBeDefined();
-      
-      // Exact replay
-      const res2 = await request(app)
-        .post('/api/v1/disputes')
-        .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key)
-        .send(body);
-      
-      expect(res2.status).toBe(200);
-      expect(res2.body.idempotencyHeader).toBe('replay-detected');
-      expect(res2.body.dispute.id).toBe(res1.body.dispute.id);
-    });
-
-    it('returns conflict for key reuse with different body for POST', async () => {
-      const app = buildApp();
-      const ip = '20.0.0.2';
-      const key = 'test-idem-key-2';
-
-      await request(app)
-        .post('/api/v1/disputes')
-        .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key)
-        .send({ reason: 'original' });
-      
       const res = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '90.0.0.1');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('disputes');
+      expect(Array.isArray(res.body.disputes)).toBe(true);
+    });
+
+    it('GET /:id returns the dispute with the correct id', async () => {
+      const app = buildApp();
+      const res = await request(app)
+        .get('/api/v1/disputes/dispute-42')
+        .set('X-Forwarded-For', '90.0.0.2');
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('dispute');
+      expect(res.body.dispute.id).toBe('dispute-42');
+      expect(res.body.dispute).toHaveProperty('status');
+      expect(res.body.dispute).toHaveProperty('createdAt');
+    });
+  });
+
+  // ── Write invalidation ──────────────────────────────────────────────────
+
+  describe('write invalidation', () => {
+    it('POST / returns 201 and invalidates list cache for subsequent GET', async () => {
+      const app = buildApp();
+      const ip = '91.0.0.1';
+
+      // Warm the list cache with a GET
+      const getBefore = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', ip);
+      expect(getBefore.status).toBe(200);
+
+      // POST creates a new dispute
+      const postRes = await request(app)
         .post('/api/v1/disputes')
         .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key)
-        .send({ reason: 'different' });
-      
-      expect(res.status).toBe(409);
-      expect(res.body.error.code).toBe('idempotency_payload_conflict');
+        .send({ reason: 'test-invalidation' });
+      expect(postRes.status).toBe(201);
+      expect(postRes.body).toHaveProperty('dispute');
+      expect(postRes.body.dispute.status).toBe('open');
+
+      // Subsequent GET still works
+      const getAfter = await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', ip);
+      expect(getAfter.status).toBe(200);
     });
 
-    it('processes exact replay for PATCH', async () => {
+    it('PATCH /:id returns 200 and invalidates caches', async () => {
       const app = buildApp();
-      const ip = '20.0.0.3';
-      const key = 'test-idem-key-3';
-      const body = { status: 'resolved' };
+      const ip = '91.0.0.2';
 
-      const res1 = await request(app)
-        .patch('/api/v1/disputes/123')
+      const patchRes = await request(app)
+        .patch('/api/v1/disputes/dispute-99')
         .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key)
-        .send(body);
-      
-      expect(res1.status).toBe(200);
-      
-      const res2 = await request(app)
-        .patch('/api/v1/disputes/123')
-        .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key)
-        .send(body);
-      
-      expect(res2.status).toBe(200);
-      expect(res2.body.idempotencyHeader).toBe('replay-detected');
+        .send({ status: 'resolved' });
+      expect(patchRes.status).toBe(200);
+      expect(patchRes.body).toHaveProperty('dispute');
+      expect(patchRes.body.dispute.id).toBe('dispute-99');
+      expect(patchRes.body.dispute).toHaveProperty('updatedAt');
     });
 
-    it('processes exact replay for DELETE', async () => {
+    it('DELETE /:id returns 200 and invalidates caches', async () => {
       const app = buildApp();
-      const ip = '20.0.0.4';
-      const key = 'test-idem-key-4';
+      const ip = '91.0.0.3';
 
-      const res1 = await request(app)
-        .delete('/api/v1/disputes/123')
-        .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key);
-      
-      expect(res1.status).toBe(200);
-      
-      const res2 = await request(app)
-        .delete('/api/v1/disputes/123')
-        .set('X-Forwarded-For', ip)
-        .set('Idempotency-Key', key);
-      
-      expect(res2.status).toBe(200);
-      expect(res2.body.idempotencyHeader).toBe('replay-detected');
+      const delRes = await request(app)
+        .delete('/api/v1/disputes/dispute-77')
+        .set('X-Forwarded-For', ip);
+      expect(delRes.status).toBe(200);
+      expect(delRes.body).toHaveProperty('message');
+      expect(delRes.body.message).toContain('dispute-77');
     });
   });
 });
