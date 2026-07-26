@@ -140,7 +140,6 @@ describe('EnvSecret — transform error redaction', () => {
   it('does NOT leak the secret when transform throws the raw secret string directly', () => {
     withEnv(KEY, RAW_SECRET, () => {
       const leakyTransform = (val: string) => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
         throw val; // throws the raw secret as a plain string
       };
       let caught: unknown;
@@ -156,7 +155,6 @@ describe('EnvSecret — transform error redaction', () => {
   it('does NOT leak the secret when transform throws a non-Error object containing the value', () => {
     withEnv(KEY, RAW_SECRET, () => {
       const leakyTransform = (val: string) => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
         throw { code: 'PARSE_ERROR', input: val }; // object with secret
       };
       let caught: unknown;
@@ -172,7 +170,6 @@ describe('EnvSecret — transform error redaction', () => {
   it('does NOT leak the secret when transform throws null', () => {
     withEnv(KEY, RAW_SECRET, () => {
       const leakyTransform = (_val: string) => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
         throw null;
       };
       let caught: unknown;
@@ -188,7 +185,6 @@ describe('EnvSecret — transform error redaction', () => {
   it('does NOT leak the secret when transform throws undefined', () => {
     withEnv(KEY, RAW_SECRET, () => {
       const leakyTransform = (_val: string) => {
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
         throw undefined;
       };
       let caught: unknown;
