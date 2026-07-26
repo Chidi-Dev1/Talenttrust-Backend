@@ -46,12 +46,18 @@ const auditIntegrityLimiter = createRateLimiter({
   keyFn: auditActorKeyFn('audit-integrity'),
 });
 
+const auditBulkLimiter = createRateLimiter({
+  ...rateLimitConfig.auditBulk,
+  keyFn: auditActorKeyFn('audit-bulk'),
+});
+
 app.use(
   '/api/v1/audit',
   createAuditRouter({
     accessMiddleware: [requireAuth, requireRole('admin', 'auditor'), auditQueryLimiter],
     exportMiddleware: [auditExportLimiter],
     integrityMiddleware: [auditIntegrityLimiter],
+    bulkMiddleware: [auditBulkLimiter],
   }),
 );
 

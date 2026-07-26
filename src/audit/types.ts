@@ -88,6 +88,25 @@ export interface AuditEntry {
 /** Input required to create a new audit entry (hash fields are computed internally). */
 export type CreateAuditEntryInput = Omit<AuditEntry, 'id' | 'timestamp' | 'hash' | 'previousHash'>;
 
+/**
+ * Outcome of a single item within a `POST /api/v1/audit/bulk` request.
+ * Exactly one of `entry` / `error` is populated, matching `success`.
+ */
+export interface BulkAuditItemResult {
+  /** Position of this item within the submitted `entries` array. */
+  index: number;
+  success: boolean;
+  entry?: AuditEntry;
+  error?: string;
+}
+
+/** Aggregate response body for `POST /api/v1/audit/bulk`. */
+export interface BulkAuditResult {
+  results: BulkAuditItemResult[];
+  succeeded: number;
+  failed: number;
+}
+
 /** Opaque cursor for pagination. Encodes position and filters. */
 export type AuditCursor = string;
 

@@ -1,49 +1,116 @@
 /**
  * @module audit/router
- * @description REST endpoints for reading and appending to the audit log.
+ * @description REST endpoints for querying and writing the audit log.
  *
  * Routes:
  *   GET  /api/v1/audit          - Query audit entries with optional filters
  *   GET  /api/v1/audit/export   - Stream an NDJSON export for compliance
  *   GET  /api/v1/audit/integrity - Verify the hash chain integrity
- *   GET  /api/v1/audit/:id      - Retrieve a single entry by ID
- *   POST /api/v1/audit          - Append a new entry
+ *   POST /api/v1/audit          - Write a single audit entry
+ *   POST /api/v1/audit/bulk     - Write a bounded batch of audit entries
  *
  * Security notes:
  * - In production these routes MUST be protected by authentication and
  *   role-based authorisation (admin/auditor roles only).
  * - Query parameters are validated and clamped to prevent abuse.
- * - The integrity endpoint should be rate-limited to prevent DoS on large logs.
- *
- * POST /api/v1/audit — Idempotent audit write
- * - Accepts Idempotency-Key header for idempotent writes.
- * - Replays the original response on key reuse; returns 409 on body mismatch.
- * - Keys expire after 24 hours; store is bounded to 1000 entries.
+ * - All routes are rate-limited per client (issue #746): `accessMiddleware`
+ *   carries the general `audit` tier, `/export` additionally gets the
+ *   `auditExport` tier via `exportMiddleware`, `/integrity` additionally
+ *   gets the stricter `auditIntegrity` tier via `integrityMiddleware`, and
+ *   `/bulk` additionally gets the `auditBulk` tier via `bulkMiddleware` —
+ *   see `rateLimitConfig` in `src/config/rateLimit.ts`.
  */
 
 import { Router, Request, Response, type RequestHandler } from 'express';
 import { pipeline } from 'stream/promises';
+import { z } from 'zod';
 import { auditService, AuditService } from './service';
 import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
-import { idempotencyStore, hashIdempotencyInput } from './idempotency';
-import type { AuditAction, AuditQuery, AuditSeverity, CreateAuditEntryInput } from './types';
+import type { AuditAction, AuditQuery, AuditSeverity, BulkAuditItemResult, CreateAuditEntryInput } from './types';
 import { decodeCursor } from './types';
+import { idempotencyMiddleware } from '../middleware/idempotency';
+import { validateRequest } from '../middleware/validate.middleware';
 
 export interface AuditRouterOptions {
   service?: AuditService;
   exportService?: AuditExportService;
   accessMiddleware?: RequestHandler[];
   exportMiddleware?: RequestHandler[];
-  idempotencyStore?: typeof idempotencyStore;
+  /**
+   * Middleware applied only to `GET /integrity`, in addition to
+   * `accessMiddleware`. Verifying the hash chain walks the entire audit
+   * log, so this endpoint gets its own (tighter) rate limiter — see
+   * `rateLimitConfig.auditIntegrity` in `src/config/rateLimit.ts`.
+   */
+  integrityMiddleware?: RequestHandler[];
+  /**
+   * Middleware applied only to `POST /bulk`, in addition to
+   * `accessMiddleware`. Bulk writes can append up to `MAX_BULK_AUDIT_ITEMS`
+   * entries per request, so this endpoint gets its own rate limiter — see
+   * `rateLimitConfig.auditBulk` in `src/config/rateLimit.ts`.
+   */
+  bulkMiddleware?: RequestHandler[];
 }
 
-// Derived from the canonical lists in `./types` so query filters accept exactly
-// the actions and severities that can be written. Previously these were spelled
-// out here and had drifted: DEPLOYMENT_PROMOTED / DEPLOYMENT_ROLLED_BACK were
-// writable but could not be filtered on.
-const VALID_ACTIONS = new Set<AuditAction>(AUDIT_ACTIONS);
+const AUDIT_ACTIONS = [
+  'CONTRACT_CREATED', 'CONTRACT_UPDATED', 'CONTRACT_CANCELLED', 'CONTRACT_COMPLETED',
+  'PAYMENT_INITIATED', 'PAYMENT_RELEASED', 'PAYMENT_DISPUTED',
+  'REPUTATION_UPDATED',
+  'USER_CREATED', 'USER_UPDATED', 'USER_DELETED',
+  'AUTH_LOGIN', 'AUTH_LOGOUT', 'AUTH_FAILED',
+  'ADMIN_ACTION',
+  'ENDPOINT_ACCESS', 'ENDPOINT_MUTATION',
+] as const satisfies readonly AuditAction[];
 
+const AUDIT_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const satisfies readonly AuditSeverity[];
+
+const VALID_ACTIONS = new Set<AuditAction>(AUDIT_ACTIONS);
 const VALID_SEVERITIES = new Set<AuditSeverity>(AUDIT_SEVERITIES);
+
+/** Hard cap on the number of items accepted by a single `POST /bulk` request. */
+export const MAX_BULK_AUDIT_ITEMS = 100;
+
+/**
+ * Validates only the envelope shape of a bulk request: `entries` must be a
+ * bounded, non-empty array. Individual item field validation intentionally
+ * happens per-item in the route handler (see `validateBulkAuditItem`) rather
+ * than here, so that one malformed item fails only itself instead of
+ * rejecting the whole batch with a 400.
+ */
+const bulkAuditRequestSchema = z.object({
+  entries: z
+    .array(z.unknown())
+    .min(1, 'entries must contain at least 1 item')
+    .max(MAX_BULK_AUDIT_ITEMS, `entries must not exceed ${MAX_BULK_AUDIT_ITEMS} items`),
+});
+
+/**
+ * Validates a single bulk-batch item, mirroring the hand-rolled checks used
+ * by `POST /` (required fields) plus the action/severity enum checks already
+ * applied to query filters. Returns an error message, or `undefined` if the
+ * item is valid.
+ */
+function validateBulkAuditItem(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return 'Item must be an object';
+  }
+
+  const input = raw as Partial<CreateAuditEntryInput>;
+
+  if (!input.action || !input.severity || !input.actor || !input.resource || !input.resourceId) {
+    return 'Missing required fields: action, severity, actor, resource, resourceId';
+  }
+
+  if (!VALID_ACTIONS.has(input.action as AuditAction)) {
+    return `Invalid action: ${String(input.action)}`;
+  }
+
+  if (!VALID_SEVERITIES.has(input.severity as AuditSeverity)) {
+    return `Invalid severity: ${String(input.severity)}`;
+  }
+
+  return undefined;
+}
 
 /**
  * Extracts and validates the typed {@link AuditQueryParamsDto} from an Express
@@ -121,7 +188,86 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
   const exportService = options.exportService ?? auditExportService;
   const accessMiddleware = options.accessMiddleware ?? [];
   const exportMiddleware = options.exportMiddleware ?? [];
-  const store = options.idempotencyStore ?? idempotencyStore;
+  const integrityMiddleware = options.integrityMiddleware ?? [];
+  const bulkMiddleware = options.bulkMiddleware ?? [];
+
+  /**
+   * POST /api/v1/audit
+   *
+   * Write an audit entry with idempotency support.
+   * Accepts an Idempotency-Key header to prevent duplicate entries.
+   */
+  router.post(
+    '/',
+    idempotencyMiddleware,
+    ...accessMiddleware,
+    (req: Request, res: Response): void => {
+      try {
+        const input = req.body as CreateAuditEntryInput;
+
+        if (!input.action || !input.severity || !input.actor || !input.resource || !input.resourceId) {
+          res.status(400).json({ error: 'Missing required fields: action, severity, actor, resource, resourceId' });
+          return;
+        }
+
+        const entry = service.log(input);
+        res.status(201).json(entry);
+      } catch (error) {
+        res.status(500).json({ error: (error as Error).message });
+      }
+    },
+  );
+
+  /**
+   * POST /api/v1/audit/bulk
+   *
+   * Write a bounded batch of audit entries in one request. Each item is
+   * validated and appended independently — a malformed or failing item is
+   * reported in its own `results[]` slot without discarding the rest of the
+   * batch. The whole request is rejected with 400 only when the envelope
+   * itself is invalid (not an array, empty, or over `MAX_BULK_AUDIT_ITEMS`).
+   *
+   * Entries are appended sequentially (not in parallel) to preserve the
+   * tamper-evident hash chain, so a large batch is O(n) requests to the
+   * underlying store — bounded by `MAX_BULK_AUDIT_ITEMS`.
+   *
+   * The whole batch shares one Idempotency-Key, matching `POST /`: a retried
+   * request with an identical body replays the cached aggregate response.
+   *
+   * Responds 201 when every item succeeded, or 207 (Multi-Status) when at
+   * least one item failed, so callers can distinguish "fully applied" from
+   * "needs per-item inspection" without parsing the body first.
+   */
+  router.post(
+    '/bulk',
+    idempotencyMiddleware,
+    ...accessMiddleware,
+    ...bulkMiddleware,
+    validateRequest(bulkAuditRequestSchema),
+    (req: Request, res: Response): void => {
+      const { entries } = req.body as { entries: unknown[] };
+
+      const results: BulkAuditItemResult[] = entries.map((raw, index) => {
+        const validationError = validateBulkAuditItem(raw);
+        if (validationError) {
+          return { index, success: false, error: validationError };
+        }
+
+        try {
+          const entry = service.log(raw as CreateAuditEntryInput);
+          return { index, success: true, entry };
+        } catch (error) {
+          return { index, success: false, error: (error as Error).message };
+        }
+      });
+
+      const failed = results.filter((result) => !result.success).length;
+      const succeeded = results.length - failed;
+      const status = failed === 0 ? 201 : 207;
+
+      res.status(status).json({ results, succeeded, failed });
+    },
+  );
 
   router.get('/', ...accessMiddleware, (req: Request, res: Response): void => {
     const parsed = parseAuditQueryOrRespond(req, res, { defaultLimit: 50, maxLimit: 100 });

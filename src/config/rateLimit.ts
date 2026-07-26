@@ -24,9 +24,9 @@
  * | RL_AUDIT_ABUSE_THRESHOLD   | 5          | Violations before hard block (audit)     |
  * | RL_AUDIT_INTEGRITY_MAX     | 10         | Max requests per window (audit integrity)|
  * | RL_AUDIT_INTEGRITY_WINDOW_MS | 60000    | Window duration in ms (audit integrity)  |
- * | RL_REPUTATION_MAX          | 300        | Max requests per window (reputation)     |
- * | RL_REPUTATION_WINDOW_MS    | 60000      | Window duration in ms (reputation)       |
- * | RL_REPUTATION_ABUSE_THRESHOLD | 5       | Violations before hard block (reputation)|
+ * | RL_AUDIT_BULK_MAX          | 30         | Max requests per window (audit bulk)     |
+ * | RL_AUDIT_BULK_WINDOW_MS    | 60000      | Window duration in ms (audit bulk)       |
+ * | RL_AUDIT_BULK_ABUSE_THRESHOLD | 5       | Violations before hard block (audit bulk)|
  *
  * ## Tier Descriptions
  *
@@ -180,6 +180,24 @@ export const rateLimitConfig = {
     blockWindowMs: toMs(process.env.RL_AUDIT_EXPORT_BLOCK_WINDOW_MS, 21_600_000),
     blockDurationMs: toMs(process.env.RL_AUDIT_EXPORT_BLOCK_DURATION_MS, 3_600_000),
     maxBlockDurationMs: toMs(process.env.RL_AUDIT_EXPORT_MAX_BLOCK_MS, 86_400_000),
+    sendHeaders: true,
+    ...sharedStore,
+  } satisfies RateLimiterConfig,
+
+  /**
+   * Audit bulk tier: `POST /api/v1/audit/bulk` batch writes.
+   * Kept tighter than the general `audit`/write-request limit because each
+   * request can append up to `MAX_BULK_AUDIT_ITEMS` entries to the hash
+   * chain (sequential appends), not just one — similar rationale to
+   * `auditExport` being its own tier rather than reusing `audit`.
+   */
+  auditBulk: {
+    maxRequests: toCount(process.env.RL_AUDIT_BULK_MAX, 30),
+    windowMs: toMs(process.env.RL_AUDIT_BULK_WINDOW_MS, 60_000),
+    abuseThreshold: toCount(process.env.RL_AUDIT_BULK_ABUSE_THRESHOLD, 5),
+    blockWindowMs: toMs(process.env.RL_AUDIT_BULK_BLOCK_WINDOW_MS, 300_000),
+    blockDurationMs: toMs(process.env.RL_AUDIT_BULK_BLOCK_DURATION_MS, 600_000),
+    maxBlockDurationMs: toMs(process.env.RL_AUDIT_BULK_MAX_BLOCK_MS, 86_400_000),
     sendHeaders: true,
     ...sharedStore,
   } satisfies RateLimiterConfig,
