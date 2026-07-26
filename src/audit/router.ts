@@ -25,6 +25,7 @@ import { Router, Request, Response, type RequestHandler } from 'express';
 import type { ZodError } from 'zod';
 import { pipeline } from 'stream/promises';
 import { z } from 'zod';
+import compression from 'compression';
 import { auditService, AuditService } from './service';
 import { auditExportService, AuditExportService, type AuditExportFilters } from './exportService';
 import type { AuditQuery } from './types';
@@ -144,7 +145,11 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
    * GET /api/v1/audit
    * Query audit entries with optional filters and pagination.
    */
-  router.get('/', ...accessMiddleware, (req: Request, res: Response): void => {
+  router.get(
+    '/',
+    ...accessMiddleware,
+    compression({ threshold: 1024 }),
+    (req: Request, res: Response): void => {
     try {
       const result = service.queryLogs(req.query as Record<string, unknown>, { defaultLimit: 50, maxLimit: 100 });
       res.json(result);
