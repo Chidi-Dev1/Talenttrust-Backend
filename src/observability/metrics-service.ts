@@ -27,6 +27,9 @@ export type WebhookOutcome = ValidatedWebhookOutcome;
  * Canonical list of metric family names documented in docs/observability.md.
  * This constant enables round-trip verification: tests assert that the set of
  * metrics registered by MetricsService matches this list exactly.
+ *
+ * Note: auth_cache_hits_total and auth_cache_misses_total are registered by
+ * AuthCache (not MetricsService) and are documented separately.
  */
 export const CATALOG_METRIC_NAMES: readonly string[] = [
   'http_requests_total',
@@ -268,7 +271,7 @@ function resolveHistogramBuckets(buckets: number[] | undefined): number[] {
   const result = validateHistogramBuckets(buckets);
   if (!result.valid) {
     console.warn(
-      `[MetricsService] Invalid histogramBuckets option (${result.reason}); falling back to defaults.`,
+      `[MetricsService] Invalid histogramBuckets option; falling back to defaults.`,
     );
     return [...DEFAULT_HISTOGRAM_BUCKETS];
   }

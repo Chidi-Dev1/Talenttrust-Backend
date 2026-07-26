@@ -6,13 +6,16 @@ import {
   validateApiKey,
   rotateApiKey,
   deactivateApiKey,
-  computeKeySelector
+  computeKeySelector,
+  resetAuthCache,
+  getAuthCache
 } from '../apiKeys';
 import { database } from '../../database';
 
 describe('API Key Utilities', () => {
   beforeEach(async () => {
     await database.clearDatabase();
+    resetAuthCache();
   });
 
   describe('generateApiKey', () => {
@@ -595,6 +598,118 @@ describe('API Key Utilities', () => {
           await validateApiKey(key);
         }).not.toThrow();
       }
+    });
+  });
+
+  describe('Cache invalidation on write operations', () => {
+    it('invalidates cache when creating a new API key', async () => {
+      const request = {
+        name: 'Test Key',
+        scope: ['contracts:read'],
+        createdBy: 'user-1',
+      };
+
+      const { apiKey } = await createApiKey(request);
+
+      // First validation should populate cache
+      const result1 = await validateApiKey(apiKey);
+      expect(result1).not.toBeNull();
+
+      const cache = getAuthCache();
+      const statsBefore = cache.getStats();
+      expect(statsBefore.size).toBeGreaterThan(0);
+
+      // Create another key for the same user
+      await createApiKey({
+        name: 'Test Key 2',
+        scope: ['contracts:write'],
+        createdBy: 'user-1',
+      });
+
+      // Cache should be invalidated for user-1
+      const statsAfter = cache.getStats();
+      expect(statsAfter.size).toBeLessThan(statsBefore.size);
+    });
+
+    it('invalidates cache when rotating an API key', async () => {
+      const request = {
+        name: 'Test Key',
+        scope: ['contracts:read'],
+        createdBy: 'user-1',
+      };
+
+      const { apiKey, info } = await createApiKey(request);
+
+      // First validation should populate cache
+      const result1 = await validateApiKey(apiKey);
+      expect(result1).not.toBeNull();
+
+      const cache = getAuthCache();
+      const statsBefore = cache.getStats();
+      expect(statsBefore.size).toBeGreaterThan(0);
+
+      // Rotate the key
+      await rotateApiKey(info.id);
+
+      // Cache should be invalidated
+      const statsAfter = cache.getStats();
+      expect(statsAfter.size).toBeLessThan(statsBefore.size);
+
+      // Old key should no longer validate
+      const result2 = await validateApiKey(apiKey);
+      expect(result2).toBeNull();
+    });
+
+    it('invalidates cache when deactivating an API key', async () => {
+      const request = {
+        name: 'Test Key',
+        scope: ['contracts:read'],
+        createdBy: 'user-1',
+      };
+
+      const { apiKey, info } = await createApiKey(request);
+
+      // First validation should populate cache
+      const result1 = await validateApiKey(apiKey);
+      expect(result1).not.toBeNull();
+
+      const cache = getAuthCache();
+      const statsBefore = cache.getStats();
+      expect(statsBefore.size).toBeGreaterThan(0);
+
+      // Deactivate the key
+      await deactivateApiKey(info.id);
+
+      // Cache should be invalidated
+      const statsAfter = cache.getStats();
+      expect(statsAfter.size).toBeLessThan(statsBefore.size);
+
+      // Deactivated key should no longer validate
+      const result2 = await validateApiKey(apiKey);
+      expect(result2).toBeNull();
+    });
+
+    it('cache hit on subsequent validations', async () => {
+      const request = {
+        name: 'Test Key',
+        scope: ['contracts:read'],
+        createdBy: 'user-1',
+      };
+
+      const { apiKey } = await createApiKey(request);
+
+      const cache = getAuthCache();
+      const statsBefore = cache.getStats();
+
+      // First validation - miss
+      await validateApiKey(apiKey);
+      const statsAfterFirst = cache.getStats();
+      expect(statsAfterFirst.misses).toBe(statsBefore.misses + 1);
+
+      // Second validation - hit
+      await validateApiKey(apiKey);
+      const statsAfterSecond = cache.getStats();
+      expect(statsAfterSecond.hits).toBe(statsAfterFirst.hits + 1);
     });
   });
 });
