@@ -110,10 +110,5 @@ healthRouter.post('/', validateRequest(HealthWriteBodySchema), (_req: Request, r
     version: process.env.npm_package_version ?? '0.1.0',
   });
 });
-healthRouter.get('/', (_req: Request, res: Response) => {
-  res.status(200).json({ status: 'ok', service: 'talenttrust-backend' });
-});
 
-healthRouter.post("/", (_req: Request, res: Response) => {
-  sendHealthResponse(res);
-});
+export default healthRouter;
