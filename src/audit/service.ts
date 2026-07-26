@@ -308,6 +308,38 @@ export class AuditService {
   }
 
   /**
+   * Convenience wrapper for milestone-mutation events on a contract.
+   *
+   * Milestones are a field on the Contract resource rather than a
+   * separately-persisted entity, so `metadata` is expected to carry a
+   * `{ before, after }` pair of bounded, redacted snapshots (see
+   * `modules/contracts/milestonesAudit.ts`) rather than a DB row diff.
+   *
+   * MILESTONES_DELETED is WARNING severity — losing milestone data (whether
+   * via an explicit clear or a contract deletion) is the change most likely
+   * to matter during an incident review, so it is flagged above the default
+   * INFO level used for created/updated.
+   */
+  logMilestonesEvent(
+    action: Extract<AuditAction, `MILESTONES_${string}`>,
+    actor: string,
+    contractId: string,
+    metadata: Record<string, unknown> = {},
+    context: { ipAddress?: string; correlationId?: string } = {},
+  ): AuditEntry {
+    const severity: AuditSeverity = action === 'MILESTONES_DELETED' ? 'WARNING' : 'INFO';
+    return this.log({
+      action,
+      severity,
+      actor,
+      resource: 'milestones',
+      resourceId: contractId,
+      metadata,
+      ...context,
+    });
+  }
+
+  /**
    * Convenience wrapper for payment events.
    * Payment events are always CRITICAL severity.
    */

@@ -188,6 +188,18 @@ function createContractsRouter(): Router {
     controller.getContractById,
   );
 
+  // GET /:id/milestones/audit-log — bounded, cursor-paginated audit trail
+  // (actor, action, before/after summary, timestamp) for milestone writes on
+  // this contract. Same visibility as reading the contract itself.
+  /** @permission contracts:read — admin, client (ownOnly), freelancer (ownOnly) */
+  router.get(
+    '/:id/milestones/audit-log',
+    validateContractId,
+    requireAuth,
+    requirePermission('contracts', 'read', getContractOwnerId),
+    controller.getMilestonesAuditLog,
+  );
+
   /**
    * POST /api/v1/contracts
    * Supports Idempotency-Key to safely retry contract creation without creating duplicates.

@@ -110,5 +110,3 @@ healthRouter.post('/', validateRequest(HealthWriteBodySchema), (_req: Request, r
     version: process.env.npm_package_version ?? '0.1.0',
   });
 });
-
-export default healthRouter;

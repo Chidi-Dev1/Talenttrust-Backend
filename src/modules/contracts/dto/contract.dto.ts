@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { registry } from '../../../docs/openapi-registry';
-import { MAX_CONTRACT_AMOUNT_STROOPS } from '../../../contracts/bounds';
+import {
+  MAX_CONTRACT_AMOUNT_STROOPS,
+} from '../../../contracts/bounds';
 
 // ─── Field-level constants ────────────────────────────────────────────────────
 
@@ -80,7 +82,8 @@ const createMilestoneSchema = z
 /**
  * Milestone sub-schema used inside updateContractSchema.
  * description is required (not optional) to keep create/update consistent.
- * .strip() drops unknown keys silently.
+ * `.strict()` rejects unrecognized fields (400 validation_error) instead of
+ * silently dropping them — see validation.middleware.test.ts.
  */
 const updateMilestoneSchema = z
   .object({
@@ -101,14 +104,6 @@ const updateMilestoneSchema = z
   })
   .strict();
 
-// Update contract schema with partial fields for PATCH and OCC version.
-// `.strict()` on both the body and each milestone rejects unrecognized
-// fields (400 validation_error) instead of silently dropping them — this is
-// the write path used to initiate/resolve disputes via `status`.
-// Milestone *count* is intentionally left unbounded here: it's enforced by
-// `validateContractBounds` in the service layer, which returns a 422
-// contract_bounds_error — an established, separately-tested contract this
-// schema must not shadow with an earlier 400.
 /**
  * Schema for the body of POST /api/v1/contracts.
  *
@@ -166,7 +161,13 @@ export const createContractSchema = z
  * Schema for the body of PATCH /api/v1/contracts/:id.
  *
  * All fields are optional except `version` (OCC requirement).
- * `.strict()` rejects undeclared keys instead of silently dropping them.
+ * `.strict()` rejects undeclared keys with a 400 validation_error instead of
+ * silently dropping them — this is the write path used to initiate/resolve
+ * disputes via `status`, so silently ignoring a typo'd field would be
+ * surprising. Milestone *count* is intentionally left unbounded here: it's
+ * enforced by `validateContractBounds` in the service layer, which returns a
+ * 422 contract_bounds_error — an established, separately-tested contract
+ * this schema must not shadow with an earlier 400.
  */
 const updateContractBodySchema = z
   .object({

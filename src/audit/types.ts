@@ -61,9 +61,9 @@ export type AuditAction =
   | 'ENDPOINT_MUTATION'
   | 'DEPLOYMENT_PROMOTED'
   | 'DEPLOYMENT_ROLLED_BACK'
-  | 'DISPUTE_CREATED'
-  | 'DISPUTE_UPDATED'
-  | 'DISPUTE_DELETED';
+  | 'MILESTONES_CREATED'
+  | 'MILESTONES_UPDATED'
+  | 'MILESTONES_DELETED';
 
 /** Severity level of the audit event. */
 export type AuditSeverity = (typeof AUDIT_SEVERITIES)[number];
