@@ -32,6 +32,7 @@ import { buildAuditQuerySchema, createAuditEntryBodySchema, type AuditQueryParam
 import { mapZodErrorToDetails, type ValidationErrorResponse } from '../middleware/validate.middleware';
 import { idempotencyMiddleware } from '../middleware/idempotency';
 import { validateRequest } from '../middleware/validate.middleware';
+import { toAuditEntryResponseDto } from './dto/audit.dto';
 
 export interface AuditRouterOptions {
   service?: AuditService;
