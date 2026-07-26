@@ -155,6 +155,22 @@ export const envSchema = z.object({
     .transform((val) => val === undefined ? undefined : parseInt(val, 10))
     .pipe(z.number().int().positive().optional()),
 
+  // Disputes Cache Configuration
+  DISPUTES_CACHE_TTL_MS: z.string()
+    .default('5000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('DISPUTES_CACHE_TTL_MS must be a positive integer').max(300_000)),
+
+  DISPUTES_CACHE_SWR_MS: z.string()
+    .default('30000')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().nonnegative('DISPUTES_CACHE_SWR_MS must be >= 0').max(600_000)),
+
+  DISPUTES_CACHE_MAX_ENTRIES: z.string()
+    .default('100')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().positive('DISPUTES_CACHE_MAX_ENTRIES must be a positive integer').max(10000)),
+
   RATE_LIMIT_STORE_TYPE: z.enum(['memory', 'redis'])
     .default('memory'),
   REDIS_URL: z.string().optional(),
