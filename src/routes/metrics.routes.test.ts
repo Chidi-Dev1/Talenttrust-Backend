@@ -26,7 +26,7 @@
 
 import express from 'express';
 import request from 'supertest';
-import { createMetricsRouter } from './metrics.routes';
+import { createMetricsRouter, createMetricsScrapeHandler } from './metrics.routes';
 import { MetricsServiceLike } from '../observability/metrics-service';
 import { metricsAuthMiddleware } from '../middleware/metricsAuth';
 import { WebhookOutcome } from '../observability/metrics-validation';
@@ -41,6 +41,7 @@ function buildMockService(overrides?: Partial<MetricsServiceLike>): jest.Mocked<
     contentType: 'text/plain',
     trackHttpRequest: jest.fn(),
     getMetrics: jest.fn().mockResolvedValue(''),
+    recordReputationRequest: jest.fn(),
     recordHealthStatus: jest.fn(),
     recordWebhookDelivery: jest.fn(),
     setWebhookDlqDepth: jest.fn(),
@@ -73,6 +74,49 @@ function buildAppWithAuth(service: MetricsServiceLike): express.Application {
   app.use('/api/v1/metrics', metricsAuthMiddleware, createMetricsRouter(service));
   return app;
 }
+
+describe('GET /api/v1/metrics', () => {
+  it('serves the shared Prometheus registry payload', async () => {
+    const svc = buildMockService({
+      contentType: 'text/plain; version=0.0.4',
+      getMetrics: jest.fn().mockResolvedValue('# HELP reputation_requests_total'),
+    });
+
+    const res = await request(buildApp(svc)).get('/api/v1/metrics');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/plain');
+    expect(res.text).toContain('reputation_requests_total');
+    expect(svc.getMetrics).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes scrape failures to the terminal error handler', async () => {
+    const svc = buildMockService({
+      getMetrics: jest.fn().mockRejectedValue(new Error('registry unavailable')),
+    });
+
+    const res = await request(buildApp(svc, true)).get('/api/v1/metrics');
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('internal_error');
+  });
+});
+
+describe('createMetricsScrapeHandler', () => {
+  it('can be mounted directly on the canonical /metrics route', async () => {
+    const svc = buildMockService({
+      contentType: 'text/plain; version=0.0.4',
+      getMetrics: jest.fn().mockResolvedValue('reputation_requests_total 1'),
+    });
+    const app = express();
+    app.get('/metrics', createMetricsScrapeHandler(svc));
+
+    const res = await request(app).get('/metrics');
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('reputation_requests_total 1');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/metrics/webhook/delivery

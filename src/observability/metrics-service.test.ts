@@ -100,6 +100,161 @@ describe('MetricsService — webhook metrics', () => {
   });
 });
 
+describe('MetricsService — reputation metrics', () => {
+  it('records success status, duration, and no error cause', async () => {
+    const { service, register } = makeService();
+
+    service.recordReputationRequest({
+      operation: 'get_profile',
+      status: 'success',
+      statusCode: 200,
+      errorCause: 'none',
+      durationSeconds: 0.125,
+    });
+
+    const metrics = await register.getMetricsAsJSON();
+    const requestCounter = metrics.find((m) => m.name === 'reputation_requests_total');
+    const duration = metrics.find((m) => m.name === 'reputation_request_duration_seconds');
+    const errors = metrics.find((m) => m.name === 'reputation_errors_total');
+
+    expect(requestCounter).toBeDefined();
+    expect(requestCounter!.values).toContainEqual({
+      labels: {
+        operation: 'get_profile',
+        status: 'success',
+        status_code: '200',
+        error_cause: 'none',
+      },
+      value: 1,
+    });
+    expect(duration!.values).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          labels: {
+            operation: 'get_profile',
+            status: 'success',
+            status_code: '200',
+            error_cause: 'none',
+            le: '+Inf',
+          },
+        }),
+        expect.objectContaining({
+          labels: {
+            operation: 'get_profile',
+            status: 'success',
+            status_code: '200',
+            error_cause: 'none',
+          },
+          value: 0.125,
+        }),
+      ]),
+    );
+    expect(errors!.values).toEqual([]);
+  });
+
+  it.each([
+    ['client_error', 400, 'bad_request'],
+    ['server_error', 500, 'internal_error'],
+  ] as const)('records %s and increments the bounded error cause counter', async (status, statusCode, errorCause) => {
+    const { service, register } = makeService();
+
+    service.recordReputationRequest({
+      operation: 'create_rating',
+      status,
+      statusCode,
+      errorCause,
+      durationSeconds: 0.25,
+    });
+
+    const metrics = await register.getMetricsAsJSON();
+    const errors = metrics.find((m) => m.name === 'reputation_errors_total');
+    const errorValue = (errors!.values as any[]).find(
+      (value) =>
+        value.labels.operation === 'create_rating' &&
+        value.labels.error_cause === errorCause,
+    );
+
+    expect(errorValue?.value).toBe(1);
+  });
+
+  it('rejects invalid metric input before mutating the registry', () => {
+    const { service } = makeService();
+
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'unknown' as any,
+        status: 'success',
+        statusCode: 200,
+        errorCause: 'none',
+        durationSeconds: 0,
+      }),
+    ).toThrow('Invalid reputation operation');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'unknown' as any,
+        statusCode: 200,
+        errorCause: 'none',
+        durationSeconds: 0,
+      }),
+    ).toThrow('Invalid reputation request status');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'success',
+        statusCode: 200,
+        errorCause: 'database_message' as any,
+        durationSeconds: 0,
+      }),
+    ).toThrow('Invalid reputation error cause');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'success',
+        statusCode: 200,
+        errorCause: 'none',
+        durationSeconds: -1,
+      }),
+    ).toThrow('Invalid reputation request duration');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'success',
+        statusCode: 99,
+        errorCause: 'none',
+        durationSeconds: 0,
+      }),
+    ).toThrow('Invalid reputation status code');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'server_error',
+        statusCode: 600,
+        errorCause: 'internal_error',
+        durationSeconds: 0,
+      }),
+    ).toThrow('Invalid reputation status code');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'success',
+        statusCode: 200.5,
+        errorCause: 'none',
+        durationSeconds: 0,
+      }),
+    ).toThrow('Invalid reputation status code');
+    expect(() =>
+      service.recordReputationRequest({
+        operation: 'get_profile',
+        status: 'success',
+        statusCode: 200,
+        errorCause: 'none',
+        durationSeconds: Number.NaN,
+      }),
+    ).toThrow('Invalid reputation request duration');
+  });
+});
+
 describe('MetricsService — HTTP route labels', () => {
   it('uses the mounted Express route template instead of concrete paths', async () => {
     const { service, register } = makeService();

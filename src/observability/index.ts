@@ -5,7 +5,20 @@ export {
   type HealthServiceLike,
   type RuntimeSignalProviders,
 } from './health-service';
-export { MetricsService, type MetricsServiceLike, type WebhookOutcome } from './metrics-service';
+export {
+  MetricsService,
+  type MetricsServiceLike,
+  type ReputationErrorCause,
+  type ReputationOperation,
+  type ReputationRequestMetric,
+  type ReputationRequestStatus,
+  type WebhookOutcome,
+} from './metrics-service';
+export {
+  classifyReputationResponse,
+  createReputationObservabilityMiddleware,
+  type ReputationObservabilityOptions,
+} from './reputation-observability';
 export {
   readObservabilityConfig,
   type ObservabilityConfig,
@@ -16,4 +29,3 @@ export type {
   HealthReport,
   ServiceStatus,
 } from './types';
-
