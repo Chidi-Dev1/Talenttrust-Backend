@@ -9,6 +9,7 @@ import { isSafeUrl } from '../utils/ssrf';
 import { RateLimitStore } from '../lib/rateLimitStore';
 import { MetricsServiceLike } from '../observability';
 import { validateEnv } from '../config/env.schema';
+import { parseBoolEnv } from '../config/env';
 
 import { getDb } from '../db/database';
 import { SqliteWebhookSubscriptionRepository } from '../repositories/webhook-subscription.repository';
@@ -55,6 +56,15 @@ export class WebhookService {
   private static hostRateStore = new RateLimitStore({ sweepIntervalMs: HOST_RATE_LIMIT_WINDOW_MS });
 
   /**
+   * When `false`, `trigger()` is a no-op: no subscriptions are queried,
+   * no deliveries are attempted, and no DLQ entries are written.
+   *
+   * Defaults to `true` (read from `WEBHOOKS_ENABLED` env var at construction
+   * time) so the flag can be injected in tests without touching `process.env`.
+   */
+  private readonly webhooksEnabled: boolean;
+
+  /**
    * Applies a per-host sliding-window rate limit.
    *
    * @param hostname - The destination hostname extracted from the webhook URL.
@@ -84,23 +94,24 @@ export class WebhookService {
     return entry.count <= HOST_RATE_LIMIT_MAX;
   }
 
-  constructor(private readonly metrics?: MetricsServiceLike) {}
+  constructor(private readonly metrics?: MetricsServiceLike, webhooksEnabled?: boolean) {
+    this.webhooksEnabled = webhooksEnabled ?? parseBoolEnv('WEBHOOKS_ENABLED', true);
+  }
 
   /**
    * Triggers a webhook event. It retrieves all active subscriptions matching the event type,
    * constructs a delivery payload, and delivers to each matching subscription URL asynchronously.
+   *
+   * When `WEBHOOKS_ENABLED=false` this method returns immediately without querying
+   * subscriptions, sending any deliveries, or touching the DLQ.
    *
    * @param eventType - The event type name.
    * @param data - The event body/data.
    * @param correlationId - Optional correlation ID.
    */
   async trigger(eventType: string, data: unknown, correlationId?: string): Promise<void> {
-    // Validate payload size before processing any subscriptions
-    const payloadSize = JSON.stringify(data).length;
-    if (payloadSize > WEBHOOK_MAX_PAYLOAD_SIZE_BYTES) {
-      throw new Error(
-        `Webhook payload size (${payloadSize} bytes) exceeds maximum allowed size (${WEBHOOK_MAX_PAYLOAD_SIZE_BYTES} bytes)`
-      );
+    if (!this.webhooksEnabled) {
+      return;
     }
 
     const subscriptions = await this.repo.findAll({ eventType, active: true });
