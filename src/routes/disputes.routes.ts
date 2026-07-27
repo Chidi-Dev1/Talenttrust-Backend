@@ -1,6 +1,13 @@
 /**
  * @module routes/disputes
- * @description Disputes API routes with per-client rate limiting.
+ * @description Disputes API routes with per-client rate limiting and
+ * correlation ID propagation for distributed tracing.
+ *
+ * Every disputes request is tagged with a requestId and an optional
+ * caller-supplied correlation ID.  These IDs are:
+ *   - threaded through request-scoped logs so operations can be traced
+ *   - echoed back in response headers (X-Request-Id, X-Correlation-Id)
+ *   - included in success/error response bodies for support tooling
  *
  * All disputes endpoints are protected by authentication and role-based
  * authorization. A sliding-window rate limiter (sensitive-tier) is applied
@@ -16,13 +23,15 @@
  *  - All routes require a valid JWT (Bearer token).
  *  - Rate limiting returns 429 with Retry-After header when exceeded.
  *  - Abuse guard hard-blocks repeat offenders.
+ *  - Correlation IDs are validated against a strict pattern before use.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import { z } from 'zod';
 import { createRateLimiter } from '../middleware/rateLimiter';
 import { rateLimitConfig } from '../config/rateLimit';
 import { requireAuth, requirePermission } from '../middleware/authorization';
-import { validateRequest, validateParams, validateQuery } from '../middleware/validate.middleware';
+import { validateSchema, validateRequest, validateParams, validateQuery } from '../middleware/validate.middleware';
 import {
   createDisputeSchema,
   updateDisputeSchema,
@@ -30,19 +39,16 @@ import {
   listDisputesQuerySchema,
 } from './disputes.validation';
 import { features } from '../config/features';
+import { ok, fail } from '../utils/apiResponse';
+import { getRequestLogger, getRequestContext } from '../utils/correlationId';
 
 const router = Router();
 
 // ── Feature flag — gate all disputes routes ───────────────────────────────────
 router.use((_req: Request, res: Response, next: NextFunction) => {
   if (!features.disputesEnabled) {
-    return res.status(404).json({
-      error: {
-        code: 'feature_disabled',
-        message: 'Disputes feature is currently disabled.',
-        requestId: res.locals?.requestId || 'unknown',
-      },
-    });
+    fail(res, 'feature_disabled', 'Disputes feature is currently disabled.', 404);
+    return;
   }
   next();
 });
@@ -62,8 +68,16 @@ router.get(
   '/',
   requirePermission('disputes', 'list'),
   validateQuery(listDisputesQuerySchema),
-  (_req: Request, res: Response) => {
-    res.status(200).json({ disputes: [], total: 0 });
+  (req: Request, res: Response) => {
+    const log = getRequestLogger(res);
+    const { correlationId } = getRequestContext(res);
+    log.info('Listing disputes', { query: req.query });
+
+    ok(
+      res,
+      { disputes: [], total: 0 },
+      correlationId ? { correlationId } : undefined,
+    );
   },
 );
 
@@ -74,13 +88,22 @@ router.get(
   requirePermission('disputes', 'read'),
   validateParams(disputeParamsSchema),
   (req: Request, res: Response) => {
-    res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        status: 'open',
-        createdAt: new Date().toISOString(),
+    const log = getRequestLogger(res);
+    const { correlationId } = getRequestContext(res);
+    const disputeId = req.params.id;
+    log.info('Getting dispute', { disputeId });
+
+    ok(
+      res,
+      {
+        dispute: {
+          id: disputeId,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        },
       },
-    });
+      correlationId ? { correlationId } : undefined,
+    );
   },
 );
 
@@ -91,15 +114,25 @@ router.post(
   requirePermission('disputes', 'create'),
   validateRequest(createDisputeSchema),
   (req: Request, res: Response) => {
+    const log = getRequestLogger(res);
+    const { correlationId } = getRequestContext(res);
     const body = req.body ?? {};
-    res.status(201).json({
-      dispute: {
-        id: `dispute-${Date.now()}`,
-        ...body,
-        status: 'open',
-        createdAt: new Date().toISOString(),
+    const disputeId = `dispute-${Date.now()}`;
+    log.info('Creating dispute', { disputeId });
+
+    ok(
+      res,
+      {
+        dispute: {
+          id: disputeId,
+          ...body,
+          status: 'open',
+          createdAt: new Date().toISOString(),
+        },
       },
-    });
+      correlationId ? { correlationId } : undefined,
+      201,
+    );
   },
 );
 
@@ -108,16 +141,28 @@ router.post(
 router.patch(
   '/:id',
   requirePermission('disputes', 'update'),
-  validateRequest(updateDisputeSchema),
+  validateSchema(z.object({
+    body: updateDisputeSchema,
+    params: disputeParamsSchema,
+  })),
   (req: Request, res: Response) => {
+    const log = getRequestLogger(res);
+    const { correlationId } = getRequestContext(res);
+    const disputeId = req.params.id;
     const body = req.body ?? {};
-    res.status(200).json({
-      dispute: {
-        id: req.params.id,
-        ...body,
-        updatedAt: new Date().toISOString(),
+    log.info('Updating dispute', { disputeId, updateFields: Object.keys(body) });
+
+    ok(
+      res,
+      {
+        dispute: {
+          id: disputeId,
+          ...body,
+          updatedAt: new Date().toISOString(),
+        },
       },
-    });
+      correlationId ? { correlationId } : undefined,
+    );
   },
 );
 
@@ -127,9 +172,16 @@ router.delete(
   '/:id',
   requirePermission('disputes', 'delete'),
   (req: Request, res: Response) => {
-    res.status(200).json({
-      message: `Dispute ${req.params.id} deleted successfully`,
-    });
+    const log = getRequestLogger(res);
+    const { correlationId } = getRequestContext(res);
+    const disputeId = req.params.id;
+    log.info('Deleting dispute', { disputeId });
+
+    ok(
+      res,
+      { message: `Dispute ${disputeId} deleted successfully` },
+      correlationId ? { correlationId } : undefined,
+    );
   },
 );
 

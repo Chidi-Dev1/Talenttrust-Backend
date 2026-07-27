@@ -1,12 +1,13 @@
 /**
  * @file disputes.routes.test.ts
- * @description Comprehensive tests for rate limiting on disputes endpoints.
+ * @description Comprehensive tests for rate limiting and correlation ID
+ * propagation on disputes endpoints.
  *
  * Strategy
  * ────────
  * Tests import and exercise the actual disputes router (disputes.routes.ts).
- * Auth middleware is mocked so tests can focus on rate-limiting behaviour
- * without requiring real JWT tokens.
+ * Auth middleware is mocked so tests can focus on rate-limiting and
+ * correlation propagation behaviour without requiring real JWT tokens.
  *
  * Coverage targets (≥ 95 %):
  *   - Requests within limit → 200/201, correct headers
@@ -19,11 +20,16 @@
  *   - sendHeaders=false suppresses headers
  *   - 429 response body conforms to error contract
  *   - Cross-route aggregation under the same limiter
+ *   - Correlation ID accepted, validated, and echoed via headers and body
+ *   - Correlation ID threaded through request-scoped logs
+ *   - Request ID always generated and echoed
  */
 
 import express, { type Request, type Response, type NextFunction } from 'express';
 import request from 'supertest';
 import { RateLimitStore } from '../lib/rateLimitStore';
+import { requestIdMiddleware, REQUEST_ID_HEADER, CORRELATION_ID_HEADER } from '../middleware/requestId';
+import { setWriteRecordImpl } from '../logger';
 
 // ── Mock auth middleware — applied BEFORE we import the router ────────────
 // The disputes router imports requireAuth/requirePermission from this module,
@@ -52,8 +58,28 @@ const testUuid = '550e8400-e29b-41d4-a716-446655440000';
 function buildApp() {
   const app = express();
   app.use(express.json());
+  app.use(requestIdMiddleware);
   app.use('/api/v1/disputes', disputesRouter);
   return app;
+}
+
+/** Captures log records written during a test. */
+function captureLogs(): { records: Record<string, unknown>[]; restore: () => void } {
+  const records: Record<string, unknown>[] = [];
+  setWriteRecordImpl((record: Record<string, unknown>) => { records.push(record); });
+  return {
+    records,
+    restore: () => {
+      setWriteRecordImpl((record: Record<string, unknown>) => {
+        const line = JSON.stringify(record);
+        if (record.level === 'error') {
+          process.stderr.write(line + '\n');
+        } else {
+          process.stdout.write(line + '\n');
+        }
+      });
+    },
+  };
 }
 
 /** Fire `n` sequential requests against `path` from the same IP */
@@ -566,5 +592,438 @@ describe('Disputes endpoints — rate limiting', () => {
         .set('X-Forwarded-For', ip);
       expect(over.status).toBe(429);
     });
+  });
+});
+
+// ── Correlation ID propagation ────────────────────────────────────────────────
+
+describe('Disputes endpoints — correlation ID propagation', () => {
+  beforeEach(() => {
+    mockDisputesEnabled = true;
+  });
+
+  it('accepts X-Correlation-Id from client and echoes it in response header', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'dispute-trace-42';
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.1')
+      .set(CORRELATION_ID_HEADER, testCorrelationId);
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(testCorrelationId);
+  });
+
+  it('does not echo X-Correlation-Id when not provided by client', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.2');
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBeUndefined();
+  });
+
+  it('includes correlationId in response body meta when provided', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'meta-trace-99';
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.3')
+      .set(CORRELATION_ID_HEADER, testCorrelationId);
+    expect(res.status).toBe(200);
+    expect(res.body.meta).toBeDefined();
+    expect(res.body.meta.correlationId).toBe(testCorrelationId);
+  });
+
+  it('does not include correlationId in body meta when not provided', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.4');
+    expect(res.status).toBe(200);
+    expect(res.body.meta).toBeUndefined();
+  });
+
+  it('always generates and echoes X-Request-Id header', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.5');
+    expect(res.status).toBe(200);
+    const requestId = res.headers[REQUEST_ID_HEADER];
+    expect(requestId).toBeTruthy();
+    expect(requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
+
+  it('reuses client-supplied X-Request-Id if valid', async () => {
+    const app = buildApp();
+    const clientRequestId = '550e8400-e29b-41d4-a716-446655440000';
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.6')
+      .set(REQUEST_ID_HEADER, clientRequestId);
+    expect(res.status).toBe(200);
+    expect(res.headers[REQUEST_ID_HEADER]).toBe(clientRequestId);
+  });
+
+  it('propagates both X-Correlation-Id and X-Request-Id in response', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'both-headers-trace';
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.7')
+      .set(CORRELATION_ID_HEADER, testCorrelationId);
+    expect(res.status).toBe(200);
+    const requestId = res.headers[REQUEST_ID_HEADER];
+    const correlationId = res.headers[CORRELATION_ID_HEADER];
+    expect(requestId).toBeTruthy();
+    expect(correlationId).toBe(testCorrelationId);
+    expect(requestId).not.toBe(correlationId);
+  });
+
+  it('rejects invalid correlation IDs with special characters', async () => {
+    const app = buildApp();
+    const invalidCorrelationId = 'dispute<script>alert(1)</script>';
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.8')
+      .set(CORRELATION_ID_HEADER, invalidCorrelationId);
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBeUndefined();
+    expect(res.body.meta).toBeUndefined();
+  });
+
+  it('rejects correlation IDs exceeding 128 characters', async () => {
+    const app = buildApp();
+    const longCorrelationId = 'a'.repeat(129);
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.9')
+      .set(CORRELATION_ID_HEADER, longCorrelationId);
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBeUndefined();
+    expect(res.body.meta).toBeUndefined();
+  });
+
+  it('includes requestId in success response body', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.10');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('success');
+    expect(res.body.requestId).toBeTruthy();
+    expect(res.body.requestId).toMatch(/^[0-9a-f-]+$/);
+  });
+
+  it('includes requestId in error response body when feature disabled', async () => {
+    mockDisputesEnabled = false;
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.11');
+    expect(res.status).toBe(404);
+    expect(res.body.status).toBe('error');
+    expect(res.body.error.requestId).toBeTruthy();
+    expect(res.body.error.requestId).toMatch(/^[0-9a-f-]+$/);
+  });
+
+  it('returns correlationId in feature-disabled error response header', async () => {
+    mockDisputesEnabled = false;
+    const app = buildApp();
+    const testCorrelationId = 'disabled-feature-trace';
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.12')
+      .set(CORRELATION_ID_HEADER, testCorrelationId);
+    expect(res.status).toBe(404);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(testCorrelationId);
+  });
+
+  it('threads correlationId through GET /:id response', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'get-by-id-trace';
+    const res = await request(app)
+      .get(`/api/v1/disputes/${testUuid}`)
+      .set('X-Forwarded-For', '30.0.0.13')
+      .set(CORRELATION_ID_HEADER, testCorrelationId);
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(testCorrelationId);
+    expect(res.body.meta.correlationId).toBe(testCorrelationId);
+  });
+
+  it('threads correlationId through POST response', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'post-trace';
+    const res = await request(app)
+      .post('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.14')
+      .set(CORRELATION_ID_HEADER, testCorrelationId)
+      .send({ contractId: testUuid, reason: 'test' });
+    expect(res.status).toBe(201);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(testCorrelationId);
+    expect(res.body.meta.correlationId).toBe(testCorrelationId);
+  });
+
+  it('threads correlationId through PATCH response', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'patch-trace';
+    const res = await request(app)
+      .patch(`/api/v1/disputes/${testUuid}`)
+      .set('X-Forwarded-For', '30.0.0.15')
+      .set(CORRELATION_ID_HEADER, testCorrelationId)
+      .send({ status: 'resolved' });
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(testCorrelationId);
+    expect(res.body.meta.correlationId).toBe(testCorrelationId);
+  });
+
+  it('threads correlationId through DELETE response', async () => {
+    const app = buildApp();
+    const testCorrelationId = 'delete-trace';
+    const res = await request(app)
+      .delete(`/api/v1/disputes/${testUuid}`)
+      .set('X-Forwarded-For', '30.0.0.16')
+      .set(CORRELATION_ID_HEADER, testCorrelationId);
+    expect(res.status).toBe(200);
+    expect(res.headers[CORRELATION_ID_HEADER]).toBe(testCorrelationId);
+    expect(res.body.meta.correlationId).toBe(testCorrelationId);
+  });
+
+  it('uses standard success envelope format on GET /', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.17');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      data: { disputes: [], total: 0 },
+    });
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it('uses standard success envelope format on POST', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .post('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.18')
+      .send({ contractId: testUuid, reason: 'test dispute' });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      data: {
+        dispute: expect.objectContaining({
+          status: 'open',
+          contractId: testUuid,
+          reason: 'test dispute',
+        }),
+      },
+    });
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it('uses standard success envelope format on GET /:id', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .get(`/api/v1/disputes/${testUuid}`)
+      .set('X-Forwarded-For', '30.0.0.19');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      data: {
+        dispute: { id: testUuid, status: 'open' },
+      },
+    });
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it('uses standard success envelope format on PATCH', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .patch(`/api/v1/disputes/${testUuid}`)
+      .set('X-Forwarded-For', '30.0.0.20')
+      .send({ status: 'resolved' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      data: {
+        dispute: { id: testUuid, status: 'resolved' },
+      },
+    });
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it('uses standard success envelope format on DELETE', async () => {
+    const app = buildApp();
+    const res = await request(app)
+      .delete(`/api/v1/disputes/${testUuid}`)
+      .set('X-Forwarded-For', '30.0.0.21');
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: 'success',
+      data: { message: `Dispute ${testUuid} deleted successfully` },
+    });
+    expect(res.body.requestId).toBeTruthy();
+  });
+
+  it('uses standard error envelope format when feature disabled', async () => {
+    mockDisputesEnabled = false;
+    const app = buildApp();
+    const res = await request(app)
+      .get('/api/v1/disputes')
+      .set('X-Forwarded-For', '30.0.0.22');
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({
+      status: 'error',
+      error: {
+        code: 'feature_disabled',
+        message: 'Disputes feature is currently disabled.',
+      },
+    });
+    expect(res.body.error.requestId).toBeTruthy();
+  });
+});
+
+// ── Logging with correlation context ──────────────────────────────────────────
+
+describe('Disputes endpoints — logging with correlation context', () => {
+  beforeEach(() => {
+    mockDisputesEnabled = true;
+  });
+
+  afterEach(() => {
+    // Ensure the default write implementation is always restored
+    setWriteRecordImpl((record: Record<string, unknown>) => {
+      const line = JSON.stringify(record);
+      if (record.level === 'error') {
+        process.stderr.write(line + '\n');
+      } else {
+        process.stdout.write(line + '\n');
+      }
+    });
+  });
+
+  it('logs with requestId on GET /', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      const app = buildApp();
+      await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '40.0.0.1');
+
+      const disputeLogs = records.filter(r => r.message === 'Listing disputes');
+      expect(disputeLogs.length).toBeGreaterThanOrEqual(1);
+      expect(disputeLogs[0].requestId).toBeTruthy();
+      expect(disputeLogs[0].service).toBe('talenttrust-backend');
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs with correlationId on GET / when X-Correlation-Id is provided', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      const app = buildApp();
+      const testCorrelationId = 'log-correlation-42';
+      await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '40.0.0.2')
+        .set(CORRELATION_ID_HEADER, testCorrelationId);
+
+      const disputeLogs = records.filter(r => r.message === 'Listing disputes');
+      expect(disputeLogs.length).toBeGreaterThanOrEqual(1);
+      expect(disputeLogs[0].requestId).toBeTruthy();
+      expect(disputeLogs[0].correlationId).toBe(testCorrelationId);
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs with correlationId on GET /:id', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      const app = buildApp();
+      await request(app)
+        .get(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '40.0.0.3');
+
+      const disputeLogs = records.filter(r => r.message === 'Getting dispute');
+      expect(disputeLogs.length).toBeGreaterThanOrEqual(1);
+      expect(disputeLogs[0].requestId).toBeTruthy();
+      expect(disputeLogs[0].disputeId).toBe(testUuid);
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs on POST /', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      const app = buildApp();
+      await request(app)
+        .post('/api/v1/disputes')
+        .set('X-Forwarded-For', '40.0.0.4')
+        .send({ contractId: testUuid, reason: 'test dispute' });
+
+      const disputeLogs = records.filter(r => r.message === 'Creating dispute');
+      expect(disputeLogs.length).toBeGreaterThanOrEqual(1);
+      expect(disputeLogs[0].requestId).toBeTruthy();
+      expect(disputeLogs[0].disputeId).toBeTruthy();
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs on PATCH /:id', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      const app = buildApp();
+      await request(app)
+        .patch(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '40.0.0.5')
+        .send({ status: 'resolved' });
+
+      const disputeLogs = records.filter(r => r.message === 'Updating dispute');
+      expect(disputeLogs.length).toBeGreaterThanOrEqual(1);
+      expect(disputeLogs[0].requestId).toBeTruthy();
+      expect(disputeLogs[0].disputeId).toBe(testUuid);
+    } finally {
+      restore();
+    }
+  });
+
+  it('logs on DELETE /:id', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      const app = buildApp();
+      await request(app)
+        .delete(`/api/v1/disputes/${testUuid}`)
+        .set('X-Forwarded-For', '40.0.0.6');
+
+      const disputeLogs = records.filter(r => r.message === 'Deleting dispute');
+      expect(disputeLogs.length).toBeGreaterThanOrEqual(1);
+      expect(disputeLogs[0].requestId).toBeTruthy();
+      expect(disputeLogs[0].disputeId).toBe(testUuid);
+    } finally {
+      restore();
+    }
+  });
+
+  it('does not log when feature is disabled (feature flag short-circuits)', async () => {
+    const { records, restore } = captureLogs();
+    try {
+      mockDisputesEnabled = false;
+      const app = buildApp();
+      await request(app)
+        .get('/api/v1/disputes')
+        .set('X-Forwarded-For', '40.0.0.7');
+
+      const disputeLogs = records.filter(
+        r => r.message && (r.message as string).startsWith('Listing'),
+      );
+      expect(disputeLogs.length).toBe(0);
+    } finally {
+      restore();
+    }
   });
 });
