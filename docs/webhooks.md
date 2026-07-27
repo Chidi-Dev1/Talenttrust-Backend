@@ -14,6 +14,70 @@ All endpoints follow the standard TalentTrust API response envelope contract (se
 
 ---
 
+## Webhook Event Schema
+
+### Event Payload Structure
+
+When a webhook is triggered, the following JSON payload is sent to the subscriber's endpoint:
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "event": "contract.created",
+  "timestamp": "2024-07-20T14:30:00.000Z",
+  "data": {
+    "contractId": "abc123",
+    "talentId": "talent-456",
+    "action": "created"
+  }
+}
+```
+
+### Event Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string (UUID) | Unique identifier for this webhook delivery event. |
+| `event` | string | The event type name (e.g., `contract.created`, `contract.updated`). |
+| `timestamp` | string (ISO 8601) | When the webhook was generated. |
+| `data` | object | The event-specific payload data. Structure varies by event type. |
+
+### Payload Size Limits
+
+- **Maximum payload size**: 1 MB (1,048,576 bytes) by default
+- **Configurable via**: `WEBHOOK_MAX_PAYLOAD_SIZE_BYTES` environment variable
+- **Range**: 1 KB to 10 MB
+- Payloads exceeding this limit will be rejected before delivery attempts.
+
+### Event Types
+
+The system supports the following event types (examples):
+
+- `contract.created` — Fired when a new contract is created
+- `contract.updated` — Fired when a contract is updated
+- `contract.deleted` — Fired when a contract is deleted
+- `talent.verified` — Fired when a talent identity is verified
+
+Event types are defined by the `eventType` field in webhook subscriptions. Subscribers only receive events for the event types they have subscribed to.
+
+### Signature Headers (When Secret is Configured)
+
+If a subscription includes a `secret`, the following headers are added:
+
+- **`X-Signature`** — HMAC-SHA256 signature of the payload, prefixed with `sha256=`
+- **`X-Timestamp`** — Unix timestamp in milliseconds when the signature was generated
+
+See the [Signature Verification](#webhook-signature-verification-inbound) section for details on verifying these signatures.
+
+### Standard Headers
+
+All webhook deliveries include:
+
+- **`Content-Type`** — `application/json`
+- **`X-Correlation-Id`** — Optional correlation ID for distributed tracing (if provided)
+
+---
+
 ## Webhook Subscription Management
 
 Webhook subscriptions define event delivery endpoints for a consumer or globally. Each subscription specifies a target URL, event type to subscribe to, and an optional shared secret for HMAC signature verification.

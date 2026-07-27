@@ -179,6 +179,11 @@ export const envSchema = z.object({
     .transform((val) => parseInt(val, 10))
     .pipe(z.number().int().min(100).max(120_000)),
 
+  WEBHOOK_MAX_PAYLOAD_SIZE_BYTES: z.string()
+    .default('1048576')
+    .transform((val) => parseInt(val, 10))
+    .pipe(z.number().int().min(1024).max(10485760)),
+
   IDEMPOTENCY_TTL_MS: z.string()
     .optional()
     .transform((val) => val === undefined ? undefined : parseInt(val, 10))
