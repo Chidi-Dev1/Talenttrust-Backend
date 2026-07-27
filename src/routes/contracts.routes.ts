@@ -14,6 +14,7 @@ import { validateUpdateContract } from '../modules/contracts/validation.middlewa
 import { eventIngestionService } from '../events/registry';
 import { contractCreateIdempotencyMiddleware } from '../middleware/contractIdempotency';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import type { MetricsServiceLike } from '../observability/metrics-service';
 
 // ─── Inline route-param validator ────────────────────────────────────────────
 
@@ -106,12 +107,16 @@ function validateContractQuery(req: Request, res: Response, next: NextFunction):
  * Creates the contracts router with injected dependencies.
  * DB acquisition happens here at route registration time,
  * not at module import time.
+ *
+ * @param metricsService - Optional metrics service for recording milestone
+ *   operation counters and durations. When omitted the controller operates
+ *   without metrics instrumentation (e.g. in unit tests).
  */
-function createContractsRouter(): Router {
+function createContractsRouter(metricsService?: MetricsServiceLike): Router {
   const router = Router();
   const db = getDb();
   const repo = new ContractRepository(db);
-  const controller = createContractsController(new ContractsService(repo));
+  const controller = createContractsController(new ContractsService(repo), metricsService);
 
   /**
    * Resolves the owner (clientId) of a contract from the DB.
@@ -200,4 +205,5 @@ function createContractsRouter(): Router {
   return router;
 }
 
+export { createContractsRouter };
 export default createContractsRouter();
