@@ -11,6 +11,7 @@ import { requireAuth, requirePermission } from '../middleware/authorization';
 import { rateLimitConfig } from '../config/rateLimit';
 import { authRateLimitKeyFn } from '../auth/rateLimitKey';
 import { z } from 'zod';
+import { reputationIdempotencyMiddleware } from '../middleware/reputationIdempotency';
 
 const router = Router();
 const reputationLimiter = createRateLimiter({
@@ -30,6 +31,7 @@ router.post(
   '/bulk',
   requirePermission('reviews', 'create'),
   validateSchema(bulkReputationSchema),
+  reputationIdempotencyMiddleware,
   ReputationController.createBulkRatings
 );
 
@@ -117,6 +119,13 @@ registry.registerPath({
       in: 'path',
       required: true,
       schema: { type: 'string', format: 'uuid' }
+    },
+    {
+      name: 'Idempotency-Key',
+      in: 'header',
+      required: false,
+      description: 'Optional retry key. Exact retries replay the original response.',
+      schema: { type: 'string', maxLength: 255 }
     }
   ],
   request: {
@@ -150,12 +159,21 @@ registry.registerPath({
   }
 });
 
+router.post(
+  '/:id/rate',
+  requirePermission('reviews', 'create'),
+  validateSchema(z.object({ body: updateReputationSchema, params: reputationParamsSchema })),
+  reputationIdempotencyMiddleware,
+  ReputationController.createRating,
+);
+
 // PUT /api/v1/reputation/:id - Submit a reputation review for a freelancer.
 // Requires 'reviews.create' permission — granted to admin, client, freelancer.
 router.put(
   '/:id',
   requirePermission('reviews', 'create'),
   validateSchema(z.object({ body: updateReputationSchema, params: reputationParamsSchema })),
+  reputationIdempotencyMiddleware,
   ReputationController.createRating
 );
 
