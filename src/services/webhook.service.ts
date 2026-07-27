@@ -19,6 +19,8 @@ const HOST_RATE_LIMIT_MAX = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_MAX ?? 60
 const HOST_RATE_LIMIT_WINDOW_MS = Number(process.env.WEBHOOK_HOST_RATE_LIMIT_WINDOW_MS ?? 60_000);
 /** Per-attempt outbound webhook timeout, validated through env schema. */
 const WEBHOOK_DELIVERY_TIMEOUT_MS = validateEnv().WEBHOOK_DELIVERY_TIMEOUT_MS;
+/** Maximum webhook payload size in bytes, validated through env schema. */
+const WEBHOOK_MAX_PAYLOAD_SIZE_BYTES = validateEnv().WEBHOOK_MAX_PAYLOAD_SIZE_BYTES;
 
 /**
  * Public, secret-redacted view of a DLQ entry. Exposes the failure reason as
@@ -93,9 +95,17 @@ export class WebhookService {
    * @param correlationId - Optional correlation ID.
    */
   async trigger(eventType: string, data: unknown, correlationId?: string): Promise<void> {
+    // Validate payload size before processing any subscriptions
+    const payloadSize = JSON.stringify(data).length;
+    if (payloadSize > WEBHOOK_MAX_PAYLOAD_SIZE_BYTES) {
+      throw new Error(
+        `Webhook payload size (${payloadSize} bytes) exceeds maximum allowed size (${WEBHOOK_MAX_PAYLOAD_SIZE_BYTES} bytes)`
+      );
+    }
+
     const subscriptions = await this.repo.findAll({ eventType, active: true });
     console.log("TRIGGER FINDALL:", subscriptions.length, "subs for", eventType);
-    
+
     // Asynchronously deliver to all matching subscriptions
     const deliveries = subscriptions.map((sub) => {
       const payload: WebhookPayload = {

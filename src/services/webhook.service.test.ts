@@ -468,3 +468,110 @@ describe('WebhookService per-host rate limiting', () => {
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Payload size validation tests.
+ */
+describe('WebhookService payload size validation', () => {
+  const ORIG_ENV = process.env;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedIsSafeUrl.mockReturnValue(true);
+    // Set a small limit for testing (10KB)
+    process.env = { ...ORIG_ENV, WEBHOOK_MAX_PAYLOAD_SIZE_BYTES: '10240' };
+  });
+
+  afterEach(() => {
+    process.env = ORIG_ENV;
+  });
+
+  it('accepts payload within size limit', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
+
+    const service = new WebhookService();
+    const smallData = { event: 'test', data: 'small payload' };
+
+    // Should not throw for small payload
+    await expect(
+      service.trigger('test.event', smallData)
+    ).resolves.not.toThrow();
+  });
+
+  it('rejects payload exceeding size limit', async () => {
+    const service = new WebhookService();
+    // Create a payload larger than 10KB
+    const largeData = { event: 'test', data: 'x'.repeat(15000) };
+
+    await expect(
+      service.trigger('test.event', largeData)
+    ).rejects.toThrow('Webhook payload size');
+  });
+
+  it('includes actual and max size in error message', async () => {
+    const service = new WebhookService();
+    const largeData = { event: 'test', data: 'x'.repeat(15000) };
+
+    try {
+      await service.trigger('test.event', largeData);
+      fail('Should have thrown');
+    } catch (error) {
+      expect((error as Error).message).toMatch(/exceeds maximum allowed size/);
+      expect((error as Error).message).toMatch(/bytes/);
+    }
+  });
+
+  it('validates payload size before any delivery attempts', async () => {
+    const service = new WebhookService();
+    const largeData = { event: 'test', data: 'x'.repeat(15000) };
+
+    try {
+      await service.trigger('test.event', largeData);
+    } catch (error) {
+      // Should not attempt any deliveries
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    }
+  });
+
+  it('handles empty payload', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
+
+    const service = new WebhookService();
+    const emptyData = {};
+
+    await expect(
+      service.trigger('test.event', emptyData)
+    ).resolves.not.toThrow();
+  });
+
+  it('handles complex nested payload within limit', async () => {
+    mockedAxios.post.mockResolvedValue({ status: 200 });
+
+    const service = new WebhookService();
+    const complexData = {
+      event: 'complex',
+      nested: {
+        level1: {
+          level2: {
+            data: 'test',
+            array: [1, 2, 3, 4, 5]
+          }
+        }
+      }
+    };
+
+    await expect(
+      service.trigger('test.event', complexData)
+    ).resolves.not.toThrow();
+  });
+
+  it('rejects at exact boundary when payload equals limit', async () => {
+    const service = new WebhookService();
+    // Create payload exactly at the limit (10KB)
+    const boundaryData = { event: 'test', data: 'x'.repeat(10240 - JSON.stringify({ event: 'test', data: '' }).length) };
+
+    await expect(
+      service.trigger('test.event', boundaryData)
+    ).rejects.toThrow('Webhook payload size');
+  });
+});
