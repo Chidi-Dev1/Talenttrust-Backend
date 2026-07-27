@@ -361,6 +361,11 @@ describe('Contract: GET /api/v1/audit/:id', () => {
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
     expect(res.body.error).toBe('Audit entry not found');
+    expect(res.body).toMatchInlineSnapshot(`
+      {
+        "error": "Audit entry not found",
+      }
+    `);
   });
 });
 
@@ -438,6 +443,19 @@ describe('Contract: GET /api/v1/audit/integrity', () => {
     expect(res.body.valid).toBe(false);
     expect(typeof res.body.firstCorruptedIndex).toBe('number');
     expect(typeof res.body.firstCorruptedId).toBe('string');
+    
+    // We snapshot the predictable parts of the response (omitting the random ID)
+    expect({
+      ...res.body,
+      firstCorruptedId: 'UUID_MOCKED_FOR_SNAPSHOT'
+    }).toMatchInlineSnapshot(`
+      {
+        "firstCorruptedId": "UUID_MOCKED_FOR_SNAPSHOT",
+        "firstCorruptedIndex": 1,
+        "totalEntries": 2,
+        "valid": false,
+      }
+    `);
   });
 });
 
@@ -473,6 +491,7 @@ describe('Contract: POST /api/v1/audit', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchSnapshot();
   });
 });
 
@@ -485,6 +504,7 @@ describe('Contract: error responses', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchSnapshot();
   });
 
   it('GET / with invalid severity returns exactly { error: string }', async () => {
@@ -493,6 +513,7 @@ describe('Contract: error responses', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchSnapshot();
   });
 
   it('GET / with invalid limit returns exactly { error: string }', async () => {
@@ -501,6 +522,11 @@ describe('Contract: error responses', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchInlineSnapshot(`
+      {
+        "error": "Invalid to timestamp",
+      }
+    `);
   });
 
   it('GET / with invalid offset returns exactly { error: string }', async () => {
@@ -509,6 +535,7 @@ describe('Contract: error responses', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchSnapshot();
   });
 
   it('GET / with invalid from date returns exactly { error: string }', async () => {
@@ -517,6 +544,7 @@ describe('Contract: error responses', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchSnapshot();
   });
 
   it('GET / with invalid to date returns exactly { error: string }', async () => {
@@ -525,6 +553,34 @@ describe('Contract: error responses', () => {
 
     assertExactKeys(res.body, ['error']);
     expect(typeof res.body.error).toBe('string');
+    expect(res.body).toMatchSnapshot();
+  });
+
+  it('returns exactly { error: string } and 500 status on internal error', async () => {
+    const { app, service } = buildApp();
+    jest.spyOn(service, 'log').mockImplementation(() => {
+      throw new Error('Database connection lost');
+    });
+
+    const res = await request(app)
+      .post('/api/v1/audit')
+      .send({
+        action: 'PAYMENT_INITIATED',
+        severity: 'CRITICAL',
+        actor: 'pay-service',
+        resource: 'payment',
+        resourceId: 'pay-100',
+        metadata: {},
+      })
+      .expect(500);
+
+    assertExactKeys(res.body, ['error']);
+    expect(res.body.error).toBe('Database connection lost');
+    expect(res.body).toMatchInlineSnapshot(`
+      {
+        "error": "Database connection lost",
+      }
+    `);
   });
 });
 
