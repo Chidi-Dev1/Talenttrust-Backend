@@ -34,6 +34,7 @@ import {
   DisputesRequestMetricInput,
 } from '../observability/metrics-service';
 import { mapDisputesErrorCause } from '../observability/metrics-validation';
+import { disputesErrorHandler } from '../middleware/disputesErrorHandler';
 
 export interface DisputesRouterOptions {
   /** Optional metrics service; when omitted, metrics are skipped. */
@@ -59,6 +60,9 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
 
   // ── Authentication — all disputes routes require a valid JWT ──────────────────
   router.use(requireAuth);
+
+  // ── Disputes error handling — centralizes dispute-specific errors ─────────────
+  router.use(disputesErrorHandler);
 
   // ── GET / — list disputes ─────────────────────────────────────────────────────
   /** @permission disputes:list — admin, auditor, client (ownOnly), freelancer (ownOnly) */
