@@ -5,7 +5,7 @@ import { SorobanService } from './soroban.service';
 import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.types';
 import { ContractCacheService } from './contractCache.service';
 
-import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
+import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS, validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
 import { parseBoolEnv } from '../config/env';
 
@@ -207,7 +207,10 @@ export class ContractsService {
     const milestones = effectiveFields.milestones;
     if (budget !== undefined || milestones !== undefined) {
       // Fall back to 0 if budget is absent so the bounds check can still run on milestones alone
-      this.milestonesService.validateBounds(budget ?? 0, milestones);
+      const boundsCheck = validateContractBounds(budget ?? 0, milestones);
+      if (!boundsCheck.valid) {
+        throw new ContractBoundsError(boundsCheck.error);
+      }
     }
 
     const updateFields: Partial<Contract> = {};
