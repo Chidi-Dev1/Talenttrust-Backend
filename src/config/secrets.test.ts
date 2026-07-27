@@ -85,9 +85,91 @@ describe('EnvSecret — basic behaviour', () => {
   });
 });
 
+
+  describe('EnvSecret with requireStrongInProd', () => {
+    it('should still use the default in development', () => {
+      process.env.NODE_ENV = 'development';
+      delete process.env.STRONG_KEY;
+
+      const secret = new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
+        requireStrongInProd: true,
+        minLength: 32,
+      });
+
+      expect(secret.get()).toBe('dev-default');
+    });
+
+    it('should still use the default in test', () => {
+      process.env.NODE_ENV = 'test';
+      delete process.env.STRONG_KEY;
+
+      const secret = new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
+        requireStrongInProd: true,
+        minLength: 32,
+      });
+
+      expect(secret.get()).toBe('dev-default');
+    });
+
+    it('should throw instead of using the default in production', () => {
+      process.env.NODE_ENV = 'production';
+      delete process.env.STRONG_KEY;
+
+      expect(
+        () =>
+          new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
+            requireStrongInProd: true,
+            minLength: 32,
+          }),
+      ).toThrow('Missing required secret "STRONG_KEY"');
+    });
+
+    it('should reject a value shorter than minLength in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.STRONG_KEY = 'short';
+
+      expect(
+        () =>
+          new EnvSecret('STRONG_KEY', undefined, undefined, {
+            requireStrongInProd: true,
+            minLength: 32,
+          }),
+      ).toThrow('must be at least 32 characters');
+    });
+
+    it('should accept a value that meets minLength in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.STRONG_KEY = 'x'.repeat(32);
+
+      const secret = new EnvSecret('STRONG_KEY', undefined, undefined, {
+        requireStrongInProd: true,
+        minLength: 32,
+      });
+
+      expect(secret.get()).toBe('x'.repeat(32));
+    });
+
+    it('should not enforce minLength in production when requireStrongInProd is false', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.SHORT_OK_KEY = 'short';
+
+      const secret = new EnvSecret('SHORT_OK_KEY');
+      expect(secret.get()).toBe('short');
+    });
+  });
+
+  describe('RotatingSecret', () => {
+    it('should initialize with the provider value and return it synchronously', async () => {
+      let providerCalled = false;
+      const provider = async () => {
+        providerCalled = true;
+        return 'initial-secret';
+      };
+
 // ---------------------------------------------------------------------------
 // EnvSecret — transform error REDACTION guarantee
 // ---------------------------------------------------------------------------
+
 
 describe('EnvSecret — transform error redaction', () => {
   /**
@@ -182,6 +264,16 @@ describe('EnvSecret — transform error redaction', () => {
     });
   });
 
+
+  describe('SecretsManager', () => {
+    it('should register and retrieve a secret', () => {
+      const manager = new SecretsManager();
+      const secret = new EnvSecret('TEST_KEY', 'test-value');
+      manager.register('mySecret', secret);
+
+      expect(manager.get('mySecret')).toBe(secret);
+      expect(manager.getValue('mySecret')).toBe('test-value');
+
   it('does NOT leak the secret when transform throws undefined', () => {
     withEnv(KEY, RAW_SECRET, () => {
       const leakyTransform = (_val: string) => {
@@ -194,8 +286,17 @@ describe('EnvSecret — transform error redaction', () => {
         caught = e;
       }
       assertRedacted(caught, RAW_SECRET);
+
     });
   });
+
+
+    it('should throw when registering a secret name that already exists', () => {
+      const manager = new SecretsManager();
+      const secret = new EnvSecret('TEST_KEY', 'test-value');
+      manager.register('mySecret', secret);
+
+      expect(() => manager.register('mySecret', secret)).toThrow('Secret "mySecret" is already registered');
 
   it('error message contains the safe boilerplate text', () => {
     withEnv(KEY, RAW_SECRET, () => {
@@ -209,6 +310,7 @@ describe('EnvSecret — transform error redaction', () => {
         /Configuration Error: Failed to transform credential/
       );
       expect((caught as Error).message).toMatch(/details omitted/);
+
     });
   });
 
@@ -220,28 +322,72 @@ describe('EnvSecret — transform error redaction', () => {
     });
   });
 
+
+    it('should refresh all registered secrets', async () => {
+      const manager = new SecretsManager();
+      process.env.S1 = 'v1';
+      process.env.S2 = 'v2';
+
+      const secret1 = new EnvSecret('S1');
+      const secret2 = new EnvSecret('S2');
+
+      manager.register('s1', secret1);
+      manager.register('s2', secret2);
+
+      process.env.S1 = 'v1-updated';
+      process.env.S2 = 'v2-updated';
+
+      await manager.refreshAll();
+
+      expect(manager.getValue('s1')).toBe('v1-updated');
+      expect(manager.getValue('s2')).toBe('v2-updated');
+
   it('does NOT throw when transform succeeds — happy path is unaffected', () => {
     withEnv(KEY, '100', () => {
       expect(() => {
         new EnvSecret<number>(KEY, undefined, (v) => parseInt(v, 10));
       }).not.toThrow();
+
     });
   });
 });
+
+
+  describe('initializeSecrets', () => {
+    it('should register core application secrets', () => {
+      process.env.PORT = '4000';
+      process.env.NODE_ENV = 'production';
+      process.env.DATABASE_URL = 'postgres://prod-db';
+      process.env.JWT_SECRET = 'a'.repeat(32); // meets the 32-char minimum enforced in production
 
 // ---------------------------------------------------------------------------
 // SecretsManager
 // ---------------------------------------------------------------------------
 
+
 describe('SecretsManager', () => {
   let mgr: SecretsManager;
+
+
+      expect(secretsManager.getValue<number>('PORT')).toBe(4000);
+      expect(secretsManager.getValue('NODE_ENV')).toBe('production');
+      expect(secretsManager.getValue('DATABASE_URL')).toBe('postgres://prod-db');
+      expect(secretsManager.getValue('JWT_SECRET')).toBe('a'.repeat(32));
 
   beforeEach(() => {
     mgr = new SecretsManager();
     withEnv('MGR_TEST_KEY', 'mgr-val', () => {
       mgr.register('mySecret', new EnvSecret('MGR_TEST_KEY'));
+
     });
   });
+
+
+    it('should use default values if env vars are missing during initialization in development', () => {
+      delete process.env.PORT;
+      process.env.NODE_ENV = 'development';
+      delete process.env.DATABASE_URL;
+      delete process.env.JWT_SECRET;
 
   it('getValue returns the registered secret value', () => {
     withEnv('MGR_TEST_KEY', 'mgr-val', () => {
@@ -250,6 +396,7 @@ describe('SecretsManager', () => {
       expect(m.getValue('mySecret')).toBe('mgr-val');
     });
   });
+
 
   it('throws when getting an unregistered secret', () => {
     expect(() => mgr.getValue('nonexistent')).toThrow(
@@ -263,7 +410,60 @@ describe('SecretsManager', () => {
         'SecretsManager Error: Secret "mySecret" is already registered.'
       );
     });
+
+    it('should throw at boot if JWT_SECRET is missing in production', () => {
+      delete process.env.JWT_SECRET;
+      process.env.NODE_ENV = 'production';
+      process.env.DATABASE_URL = 'postgres://prod-db';
+
+      expect(() => initializeSecrets()).toThrow('Missing required secret "JWT_SECRET"');
+    });
+
+    it('should throw at boot if DATABASE_URL is missing in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.JWT_SECRET = 'a'.repeat(32);
+      delete process.env.DATABASE_URL;
+
+      expect(() => initializeSecrets()).toThrow('Missing required secret "DATABASE_URL"');
+    });
+
+    it('should reject the known weak JWT_SECRET literal even if explicitly set in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.DATABASE_URL = 'postgres://prod-db';
+      process.env.JWT_SECRET = 'dev-secret-keep-it-safe';
+
+      expect(() => initializeSecrets()).toThrow('known weak/placeholder value');
+    });
+
+    it('should reject a JWT_SECRET shorter than 32 characters in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.DATABASE_URL = 'postgres://prod-db';
+      process.env.JWT_SECRET = 'too-short';
+
+      expect(() => initializeSecrets()).toThrow('must be at least 32 characters');
+    });
+
+    it('should reject the known weak DATABASE_URL literal even if explicitly set in production', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.JWT_SECRET = 'a'.repeat(32);
+      process.env.DATABASE_URL = 'postgresql://localhost:5432/talenttrust';
+
+      expect(() => initializeSecrets()).toThrow('known weak/placeholder value');
+    });
+
+    it('should allow the dev-only defaults in test environment too', () => {
+      process.env.NODE_ENV = 'test';
+      delete process.env.DATABASE_URL;
+      delete process.env.JWT_SECRET;
+
+      expect(() => initializeSecrets()).not.toThrow();
+      expect(secretsManager.getValue('JWT_SECRET')).toBe('dev-secret-keep-it-safe');
+      expect(secretsManager.getValue('DATABASE_URL')).toBe('postgresql://localhost:5432/talenttrust');
+    });
   });
+
+});
+
 
   it('clear() removes all secrets', () => {
     mgr.clear();
@@ -314,3 +514,4 @@ describe('initializeSecrets', () => {
     expect(typeof env).toBe('string');
   });
 });
+
