@@ -57,6 +57,14 @@ const refreshSchema = z.object({
   }).strict(),
 });
 
+import {
+  mapLoginRequest,
+  mapRegisterRequest,
+  mapRefreshRequest,
+  mapAuthTokensResponse,
+  mapLogoutResponse,
+} from './auth.dto';
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getAuthService(): AuthService {
@@ -77,9 +85,9 @@ router.post(
   validateSchema(loginSchema),
   async (req: Request, res: Response) => {
     try {
-      const { email, password } = req.body as { email: string; password: string };
-      const tokens = await getAuthService().login(email, password);
-      return res.status(200).json(tokens);
+      const dto = mapLoginRequest(req.body);
+      const tokens = await getAuthService().login(dto.email, dto.password);
+      return res.status(200).json(mapAuthTokensResponse(tokens));
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'invalid_credentials') {
@@ -97,14 +105,9 @@ router.post(
   validateSchema(registerSchema),
   async (req: Request, res: Response) => {
     try {
-      const { email, password, username, role } = req.body as {
-        email: string;
-        password: string;
-        username: string;
-        role?: string;
-      };
-      const tokens = await getAuthService().register(email, password, username, role);
-      return res.status(201).json(tokens);
+      const dto = mapRegisterRequest(req.body);
+      const tokens = await getAuthService().register(dto.email, dto.password, dto.username, dto.role);
+      return res.status(201).json(mapAuthTokensResponse(tokens));
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'duplicate_email') {
@@ -123,9 +126,9 @@ router.post(
   validateSchema(refreshSchema),
   async (req: Request, res: Response) => {
     try {
-      const { refreshToken } = req.body as { refreshToken: string };
-      const tokens = await getAuthService().refresh(refreshToken);
-      return res.status(200).json(tokens);
+      const dto = mapRefreshRequest(req.body);
+      const tokens = await getAuthService().refresh(dto.refreshToken);
+      return res.status(200).json(mapAuthTokensResponse(tokens));
     } catch {
       return authError(res, 401, 'invalid_refresh_token', 'Invalid or expired refresh token.');
     }
@@ -142,7 +145,7 @@ router.post(
     if (userId) {
       getAuthService().logout(userId);
     }
-    return res.status(200).json({ message: 'Logged out successfully' });
+    return res.status(200).json(mapLogoutResponse());
   }
 );
 
