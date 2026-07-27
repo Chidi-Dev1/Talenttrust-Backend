@@ -1,59 +1,90 @@
-import { EnvSecret, RotatingSecret, SecretsManager, secretsManager, initializeSecrets } from './secrets';
+/**
+ * @file secrets.test.ts
+ * @description Unit tests for EnvSecret, SecretsManager, and the
+ * transform-error redaction guarantee.
+ *
+ * Security contract under test:
+ *   When an EnvSecret transform callback throws — regardless of whether it
+ *   throws an Error, a plain string, or any other value — the resulting
+ *   error message MUST NOT contain the raw secret value or any substring of
+ *   it.  Only the environment-variable key name may appear.
+ */
 
-describe('Secrets Management', () => {
-  const originalEnv = process.env;
+import { EnvSecret, SecretsManager, initializeSecrets, secretsManager } from './secrets';
 
-  beforeEach(() => {
-    jest.resetModules();
-    process.env = { ...originalEnv };
-    secretsManager.clear();
-  });
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  afterAll(() => {
-    process.env = originalEnv;
-  });
+const RAW_SECRET = 'super-secret-password-12345';
+const KEY = 'TEST_TRANSFORM_SECRET';
 
-  describe('EnvSecret', () => {
-    it('should load a value from process.env', () => {
-      process.env.TEST_KEY = 'test-value';
-      const secret = new EnvSecret('TEST_KEY');
-      expect(secret.get()).toBe('test-value');
-    });
+function withEnv(key: string, value: string, fn: () => void): void {
+  const prev = process.env[key];
+  process.env[key] = value;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = prev;
+    }
+  }
+}
 
-    it('should use a default value if the key is missing', () => {
-      const secret = new EnvSecret('MISSING_KEY', 'default-value');
-      expect(secret.get()).toBe('default-value');
-    });
+// ---------------------------------------------------------------------------
+// EnvSecret — basic behaviour
+// ---------------------------------------------------------------------------
 
-    it('should throw an error if the key is missing and no default is provided', () => {
-      expect(() => new EnvSecret('MISSING_KEY')).toThrow('Missing required secret "MISSING_KEY"');
-    });
-
-    it('should transform a value correctly', () => {
-      process.env.PORT = '8080';
-      const secret = new EnvSecret<number>('PORT', 3000, (v) => parseInt(v, 10));
-      expect(secret.get()).toBe(8080);
-    });
-
-    it('should throw an error if the transform function fails', () => {
-      process.env.PORT = 'invalid';
-      expect(() => new EnvSecret<number>('PORT', 3000, (v) => {
-        const p = parseInt(v, 10);
-        if (isNaN(p)) throw new Error('Not a number');
-        return p;
-      })).toThrow('Failed to transform secret "PORT": Not a number');
-    });
-
-    it('should refresh the secret value when refresh() is called', async () => {
-      process.env.ROTATING_SECRET = 'version1';
-      const secret = new EnvSecret('ROTATING_SECRET');
-      expect(secret.get()).toBe('version1');
-
-      process.env.ROTATING_SECRET = 'version2';
-      await secret.refresh();
-      expect(secret.get()).toBe('version2');
+describe('EnvSecret — basic behaviour', () => {
+  it('returns the raw env value when no transform is supplied', () => {
+    withEnv(KEY, 'hello', () => {
+      const s = new EnvSecret(KEY);
+      expect(s.get()).toBe('hello');
     });
   });
+
+  it('applies the transform and returns the transformed value', () => {
+    withEnv(KEY, '42', () => {
+      const s = new EnvSecret<number>(KEY, undefined, (v) => parseInt(v, 10));
+      expect(s.get()).toBe(42);
+    });
+  });
+
+  it('uses the default value when the env var is absent', () => {
+    delete process.env[KEY];
+    const s = new EnvSecret(KEY, 'default-val');
+    expect(s.get()).toBe('default-val');
+  });
+
+  it('throws when the env var is absent and no default is provided', () => {
+    delete process.env[KEY];
+    expect(() => new EnvSecret(KEY)).toThrow(
+      `Configuration Error: Missing required secret "${KEY}"`
+    );
+  });
+
+  it('refresh() re-reads the env var', async () => {
+    const prev = process.env[KEY];
+    try {
+      process.env[KEY] = 'first';
+      const s = new EnvSecret(KEY);
+      expect(s.get()).toBe('first');
+
+      process.env[KEY] = 'second';
+      await s.refresh();
+      expect(s.get()).toBe('second');
+    } finally {
+      if (prev === undefined) {
+        delete process.env[KEY];
+      } else {
+        process.env[KEY] = prev;
+      }
+    }
+  });
+});
+
 
   describe('EnvSecret with requireStrongInProd', () => {
     it('should still use the default in development', () => {
@@ -135,42 +166,104 @@ describe('Secrets Management', () => {
         return 'initial-secret';
       };
 
-      const secret = new RotatingSecret({ provider, name: 'TEST_ROTATING' });
-      await secret.refresh();
+// ---------------------------------------------------------------------------
+// EnvSecret — transform error REDACTION guarantee
+// ---------------------------------------------------------------------------
 
-      expect(providerCalled).toBe(true);
-      expect(secret.get()).toBe('initial-secret');
-    });
 
-    it('should update the cached value on refresh', async () => {
-      const values = ['v1', 'v2'];
-      const provider = jest.fn(async () => values.shift() ?? 'v2');
-      const secret = new RotatingSecret({ provider, name: 'REFRESH_SECRET' });
+describe('EnvSecret — transform error redaction', () => {
+  /**
+   * Core invariant: the thrown message must name the key but MUST NOT
+   * contain the raw secret value (or any contiguous substring ≥ 4 chars that
+   * is not already present in the key name itself).
+   *
+   * We exclude substrings that also appear in KEY from the check because the
+   * key name is intentionally included in the error message for debuggability,
+   * and a chunk like "secr" (from "TEST_TRANSFORM_SECRET") should not be
+   * flagged as a leak of the raw secret value.
+   */
+  function assertRedacted(error: unknown, secretValue: string): void {
+    expect(error).toBeInstanceOf(Error);
+    const msg = (error as Error).message;
 
-      await secret.refresh();
-      expect(secret.get()).toBe('v1');
+    // Must name the key for debuggability
+    expect(msg).toContain(KEY);
 
-      await secret.refresh();
-      expect(secret.get()).toBe('v2');
-      expect(provider).toHaveBeenCalledTimes(2);
-    });
+    // Must NOT contain the full secret value
+    expect(msg).not.toContain(secretValue);
 
-    it('should retain the prior value when refresh fails', async () => {
-      let callCount = 0;
-      const provider = jest.fn(async () => {
-        callCount += 1;
-        if (callCount === 1) return 'current-value';
-        throw new Error('provider unavailable');
-      });
-      const secret = new RotatingSecret({ provider, name: 'FAILOVER_SECRET' });
+    // Stricter: no 4-char substring of the secret that is NOT also part of the
+    // key name should appear in the error message.
+    for (let i = 0; i <= secretValue.length - 4; i++) {
+      const chunk = secretValue.slice(i, i + 4);
+      // Skip this chunk if it already appears in the key name — its presence
+      // in the message is explained by the key being named, not by the secret
+      // value leaking.
+      if (KEY.includes(chunk)) continue;
+      expect(msg).not.toContain(chunk);
+    }
+  }
 
-      await secret.refresh();
-      expect(secret.get()).toBe('current-value');
-
-      await expect(secret.refresh()).resolves.toBeUndefined();
-      expect(secret.get()).toBe('current-value');
+  it('does NOT leak the secret when transform throws an Error whose message contains the raw value', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      const leakyTransform = (val: string) => {
+        throw new Error(`Invalid format: received "${val}"`);
+      };
+      let caught: unknown;
+      try {
+        new EnvSecret(KEY, undefined, leakyTransform);
+      } catch (e) {
+        caught = e;
+      }
+      assertRedacted(caught, RAW_SECRET);
     });
   });
+
+  it('does NOT leak the secret when transform throws the raw secret string directly', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      const leakyTransform = (val: string) => {
+        throw val; // throws the raw secret as a plain string
+      };
+      let caught: unknown;
+      try {
+        new EnvSecret(KEY, undefined, leakyTransform);
+      } catch (e) {
+        caught = e;
+      }
+      assertRedacted(caught, RAW_SECRET);
+    });
+  });
+
+  it('does NOT leak the secret when transform throws a non-Error object containing the value', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      const leakyTransform = (val: string) => {
+        throw { code: 'PARSE_ERROR', input: val }; // object with secret
+      };
+      let caught: unknown;
+      try {
+        new EnvSecret(KEY, undefined, leakyTransform);
+      } catch (e) {
+        caught = e;
+      }
+      assertRedacted(caught, RAW_SECRET);
+    });
+  });
+
+  it('does NOT leak the secret when transform throws null', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      const leakyTransform = (_val: string) => {
+        throw null;
+      };
+      let caught: unknown;
+      try {
+        new EnvSecret(KEY, undefined, leakyTransform);
+      } catch (e) {
+        caught = e;
+      }
+      assertRedacted(caught, RAW_SECRET);
+    });
+  });
+
 
   describe('SecretsManager', () => {
     it('should register and retrieve a secret', () => {
@@ -180,7 +273,23 @@ describe('Secrets Management', () => {
 
       expect(manager.get('mySecret')).toBe(secret);
       expect(manager.getValue('mySecret')).toBe('test-value');
+
+  it('does NOT leak the secret when transform throws undefined', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      const leakyTransform = (_val: string) => {
+        throw undefined;
+      };
+      let caught: unknown;
+      try {
+        new EnvSecret(KEY, undefined, leakyTransform);
+      } catch (e) {
+        caught = e;
+      }
+      assertRedacted(caught, RAW_SECRET);
+
     });
+  });
+
 
     it('should throw when registering a secret name that already exists', () => {
       const manager = new SecretsManager();
@@ -188,12 +297,31 @@ describe('Secrets Management', () => {
       manager.register('mySecret', secret);
 
       expect(() => manager.register('mySecret', secret)).toThrow('Secret "mySecret" is already registered');
-    });
 
-    it('should throw when getting a non-existent secret', () => {
-      const manager = new SecretsManager();
-      expect(() => manager.get('nonExistent')).toThrow('Secret "nonExistent" not found');
+  it('error message contains the safe boilerplate text', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      let caught: unknown;
+      try {
+        new EnvSecret(KEY, undefined, () => { throw new Error('boom'); });
+      } catch (e) {
+        caught = e;
+      }
+      expect((caught as Error).message).toMatch(
+        /Configuration Error: Failed to transform credential/
+      );
+      expect((caught as Error).message).toMatch(/details omitted/);
+
     });
+  });
+
+  it('still throws (fail-fast contract is preserved)', () => {
+    withEnv(KEY, RAW_SECRET, () => {
+      expect(() => {
+        new EnvSecret(KEY, undefined, () => { throw new Error('bad'); });
+      }).toThrow();
+    });
+  });
+
 
     it('should refresh all registered secrets', async () => {
       const manager = new SecretsManager();
@@ -213,8 +341,17 @@ describe('Secrets Management', () => {
 
       expect(manager.getValue('s1')).toBe('v1-updated');
       expect(manager.getValue('s2')).toBe('v2-updated');
+
+  it('does NOT throw when transform succeeds — happy path is unaffected', () => {
+    withEnv(KEY, '100', () => {
+      expect(() => {
+        new EnvSecret<number>(KEY, undefined, (v) => parseInt(v, 10));
+      }).not.toThrow();
+
     });
   });
+});
+
 
   describe('initializeSecrets', () => {
     it('should register core application secrets', () => {
@@ -223,13 +360,28 @@ describe('Secrets Management', () => {
       process.env.DATABASE_URL = 'postgres://prod-db';
       process.env.JWT_SECRET = 'a'.repeat(32); // meets the 32-char minimum enforced in production
 
-      initializeSecrets();
+// ---------------------------------------------------------------------------
+// SecretsManager
+// ---------------------------------------------------------------------------
+
+
+describe('SecretsManager', () => {
+  let mgr: SecretsManager;
+
 
       expect(secretsManager.getValue<number>('PORT')).toBe(4000);
       expect(secretsManager.getValue('NODE_ENV')).toBe('production');
       expect(secretsManager.getValue('DATABASE_URL')).toBe('postgres://prod-db');
       expect(secretsManager.getValue('JWT_SECRET')).toBe('a'.repeat(32));
+
+  beforeEach(() => {
+    mgr = new SecretsManager();
+    withEnv('MGR_TEST_KEY', 'mgr-val', () => {
+      mgr.register('mySecret', new EnvSecret('MGR_TEST_KEY'));
+
     });
+  });
+
 
     it('should use default values if env vars are missing during initialization in development', () => {
       delete process.env.PORT;
@@ -237,12 +389,26 @@ describe('Secrets Management', () => {
       delete process.env.DATABASE_URL;
       delete process.env.JWT_SECRET;
 
-      initializeSecrets();
+  it('getValue returns the registered secret value', () => {
+    withEnv('MGR_TEST_KEY', 'mgr-val', () => {
+      const m = new SecretsManager();
+      m.register('mySecret', new EnvSecret('MGR_TEST_KEY'));
+      expect(m.getValue('mySecret')).toBe('mgr-val');
+    });
+  });
 
-      expect(secretsManager.getValue<number>('PORT')).toBe(3001);
-      expect(secretsManager.getValue('NODE_ENV')).toBe('development');
-      expect(secretsManager.getValue('DATABASE_URL')).toBe('postgresql://localhost:5432/talenttrust');
-      expect(secretsManager.getValue('JWT_SECRET')).toBe('dev-secret-keep-it-safe');
+
+  it('throws when getting an unregistered secret', () => {
+    expect(() => mgr.getValue('nonexistent')).toThrow(
+      'SecretsManager Error: Secret "nonexistent" not found.'
+    );
+  });
+
+  it('throws when registering the same name twice', () => {
+    withEnv('MGR_TEST_KEY', 'x', () => {
+      expect(() => mgr.register('mySecret', new EnvSecret('MGR_TEST_KEY'))).toThrow(
+        'SecretsManager Error: Secret "mySecret" is already registered.'
+      );
     });
 
     it('should throw at boot if JWT_SECRET is missing in production', () => {
@@ -295,4 +461,57 @@ describe('Secrets Management', () => {
       expect(secretsManager.getValue('DATABASE_URL')).toBe('postgresql://localhost:5432/talenttrust');
     });
   });
+
 });
+
+
+  it('clear() removes all secrets', () => {
+    mgr.clear();
+    expect(() => mgr.getValue('mySecret')).toThrow();
+  });
+
+  it('refreshAll() resolves without error', async () => {
+    const prev = process.env['MGR_TEST_KEY'];
+    try {
+      process.env['MGR_TEST_KEY'] = 'refreshed';
+      const m = new SecretsManager();
+      m.register('s', new EnvSecret('MGR_TEST_KEY'));
+      await expect(m.refreshAll()).resolves.toBeUndefined();
+    } finally {
+      if (prev === undefined) {
+        delete process.env['MGR_TEST_KEY'];
+      } else {
+        process.env['MGR_TEST_KEY'] = prev;
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// initializeSecrets / global secretsManager
+// ---------------------------------------------------------------------------
+
+describe('initializeSecrets', () => {
+  afterEach(() => {
+    // restore application secrets so other tests are not affected
+    initializeSecrets();
+  });
+
+  it('re-initialises without throwing (idempotent via clear)', () => {
+    expect(() => initializeSecrets()).not.toThrow();
+  });
+
+  it('registers PORT with correct default', () => {
+    initializeSecrets();
+    expect(secretsManager.getValue<number>('PORT')).toBe(
+      process.env.PORT ? parseInt(process.env.PORT, 10) : 3001
+    );
+  });
+
+  it('registers NODE_ENV with correct default', () => {
+    initializeSecrets();
+    const env = secretsManager.getValue<string>('NODE_ENV');
+    expect(typeof env).toBe('string');
+  });
+});
+

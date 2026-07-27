@@ -1,12 +1,13 @@
-import { CreateContractDto, UpdateContractDto } from '../modules/contracts/dto/contract.dto';
+import { CreateContractDto, UpdateContractDto, BulkMilestoneOperationDto } from '../modules/contracts/dto/contract.dto';
 import { Contract } from '../db/types';
-import { ContractRepository } from '../repositories/contractRepository';
+import type { IContractRepository } from '../repositories/contractRepository';
 import { SorobanService } from './soroban.service';
 import type { CursorPaginationInput, CursorPage } from '../contracts/cursor.types';
+import { ContractCacheService } from './contractCache.service';
 
-import { validateContractBounds, ContractBoundsError } from '../contracts/bounds';
 import { MAX_MILESTONES_PER_CONTRACT, MAX_CONTRACT_AMOUNT_STROOPS } from '../contracts/bounds';
 import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflictError } from '../errors/appError';
+import { parseBoolEnv } from '../config/env';
 
 /**
  * @dev Service layer for managing Freelancer Escrow Contracts.
@@ -14,12 +15,27 @@ import { NotFoundError, MissingVersionError, InvalidVersionError, VersionConflic
  * and orchestration with the Soroban smart contract service.
  */
 export class ContractsService {
-  private contractRepository: ContractRepository;
+  private contractRepository: IContractRepository;
   private sorobanService: SorobanService;
+  /**
+   * When `false`, milestone fields are stripped from create/update payloads
+   * before any validation or persistence occurs. The feature is fully
+   * transparent to callers — requests still succeed but milestones are
+   * silently ignored.
+   *
+   * Defaults to `true` (read from `MILESTONES_ENABLED` env var at
+   * construction time) so the flag can be injected in tests without
+   * touching `process.env`.
+   */
+  private readonly milestonesEnabled: boolean;
 
-  constructor(contractRepository: ContractRepository) {
+  constructor(contractRepository: IContractRepository, milestonesEnabled?: boolean) {
     this.sorobanService = new SorobanService();
     this.contractRepository = contractRepository;
+    this.milestonesEnabled =
+      milestonesEnabled !== undefined
+        ? milestonesEnabled
+        : parseBoolEnv('MILESTONES_ENABLED', true);
   }
 
   /**
@@ -27,6 +43,9 @@ export class ContractsService {
    * @returns Array of contract metadata including version field.
    */
   public async getAllContracts(): Promise<Contract[]> {
+    if (this.cache) {
+      return this.cache.getAllContracts(() => this.contractRepository.findAll());
+    }
     return this.contractRepository.findAll();
   }
 
@@ -36,6 +55,9 @@ export class ContractsService {
    * @returns The contract or undefined if not found.
    */
   public async getContractById(id: string): Promise<Contract | undefined> {
+    if (this.cache) {
+      return this.cache.getContractById(id, () => this.contractRepository.findById(id));
+    }
     return this.contractRepository.findById(id);
   }
 
@@ -48,6 +70,9 @@ export class ContractsService {
   public async getContractsPage(
     input: CursorPaginationInput = {},
   ): Promise<CursorPage<Contract>> {
+    if (this.cache) {
+      return this.cache.getContractsPage(input, () => this.contractRepository.findPage(input));
+    }
     return this.contractRepository.findPage(input);
   }
 
@@ -55,29 +80,69 @@ export class ContractsService {
    * Creates a new contract off-chain, preparing it for escrow deposit.
    * Enforces milestone count and total amount caps before persisting.
    * @param data The contract details conforming to CreateContractDto.
+   * @param correlationId Optional correlation ID for distributed tracing.
    * @returns The newly created contract object.
    * @throws ContractBoundsError if budget or milestone totals exceed policy limits.
    */
   public async createContract(data: CreateContractDto): Promise<Contract> {
-    const boundsCheck = validateContractBounds(data.budget, data.milestones);
+    // Strip milestones when the feature flag is disabled. Validation and
+    // budget-cap checks are skipped entirely — the contract is created as if
+    // no milestones were supplied.
+    const effectiveData: CreateContractDto = this.milestonesEnabled
+      ? data
+      : { ...data, milestones: undefined };
+
+    const boundsCheck = validateContractBounds(effectiveData.budget, effectiveData.milestones);
     if (!boundsCheck.valid) {
       throw new ContractBoundsError(boundsCheck.error);
     }
 
-    const newContract = this.contractRepository.create({
-      title: data.title,
-      clientId: data.clientId,
-      freelancerId: data.freelancerId ?? '',
-      amount: data.budget,
-      status: data.status || 'draft',
+    // Enforce that the sum of milestone amounts does not exceed the contract
+    // budget. `validateContractBounds` only guards the absolute policy cap
+    // (MAX_CONTRACT_AMOUNT_STROOPS); the per-contract budget is the tighter,
+    // caller-supplied limit that milestone payouts must never overrun.
+    if (effectiveData.milestones && effectiveData.milestones.length > 0) {
+      const totalMilestoneAmount = effectiveData.milestones.reduce(
+        (sum, milestone) => sum + milestone.amount,
+        0,
+      );
+      if (totalMilestoneAmount > effectiveData.budget) {
+        throw new ContractBoundsError(
+          `Total milestone amount exceeds maximum contract amount ` +
+            `(milestones total ${totalMilestoneAmount} exceeds budget of ${effectiveData.budget})`,
+        );
+      }
+    }
+
+    const newContract = await this.contractRepository.create({
+      title: effectiveData.title,
+      clientId: effectiveData.clientId,
+      freelancerId: effectiveData.freelancerId ?? '',
+      amount: effectiveData.budget,
+      status: effectiveData.status || 'draft',
+    });
+
+    log.info('ContractsService.createContract: contract created', {
+      ...traceCtx,
+      contractId: newContract.id,
     });
 
     // Notify the Soroban service to prepare the transaction
     try {
       await this.sorobanService.prepareEscrow(newContract.id, data.budget);
+      log.info('ContractsService.createContract: soroban escrow prepared', {
+        ...traceCtx,
+        contractId: newContract.id,
+      });
     } catch (error) {
-      console.warn(`[ContractsService] Soroban prepareEscrow failed for contract ${newContract.id}:`, error);
+      log.warn('ContractsService.createContract: soroban prepareEscrow failed', {
+        ...traceCtx,
+        contractId: newContract.id,
+        err: error as Error,
+      });
     }
+
+    this.cache?.invalidateLists();
 
     return newContract;
   }
@@ -98,6 +163,7 @@ export class ContractsService {
    *
    * @param id - UUID of the contract to update.
    * @param dto - Partial update payload including the OCC `version`.
+   * @param correlationId - Optional correlation ID for distributed tracing.
    * @returns The updated Contract with an incremented version.
    * @throws {MissingVersionError} When `version` is not provided.
    * @throws {InvalidVersionError} When `version` is not a non-negative integer.
@@ -110,7 +176,8 @@ export class ContractsService {
    * omitting the version field because this method validates it before calling
    * the repository.
    */
-  public async updateContract(id: string, dto: UpdateContractDto): Promise<Contract> {
+  public async updateContract(id: string, dto: UpdateContractDto, correlationId?: string): Promise<Contract> {
+    const traceCtx = correlationId ? { correlationId } : {};
     const { version, ...fields } = dto;
 
     // Defense-in-depth: validate version even though middleware already checked
@@ -121,49 +188,77 @@ export class ContractsService {
       throw new InvalidVersionError();
     }
 
+    // Strip milestones from the update payload when the feature flag is
+    // disabled, so milestone data supplied by callers is silently ignored.
+    const effectiveFields = this.milestonesEnabled
+      ? fields
+      : { ...fields, milestones: undefined };
+
     // Reject no-op updates
-    const hasFields = Object.keys(fields).some(
-      (k) => (fields as Record<string, unknown>)[k] !== undefined,
+    const hasFields = Object.keys(effectiveFields).some(
+      (k) => (effectiveFields as Record<string, unknown>)[k] !== undefined,
     );
     if (!hasFields) {
       throw new Error('At least one field must be provided for an update.');
     }
 
     // Re-validate bounds when amount or milestones are being changed
-    const budget = fields.budget;
-    const milestones = fields.milestones;
+    const budget = effectiveFields.budget;
+    const milestones = effectiveFields.milestones;
     if (budget !== undefined || milestones !== undefined) {
       // Fall back to 0 if budget is absent so the bounds check can still run on milestones alone
-      const boundsCheck = validateContractBounds(budget ?? 0, milestones);
-      if (!boundsCheck.valid) {
-        throw new ContractBoundsError(boundsCheck.error);
-      }
+      this.milestonesService.validateBounds(budget ?? 0, milestones);
     }
 
     const updateFields: Partial<Contract> = {};
-    if (fields.title !== undefined) updateFields.title = fields.title;
-    if (fields.status !== undefined) updateFields.status = fields.status;
-    if (fields.budget !== undefined) updateFields.amount = fields.budget;
-    if (fields.freelancerId !== undefined) updateFields.freelancerId = fields.freelancerId ?? '';
+    if (effectiveFields.title !== undefined) updateFields.title = effectiveFields.title;
+    if (effectiveFields.status !== undefined) updateFields.status = effectiveFields.status;
+    if (effectiveFields.budget !== undefined) updateFields.amount = effectiveFields.budget;
+    if (effectiveFields.freelancerId !== undefined) updateFields.freelancerId = effectiveFields.freelancerId ?? '';
 
-    return this.contractRepository.updateWithVersion(id, updateFields, version);
+    const updated = await this.contractRepository.updateWithVersion(id, updateFields, version);
+    log.info('ContractsService.updateContract: contract updated', {
+      ...traceCtx,
+      contractId: id,
+      version,
+    });
+    return updated;
   }
 
   /**
    * Deletes a contract by ID.
+   * @param correlationId - Optional correlation ID for distributed tracing.
    */
-  public async deleteContract(id: string): Promise<void> {
-    const deleted = this.contractRepository.delete(id);
+  public async deleteContract(id: string, correlationId?: string): Promise<void> {
+    const traceCtx = correlationId ? { correlationId } : {};
+    const deleted = await this.contractRepository.delete(id);
     if (!deleted) {
       throw new NotFoundError(`Contract with id ${id} not found`);
     }
+    log.info('ContractsService.deleteContract: contract deleted', {
+      ...traceCtx,
+      contractId: id,
+    });
   }
 
   /**
    * Retrieves contract statistics.
    */
   public async getContractStats() {
-    const all = await this.getAllContracts();
+    if (this.cache) {
+      return this.cache.getContractStats(async () => {
+        const all = await this.contractRepository.findAll();
+        return {
+          total: all.length,
+          totalBudget: all.reduce((sum, c) => sum + c.amount, 0),
+          byStatus: all.reduce((acc, c) => {
+            acc[c.status] = (acc[c.status] || 0) + 1;
+            return acc;
+          }, {} as Record<string, number>),
+        };
+      });
+    }
+    const all = await this.contractRepository.findAll();
     const stats = {
       total: all.length,
       totalBudget: all.reduce((sum, c) => sum + c.amount, 0),
@@ -183,5 +278,13 @@ export class ContractsService {
       maxMilestones: MAX_MILESTONES_PER_CONTRACT,
       maxAmount: MAX_CONTRACT_AMOUNT_STROOPS,
     };
+  }
+
+  /**
+   * Retrieves contract event history by contract ID.
+   * @param id - UUID of the contract.
+   */
+  public async getContractHistory(id: string) {
+    return eventIngestionService.getContractHistory(id);
   }
 }

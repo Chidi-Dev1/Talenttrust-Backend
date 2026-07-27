@@ -1,6 +1,22 @@
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'app-integration-secret';
+
 import { AddressInfo } from 'net';
+import jwt from 'jsonwebtoken';
 import { createApp } from './app';
 import { CORRELATION_ID_HEADER, REQUEST_ID_HEADER } from './middleware/requestId';
+
+// The contracts list route enforces the deny-by-default authorization matrix,
+// so these live-app requests authenticate as an admin. CORS/preflight checks
+// run ahead of auth, so the header is harmless for those cases.
+const ADMIN_TOKEN = jwt.sign(
+  { sub: 'admin-1', email: 'admin@test.com', role: 'admin' },
+  process.env.JWT_SECRET as string,
+  { expiresIn: '1h' },
+);
+const authHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
+  Authorization: `Bearer ${ADMIN_TOKEN}`,
+  ...extra,
+});
 
 /**
  * Exercises the live Express app wiring for the contracts list endpoint
@@ -12,7 +28,7 @@ describe('Contracts API integration (live app factory)', () => {
     const server = app.listen(0);
     const { port } = server.address() as AddressInfo;
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, { headers: authHeaders() });
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body).toEqual(
@@ -48,9 +64,9 @@ describe('Correlation ID propagation integration', () => {
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: {
+        headers: authHeaders({
           [CORRELATION_ID_HEADER]: testCorrelationId,
-        },
+        }),
       });
 
       expect(response.status).toBe(200);
@@ -71,7 +87,7 @@ describe('Correlation ID propagation integration', () => {
     const { port } = server.address() as AddressInfo;
 
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, { headers: authHeaders() });
 
       expect(response.status).toBe(200);
       expect(response.headers.get(CORRELATION_ID_HEADER)).toBeNull();
@@ -91,7 +107,7 @@ describe('Correlation ID propagation integration', () => {
     const { port } = server.address() as AddressInfo;
 
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, { headers: authHeaders() });
 
       expect(response.status).toBe(200);
       const requestId = response.headers.get(REQUEST_ID_HEADER);
@@ -116,9 +132,9 @@ describe('Correlation ID propagation integration', () => {
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: {
+        headers: authHeaders({
           [REQUEST_ID_HEADER]: clientRequestId,
-        },
+        }),
       });
 
       expect(response.status).toBe(200);
@@ -141,9 +157,9 @@ describe('Correlation ID propagation integration', () => {
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: {
+        headers: authHeaders({
           [CORRELATION_ID_HEADER]: testCorrelationId,
-        },
+        }),
       });
 
       expect(response.status).toBe(200);
@@ -172,9 +188,9 @@ describe('Correlation ID propagation integration', () => {
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: {
+        headers: authHeaders({
           [CORRELATION_ID_HEADER]: invalidCorrelationId,
-        },
+        }),
       });
 
       expect(response.status).toBe(200);
@@ -198,9 +214,9 @@ describe('Correlation ID propagation integration', () => {
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: {
+        headers: authHeaders({
           [CORRELATION_ID_HEADER]: longCorrelationId,
-        },
+        }),
       });
 
       expect(response.status).toBe(200);
@@ -255,7 +271,7 @@ describe('CORS Policy', () => {
   it('should allow requests from allowlisted origin and echo it in ACAO', async () => {
     await withApp('http://localhost:3000', async (port) => {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: { Origin: 'http://localhost:3000' },
+        headers: authHeaders({ Origin: 'http://localhost:3000' }),
       });
       expect(response.status).toBe(200);
       expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
@@ -265,7 +281,7 @@ describe('CORS Policy', () => {
   it('should reject requests from disallowed origin without reflection', async () => {
     await withApp('https://allowed.example.com', async (port) => {
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, {
-        headers: { Origin: 'https://evil.example.com' },
+        headers: authHeaders({ Origin: 'https://evil.example.com' }),
       });
       expect(response.status).toBe(403);
       expect(response.headers.get('access-control-allow-origin')).toBeNull();
@@ -274,7 +290,7 @@ describe('CORS Policy', () => {
 
   it('should allow requests with no Origin header', async () => {
     await withApp('http://localhost:3000', async (port) => {
-      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`);
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/contracts`, { headers: authHeaders() });
       expect(response.status).toBe(200);
     });
   });
@@ -285,10 +301,10 @@ describe('CORS Policy', () => {
         `http://127.0.0.1:${port}/api/v1/contracts`,
         {
           method: 'OPTIONS',
-          headers: {
+          headers: authHeaders({
             Origin: 'http://localhost:3000',
             'Access-Control-Request-Method': 'GET',
-          },
+          }),
         },
       );
       expect(response.status).toBe(204);
@@ -302,10 +318,10 @@ describe('CORS Policy', () => {
         `http://127.0.0.1:${port}/api/v1/contracts`,
         {
           method: 'OPTIONS',
-          headers: {
+          headers: authHeaders({
             Origin: 'https://evil.example.com',
             'Access-Control-Request-Method': 'GET',
-          },
+          }),
         },
       );
       expect(response.status).toBe(403);

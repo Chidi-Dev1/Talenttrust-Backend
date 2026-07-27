@@ -1,15 +1,37 @@
 import { Router } from 'express';
 import { ReputationController } from '../controllers/reputation.controller';
 import { registry } from '../docs/openapi-registry';
-import { updateReputationSchema } from '../modules/reputation/dto/reputation.dto';
+import {
+  updateReputationSchema,
+  reputationParamsSchema,
+} from '../modules/reputation/dto/reputation.dto';
 import { validateSchema } from '../middleware/validate.middleware';
+import { createRateLimiter } from '../middleware/rateLimiter';
 import { requireAuth, requirePermission } from '../middleware/authorization';
+import { rateLimitConfig } from '../config/rateLimit';
+import { authRateLimitKeyFn } from '../auth/rateLimitKey';
 import { z } from 'zod';
 
 const router = Router();
+const reputationLimiter = createRateLimiter({
+  ...rateLimitConfig.reputation,
+  keyFn: req => `reputation:${authRateLimitKeyFn(req)}`,
+});
+
+// Dedicated per-client limiter. Keys are namespaced because the store is shared.
+router.use(reputationLimiter);
 
 // ── Authentication guard — all reputation routes require a valid JWT ──────────
 router.use(requireAuth);
+
+// POST /api/v1/reputation/bulk — batch create reputation ratings
+// Must be registered before the /:id routes to avoid being captured by the param route.
+router.post(
+  '/bulk',
+  requirePermission('reviews', 'create'),
+  validateSchema(bulkReputationSchema),
+  ReputationController.createBulkRatings
+);
 
 registry.registerPath({
   method: 'get',
@@ -21,6 +43,20 @@ registry.registerPath({
       in: 'path',
       required: true,
       schema: { type: 'string', format: 'uuid' }
+    },
+    {
+      name: 'cursor',
+      in: 'query',
+      required: false,
+      description: 'Opaque cursor for the next page of reviews (base64url-encoded).',
+      schema: { type: 'string' }
+    },
+    {
+      name: 'limit',
+      in: 'query',
+      required: false,
+      description: 'Maximum reviews per page (1-100, default 20).',
+      schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 }
     }
   ],
   responses: {
@@ -38,20 +74,33 @@ registry.registerPath({
                   freelancerId: { type: 'string' },
                   score: { type: 'number' },
                   totalRatings: { type: 'number' },
-                  reviews: { type: 'array' }
+                  reviews: { type: 'array' },
+                  nextCursor: {
+                    type: 'string',
+                    nullable: true,
+                    description: 'Opaque cursor for the next page of reviews, or null on the last page.'
+                  },
+                  hasNextPage: { type: 'boolean' },
+                  limit: { type: 'integer' }
                 }
               }
             }
           }
         }
       }
-    }
+    },
+    400: { description: 'Invalid cursor or limit parameter' }
   }
 });
 
 // GET /api/v1/reputation/:id - Retrieve reputation for a freelancer
 // All authenticated roles (admin, client, freelancer) may read reviews.
-router.get('/:id', requirePermission('reviews', 'read'), ReputationController.getProfile);
+router.get(
+  '/:id',
+  requirePermission('reviews', 'read'),
+  validateSchema(z.object({ params: reputationParamsSchema })),
+  ReputationController.getProfile
+);
 
 /**
  * POST /api/v1/reputation/:id/rate
@@ -106,9 +155,8 @@ registry.registerPath({
 router.put(
   '/:id',
   requirePermission('reviews', 'create'),
-  validateSchema(z.object({ body: updateReputationSchema, params: z.object({ id: z.string().min(1) }) })),
+  validateSchema(z.object({ body: updateReputationSchema, params: reputationParamsSchema })),
   ReputationController.createRating
 );
 
 export default router;
-

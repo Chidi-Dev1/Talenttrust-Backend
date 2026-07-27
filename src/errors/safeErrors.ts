@@ -35,6 +35,7 @@ export const SAFE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   payload_too_large: 'Payload Too Large',
   unsupported_media_type: 'Unsupported Media Type',
   invalid_webhook_signature: 'Webhook signature verification failed',
+  response_contract_error: 'An unexpected error occurred',
 };
 
 /**

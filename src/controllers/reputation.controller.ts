@@ -1,22 +1,43 @@
-import { Request, Response } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { ReputationService } from '../services/reputation.service';
-import { ForbiddenError, ConflictError, ValidationError, AppError } from '../errors/appError';
+import { mapErrorToPayload } from '../errors/appError';
 import { AuthenticatedRequest } from '../auth/authenticate';
+import { isValidReputationRatingPayload } from './reputation.validation';
+import { profileToResponseDTO, createRatingBodyToPayload } from '../types/reputation';
+import type { GetProfileParamsDTO, CreateRatingBodyDTO, ApiSuccessResponseDTO, ReputationProfileResponseDTO } from '../types/reputation';
 
 /**
  * @title Reputation Controller
- * @dev Handles HTTP requests for the reputation system with proper error handling.
+ * @dev Thin HTTP adapter.
+ *
+ * All reputation business logic lives in {@link ReputationService}. This
+ * controller only:
+ *   1. extracts path parameters from the HTTP request,
+ *   2. delegates to the service, and
+ *   3. serializes the service's response (or thrown error) to JSON.
+ *
+ * Error serialization goes through the shared {@link mapErrorToPayload} helper
+ * so that all endpoints emit the canonical `{ error: { code, message, requestId } }`
+ * payload shape - matching every other controller in the codebase.
  */
 export class ReputationController {
   /**
    * GET /api/v1/reputation/:id
-   * Retrieve a freelancer's reputation profile.
+   * Retrieve a freelancer's reputation profile with optional cursor pagination.
+   *
+   * Query params:
+   *   - cursor  (optional, opaque string): anchor for the next page.
+   *   - limit   (optional, positive integer 1-100, default 20): page size.
    */
-  public static async getProfile(req: Request, res: Response): Promise<void> {
+  public static async getProfile(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { id } = req.params;
-      const profile = ReputationService.getProfile(id);
-      res.status(200).json({ status: 'success', data: profile });
+      const params: GetProfileParamsDTO = { id: req.params.id };
+      const profile = ReputationService.getProfile(params.id);
+      const response: ApiSuccessResponseDTO<ReputationProfileResponseDTO> = {
+        status: 'success',
+        data: profileToResponseDTO(profile),
+      };
+      res.status(200).json(response);
     } catch (error: any) {
       const requestId =
         typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
@@ -41,47 +62,42 @@ export class ReputationController {
   }
 
   /**
-   * POST /api/v1/reputation/:id/rate
-   * Create a new reputation rating for a freelancer.
+   * POST /api/v1/reputation/:id/rate / PUT /api/v1/reputation/:id
+   * Record a new rating and return the recomputed profile.
    *
-   * Rating validation is enforced at two layers:
-   *  1. Zod DTO via validateSchema middleware (primary — rejects before this method runs)
-   *  2. Guard below (defense-in-depth — catches bypassed middleware or direct controller calls)
-   *
-   * Rating must be a finite integer in [1, 5]. Anything outside that range or any
-   * non-integer (including NaN/Infinity/decimals) is rejected with a 400.
+   * Payload validation is enforced at two layers:
+   *  1. Zod DTO via `validateSchema` middleware (primary - rejects before
+   *     this method runs).
+   *  2. `ReputationService.updateProfile` (defense-in-depth - catches
+   *     bypassed middleware or direct service callers).
    */
-  public static async createRating(req: AuthenticatedRequest, res: Response): Promise<void> {
+  public static async createRating(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;
-      const payload: any = req.body;
+      const bodyDTO: CreateRatingBodyDTO = req.body as CreateRatingBodyDTO;
       const requestId =
         typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
 
-      // Defense-in-depth: validate rating range and integrality even if middleware was bypassed
-      const rating = payload?.rating;
-      const isValidRating =
-        typeof rating === 'number' &&
-        Number.isFinite(rating) &&
-        Number.isInteger(rating) &&
-        rating >= 1 &&
-        rating <= 5;
-
-      if (!payload || !payload.reviewerId || !isValidRating) {
+      if (!isValidReputationRatingPayload(bodyDTO)) {
         res.status(400).json({
           error: {
             code: 'bad_request',
-            message: 'Invalid payload: reviewerId and a valid integer rating (1–5) are required',
+            message: 'Request body must contain a non-empty items array',
             requestId,
           },
         });
         return;
       }
 
+      const payload = createRatingBodyToPayload(bodyDTO);
       const updatedProfile = (ReputationService as any).updateProfile
         ? (ReputationService as any).updateProfile(id, payload)
         : ReputationService.getProfile(id);
-      res.status(200).json({ status: 'success', data: updatedProfile });
+      const response: ApiSuccessResponseDTO<ReputationProfileResponseDTO> = {
+        status: 'success',
+        data: profileToResponseDTO(updatedProfile),
+      };
+      res.status(200).json(response);
     } catch (error) {
       handleControllerError(error, res);
     }
@@ -89,18 +105,15 @@ export class ReputationController {
 }
 
 /**
- * Centralized error handler for controller methods.
+ * Single error-serialization boundary for reputation endpoints.
+ *
+ * Delegates to {@link mapErrorToPayload} so AppError subclasses, Zod errors,
+ * and unknown errors all map to the same `{ error: { code, message, requestId } }`
+ * shape used elsewhere in the codebase.
  */
-function handleControllerError(error: unknown, res: Response): void {
-  if (error instanceof ValidationError) {
-    res.status(422).json({ status: 'error', message: error.message });
-  } else if (error instanceof ForbiddenError) {
-    res.status(403).json({ status: 'error', message: error.message });
-  } else if (error instanceof ConflictError) {
-    res.status(409).json({ status: 'error', message: error.message });
-  } else if (error instanceof AppError) {
-    res.status(error.statusCode).json({ status: 'error', message: error.message });
-  } else {
-    res.status(500).json({ status: 'error', message: 'Internal server error' });
-  }
+function sendError(res: Response, error: unknown): void {
+  const requestId =
+    typeof res.locals.requestId === 'string' ? res.locals.requestId : 'unknown';
+  const { statusCode, payload } = mapErrorToPayload(error, requestId);
+  res.status(statusCode).json(payload);
 }

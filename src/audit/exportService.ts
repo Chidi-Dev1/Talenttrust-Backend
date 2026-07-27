@@ -46,6 +46,8 @@ export interface AuditExportFilters {
   resource?: string;
   /** Restrict to a specific resource ID. */
   resourceId?: string;
+  /** Cap the number of exported records. Omitting it exports every match. */
+  limit?: number;
 }
 
 /** Ordered CSV column headers for the audit export. */

@@ -7,6 +7,9 @@
 
 import { ConnectionOptions } from 'bullmq';
 import { z } from 'zod';
+import { JobType } from './types';
+
+export const DEFAULT_JOB_TIMEOUT_MS = 30000;
 
 /**
  * Zod schema for validating queue tuning environment variables.
@@ -65,6 +68,10 @@ export type QueueEnvConfig = z.infer<typeof queueConfigSchema>;
 export interface QueueConfig {
   redis: ConnectionOptions;
   concurrency: number;
+  jobTimeout: {
+    defaultMs: number;
+    perJobTypeMs: Partial<Record<JobType, number>>;
+  };
   defaultJobOptions: {
     attempts: number;
     backoff: {
@@ -127,6 +134,9 @@ export function getRedisConfig(): ConnectionOptions {
   };
 }
 
+/** Default per-job attempt timeout in milliseconds (30 seconds). */
+const DEFAULT_JOB_TIMEOUT_MS = 30_000;
+
 function parsePositiveTimeout(value: string | undefined, fallback: number): number {
   if (value === undefined) {
     return fallback;
@@ -169,6 +179,10 @@ const defaultJobTimeoutMs = parsePositiveTimeout(
 export const queueConfig: QueueConfig = {
   redis: getRedisConfig(),
   concurrency: parsed.QUEUE_CONCURRENCY,
+  jobTimeout: {
+    defaultMs: defaultJobTimeoutMs,
+    perJobTypeMs: loadJobTimeoutOverrides(defaultJobTimeoutMs),
+  },
   defaultJobOptions: {
     attempts: parsed.QUEUE_DEFAULT_ATTEMPTS,
     backoff: {
