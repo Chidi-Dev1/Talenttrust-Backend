@@ -3,6 +3,7 @@ import compression from 'compression';
 
 import { createContractsController } from '../controllers/contracts.controller';
 import { createContractsBulkController } from '../controllers/contracts-bulk.controller';
+import { createMilestonesSoftDeleteController } from '../controllers/milestones.softdelete.controller';
 import { ContractsService } from '../services/contracts.service';
 import { ContractCacheService, DEFAULT_CACHE_TTL_MS, DEFAULT_CACHE_SWR_MS, DEFAULT_CACHE_MAX_ENTRIES } from '../services/contractCache.service';
 import { ContractRepository } from '../repositories/contractRepository';
@@ -125,6 +126,7 @@ function createContractsRouter(): Router {
   const service = new ContractsService(repo);
   const controller = createContractsController(service);
   const bulkController = createContractsBulkController(service);
+  const milestonesSoftDelete = createMilestonesSoftDeleteController();
 
   /**
    * Resolves the owner (clientId) of a contract from the DB.
@@ -186,6 +188,46 @@ function createContractsRouter(): Router {
     requireAuth,
     requirePermission('contracts', 'read', getContractOwnerId),
     controller.getContractById,
+  );
+
+  // GET /:id/milestones — list milestones (soft-deleted excluded by default)
+  /** @permission contracts:read — admin, client (ownOnly), freelancer (ownOnly) */
+  router.get(
+    '/:id/milestones',
+    validateContractId,
+    requireAuth,
+    requirePermission('contracts', 'read', getContractOwnerId),
+    milestonesSoftDelete.list.bind(milestonesSoftDelete),
+  );
+
+  // POST /:id/milestones — create a milestone record (active)
+  /** @permission contracts:update (ownOnly) — admin, client, freelancer */
+  router.post(
+    '/:id/milestones',
+    validateContractId,
+    requireAuth,
+    requirePermission('contracts', 'update', getContractOwnerId),
+    milestonesSoftDelete.create.bind(milestonesSoftDelete),
+  );
+
+  // POST /:id/milestones/:milestoneId/restore — restore within retention window
+  /** @permission contracts:update (ownOnly) — admin, client, freelancer */
+  router.post(
+    '/:id/milestones/:milestoneId/restore',
+    validateContractId,
+    requireAuth,
+    requirePermission('contracts', 'update', getContractOwnerId),
+    milestonesSoftDelete.restore.bind(milestonesSoftDelete),
+  );
+
+  // DELETE /:id/milestones/:milestoneId — soft-delete (mark deleted_at, do not purge)
+  /** @permission contracts:update (ownOnly) — admin, client, freelancer */
+  router.delete(
+    '/:id/milestones/:milestoneId',
+    validateContractId,
+    requireAuth,
+    requirePermission('contracts', 'update', getContractOwnerId),
+    milestonesSoftDelete.softDelete.bind(milestonesSoftDelete),
   );
 
   // GET /:id/milestones/audit-log — bounded, cursor-paginated audit trail

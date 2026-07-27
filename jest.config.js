@@ -93,6 +93,24 @@ module.exports = {
       functions: 95,
       statements: 95,
     },
+    './src/utils/softDelete.ts': {
+      lines: 95,
+      branches: 95,
+      functions: 95,
+      statements: 95,
+    },
+    './src/services/milestones.service.ts': {
+      lines: 95,
+      branches: 90,
+      functions: 95,
+      statements: 95,
+    },
+    './src/controllers/milestones.softdelete.controller.ts': {
+      lines: 95,
+      branches: 80,
+      functions: 95,
+      statements: 95,
+    },
   },
   coverageReporters: ['text', 'lcov', 'json-summary'],
 };
