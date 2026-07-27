@@ -23,7 +23,7 @@ import { validateEnv } from './config/env.schema';
 import { createRequestLimitsMiddleware } from './middleware/requestLimits';
 import apiKeysRouter from './routes/apiKeys.routes';
 
-import contractsModuleRouter from './routes/contracts.routes';
+import contractsModuleRouter, { createContractsRouter } from './routes/contracts.routes';
 import eventsRouter from './routes/events.routes';
 import { createDisputesRouter } from './routes/disputes.routes';
 import { createMetricsRouter } from './routes/metrics.routes';
@@ -107,8 +107,8 @@ export function createApp(options?: AppFactoryOptions): express.Application {
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/api-keys', metricsService.trackApiKeysRequest.bind(metricsService));
   app.use('/api/v1', apiKeysRouter);
-  app.use('/api/v1/contracts', contractsModuleRouter);
-  app.use('/api/v1/disputes', createDisputesRouter({ metricsService }));
+  app.use('/api/v1/contracts', createContractsRouter(metricsService));
+  app.use('/api/v1/disputes', disputesRouter);
   app.use('/api/v1/reputation', reputationRouter);
   app.use('/api/v1/dependency-scan', dependencyScanRouter);
   app.use('/api/v1', apiKeysRouter);

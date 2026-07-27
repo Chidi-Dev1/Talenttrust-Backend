@@ -22,7 +22,8 @@ import {
   DeleteContractResponse,
 } from '../modules/contracts/dto/contract-response.dto';
 import { ContractsService } from '../services/contracts.service';
-import { WebhookService } from '../services/webhook.service';
+import { createLogger } from '../logger';
+import type { MetricsServiceLike } from '../observability/metrics-service';
 import { fail, ok } from '../utils/apiResponse';
 import { getCorrelationId, getRequestId } from '../utils/correlationId';
 import { applyPagination, parsePaginationQuery } from '../utils/pagination';
@@ -75,57 +76,12 @@ function traceContext(res: Response): Record<string, string> {
  *     service layer carry the same trace token.
  */
 export class ContractsController {
+  private readonly log = createLogger({ controller: 'contracts' });
+
   constructor(
     private readonly service: ContractsService,
-    private readonly auditService: Pick<AuditService, 'log' | 'query' | 'queryWithCursor'> = defaultAuditService,
+    private readonly metrics?: MetricsServiceLike,
   ) {}
-
-  /** Actor identifier for audit entries. Falls back to 'system' when a request reaches the controller without an authenticated user (defensive only — production routes always run requireAuth first). */
-  private actorFor(req: ContractRequest): string {
-    return req.user?.id ?? 'system';
-  }
-
-  private auditContext(req: ContractRequest): { ipAddress?: string; correlationId?: string } {
-    const correlationId = req.headers?.['x-correlation-id'];
-    return {
-      ...(req.ip !== undefined && { ipAddress: req.ip }),
-      ...(typeof correlationId === 'string' && { correlationId }),
-    };
-  }
-
-  /**
-   * Records a MILESTONES_* audit entry when a write meaningfully changes a
-   * contract's milestones, comparing against the last recorded snapshot for
-   * that contract (see modules/contracts/milestonesAudit.ts for rationale).
-   * A logging failure is caught and reported, but never fails the request —
-   * the primary write has already succeeded by the time this runs.
-   */
-  private recordMilestonesAudit(
-    req: ContractRequest,
-    contractId: string,
-    afterMilestones: Parameters<typeof summarizeMilestones>[0],
-  ): void {
-    try {
-      const before = getLastMilestonesSnapshot(this.auditService, contractId);
-      const after = summarizeMilestones(afterMilestones);
-      const action = determineMilestonesAction(before, after);
-      if (!action) {
-        return;
-      }
-      this.auditService.log({
-        action,
-        severity: action === 'MILESTONES_DELETED' ? 'WARNING' : 'INFO',
-        actor: this.actorFor(req),
-        resource: 'milestones',
-        resourceId: contractId,
-        metadata: buildMilestonesAuditMetadata(before, after),
-        ...this.auditContext(req),
-      });
-    } catch (error) {
-      // Never let audit logging break the primary request flow.
-      console.error('[ContractsController] Failed to record milestones audit entry:', error);
-    }
-  }
 
   public async getContracts(
     req: Request,
@@ -260,20 +216,36 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const log = resolveLogger(res);
-    const ctx = traceContext(res);
-    const id = req.params.id!;
-    log.info('contracts.getContractById: start', { ...ctx, contractId: id });
+    const startMs = Date.now();
+    const contractId = req.params.id ?? '';
+    const requestId =
+      typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined;
+    const log = this.log.child({ operation: 'read', contractId, requestId });
+
+    log.info('Milestone read operation started');
 
     try {
-      const contract = await this.service.getContractById(id);
+      const contract = await this.service.getContractById(contractId);
       if (!contract) {
-        log.warn('contracts.getContractById: not found', { ...ctx, contractId: id });
+        const durationSeconds = (Date.now() - startMs) / 1000;
+        log.warn('Milestone read failed: contract not found');
+        this.metrics?.recordMilestoneOperation('read', 'client_error', durationSeconds, 'not_found');
         throw new NotFoundError('The requested resource was not found');
       }
-      log.info('contracts.getContractById: success', { ...ctx, contractId: id });
+
+      const durationSeconds = (Date.now() - startMs) / 1000;
+      log.info('Milestone read operation succeeded');
+      this.metrics?.recordMilestoneOperation('read', 'success', durationSeconds);
       ok(res, toContractResponseDto(contract));
     } catch (error) {
+      if (error instanceof NotFoundError) {
+        // Already recorded — re-throw to let the error handler format the response.
+        next(error);
+        return;
+      }
+      const durationSeconds = (Date.now() - startMs) / 1000;
+      log.error('Milestone read operation failed with unexpected error', { err: error instanceof Error ? error : undefined });
+      this.metrics?.recordMilestoneOperation('read', 'server_error', durationSeconds, 'internal_error');
       next(error);
     }
   }
@@ -283,25 +255,34 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const log = resolveLogger(res);
-    const ctx = traceContext(res);
-    const correlationId = getCorrelationId(res);
-    log.info('contracts.createContract: start', ctx);
+    const startMs = Date.now();
+    const requestId =
+      typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined;
+    const hasMilestones = Array.isArray(req.body?.milestones) && req.body.milestones.length > 0;
+    const log = this.log.child({ operation: 'create', requestId, hasMilestones });
+
+    log.info('Milestone create operation started');
 
     try {
       const contract = await this.service.createContract(
         toCreateContractDto(req.body),
         correlationId,
       );
-      log.info('contracts.createContract: success', { ...ctx, contractId: contract.id });
+
+      const durationSeconds = (Date.now() - startMs) / 1000;
+      log.info('Milestone create operation succeeded');
+      this.metrics?.recordMilestoneOperation('create', 'success', durationSeconds);
       ok(res, toContractResponseDto(contract), undefined, 201);
     } catch (error) {
+      const durationSeconds = (Date.now() - startMs) / 1000;
       if (error instanceof ContractBoundsError) {
-        log.warn('contracts.createContract: bounds error', { ...ctx, error: (error as Error).message });
+        log.warn('Milestone create rejected: contract bounds violation', { errorMessage: error.message });
+        this.metrics?.recordMilestoneOperation('create', 'client_error', durationSeconds, 'contract_bounds_error');
         fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
-      log.error('contracts.createContract: error', { ...ctx, err: error as Error });
+      log.error('Milestone create operation failed with unexpected error', { err: error instanceof Error ? error : undefined });
+      this.metrics?.recordMilestoneOperation('create', 'server_error', durationSeconds, 'internal_error');
       next(error);
     }
   }
@@ -311,27 +292,42 @@ export class ContractsController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const log = resolveLogger(res);
-    const ctx = traceContext(res);
-    const correlationId = getCorrelationId(res);
-    const id = req.params.id!;
-    log.info('contracts.updateContract: start', { ...ctx, contractId: id });
+    const startMs = Date.now();
+    const contractId = req.params.id ?? '';
+    const requestId =
+      typeof res.locals.requestId === 'string' ? res.locals.requestId : undefined;
+    const hasMilestones = Array.isArray(req.body?.milestones) && req.body.milestones.length > 0;
+    const log = this.log.child({ operation: 'update', contractId, requestId, hasMilestones });
+
+    log.info('Milestone update operation started');
 
     try {
       const contract = await this.service.updateContract(
-        id,
+        contractId,
         toUpdateContractDto(req.body),
         correlationId,
       );
-      log.info('contracts.updateContract: success', { ...ctx, contractId: id });
+
+      const durationSeconds = (Date.now() - startMs) / 1000;
+      log.info('Milestone update operation succeeded');
+      this.metrics?.recordMilestoneOperation('update', 'success', durationSeconds);
       ok(res, toContractResponseDto(contract));
     } catch (error) {
+      const durationSeconds = (Date.now() - startMs) / 1000;
       if (error instanceof ContractBoundsError) {
-        log.warn('contracts.updateContract: bounds error', { ...ctx, contractId: id, error: (error as Error).message });
+        log.warn('Milestone update rejected: contract bounds violation', { errorMessage: error.message });
+        this.metrics?.recordMilestoneOperation('update', 'client_error', durationSeconds, 'contract_bounds_error');
         fail(res, 'contract_bounds_error', error.message, 422);
         return;
       }
-      log.error('contracts.updateContract: error', { ...ctx, contractId: id, err: error as Error });
+      if (error instanceof NotFoundError) {
+        log.warn('Milestone update failed: contract not found');
+        this.metrics?.recordMilestoneOperation('update', 'client_error', durationSeconds, 'not_found');
+        next(error);
+        return;
+      }
+      log.error('Milestone update operation failed with unexpected error', { err: error instanceof Error ? error : undefined });
+      this.metrics?.recordMilestoneOperation('update', 'server_error', durationSeconds, 'internal_error');
       next(error);
     }
   }
@@ -408,9 +404,9 @@ export { CURSOR_DEFAULT_LIMIT };
 
 export function createContractsController(
   service: ContractsService,
-  auditService?: ConstructorParameters<typeof ContractsController>[1],
+  metrics?: MetricsServiceLike,
 ) {
-  const controller = new ContractsController(service, auditService);
+  const controller = new ContractsController(service, metrics);
   return {
     getContracts: controller.getContracts.bind(controller),
     getContractsCursor: controller.getContractsCursor.bind(controller),

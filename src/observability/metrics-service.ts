@@ -49,17 +49,21 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'webhook_dlq_depth',
   'webhook_rate_limit_tokens',
   'webhook_rate_limit_queue_depth',
-  'disputes_requests_total',
-  'disputes_request_duration_seconds',
+  'milestone_operations_total',
+  'milestone_operation_duration_seconds',
 ] as const;
 
-export interface DisputesRequestMetricInput {
-  method: string;
-  route: string;
-  statusCode: number;
-  errorCause: DisputesErrorCause;
-  durationSeconds: number;
-}
+/** The type of milestone operation being instrumented. */
+export type MilestoneOperation = 'create' | 'update' | 'read';
+
+/**
+ * The outcome category of a milestone operation.
+ *
+ * - success: the operation completed with a 2xx response
+ * - client_error: the operation was rejected due to bad input (4xx)
+ * - server_error: an unexpected error occurred (5xx)
+ */
+export type MilestoneOperationStatus = 'success' | 'client_error' | 'server_error';
 
 export interface MetricsServiceLike {
   contentType: string;
@@ -74,6 +78,12 @@ export interface MetricsServiceLike {
   recordDisputesRequest: (input: DisputesRequestMetricInput) => void;
   startRateLimitMetricsSampling?: (limiter: any, intervalMs?: number) => void;
   stopRateLimitMetricsSampling?: () => void;
+  recordMilestoneOperation: (
+    operation: MilestoneOperation,
+    status: MilestoneOperationStatus,
+    durationSeconds: number,
+    errorCause?: string,
+  ) => void;
 }
 
 const HEALTH_STATUS_VALUE: Record<ServiceStatus, number> = {
@@ -131,9 +141,9 @@ export class MetricsService implements MetricsServiceLike {
 
   private readonly webhookRateLimitQueueDepth: Gauge;
 
-  private readonly disputesRequestsTotal: Counter;
+  private readonly milestoneOperationsTotal: Counter;
 
-  private readonly disputesRequestDurationSeconds: Histogram;
+  private readonly milestoneOperationDurationSeconds: Histogram;
 
   private readonly httpRouteLabelLimit: number;
 
@@ -254,17 +264,17 @@ export class MetricsService implements MetricsServiceLike {
       registers: [this.register],
     });
 
-    this.disputesRequestsTotal = new Counter({
-      name: 'disputes_requests_total',
-      help: 'Total disputes API requests by method, route, status, and error cause.',
-      labelNames: ['method', 'route', 'status_code', 'error_cause'],
+    this.milestoneOperationsTotal = new Counter({
+      name: 'milestone_operations_total',
+      help: 'Total number of milestone operations by type, status, and error cause.',
+      labelNames: ['operation', 'status', 'error_cause'],
       registers: [this.register],
     });
 
-    this.disputesRequestDurationSeconds = new Histogram({
-      name: 'disputes_request_duration_seconds',
-      help: 'Duration of disputes API requests in seconds.',
-      labelNames: ['method', 'route', 'status_code', 'error_cause'],
+    this.milestoneOperationDurationSeconds = new Histogram({
+      name: 'milestone_operation_duration_seconds',
+      help: 'Duration of milestone operations in seconds, labelled by operation type and status.',
+      labelNames: ['operation', 'status'],
       buckets: resolvedBuckets,
       registers: [this.register],
     });
@@ -449,6 +459,26 @@ export class MetricsService implements MetricsServiceLike {
       this.rateLimitStopSampling();
       this.rateLimitStopSampling = null;
     }
+  }
+
+  /**
+   * Record a completed milestone operation.
+   *
+   * @param operation - The type of operation: create, update, or read.
+   * @param status    - Outcome category: success, client_error, or server_error.
+   * @param durationSeconds - Wall-clock time in seconds.
+   * @param errorCause - Optional machine-readable cause label (e.g. "not_found",
+   *   "contract_bounds_error") for failed operations.  Defaults to the empty
+   *   string for success outcomes.  Never include PII.
+   */
+  recordMilestoneOperation(
+    operation: MilestoneOperation,
+    status: MilestoneOperationStatus,
+    durationSeconds: number,
+    errorCause: string = '',
+  ): void {
+    this.milestoneOperationsTotal.inc({ operation, status, error_cause: errorCause });
+    this.milestoneOperationDurationSeconds.observe({ operation, status }, durationSeconds);
   }
 
   getMetrics(): Promise<string> {
