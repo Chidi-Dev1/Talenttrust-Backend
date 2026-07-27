@@ -64,7 +64,7 @@ router.use((_req: Request, res: Response, next: NextFunction) => {
     return true;
   }
   return false;
-}
+});
 
 /**
  * Build the disputes router.
@@ -204,6 +204,9 @@ router.delete(
     );
   },
 );
+
+  return router;
+}
 
 function formatExpressPath(path: unknown): string | null {
   if (typeof path === 'string') {
