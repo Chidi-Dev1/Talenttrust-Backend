@@ -34,13 +34,45 @@ import {
   DisputesRequestMetricInput,
 } from '../observability/metrics-service';
 import { mapDisputesErrorCause } from '../observability/metrics-validation';
-import { createDisputesController } from '../controllers/disputes.controller';
+import {
+  DisputeError,
+  DisputeRecord,
+  disputesService,
+} from '../services/disputes.service';
+import { SoftDeleteRetentionError } from '../utils/softDelete';
+import { fail, ok } from '../utils/apiResponse';
 
 export interface DisputesRouterOptions {
   /** Optional metrics service; when omitted, metrics are skipped. */
   metricsService?: Pick<MetricsServiceLike, 'recordDisputesRequest'>;
   /** Optional logger override (tests). Defaults to request-scoped or root logger. */
   log?: Logger;
+}
+
+function serializeDispute(d: DisputeRecord) {
+  return {
+    id: d.id,
+    contractId: d.contractId,
+    status: d.status,
+    resolution: d.resolution,
+    reason: d.reason,
+    raisedBy: d.raisedBy,
+    createdAt: d.createdAt.toISOString(),
+    updatedAt: d.updatedAt.toISOString(),
+    deletedAt: d.deletedAt ? d.deletedAt.toISOString() : null,
+  };
+}
+
+function mapDisputeError(res: Response, error: unknown): boolean {
+  if (error instanceof DisputeError) {
+    fail(res, error.code, error.message, error.statusCode);
+    return true;
+  }
+  if (error instanceof SoftDeleteRetentionError) {
+    fail(res, error.code, error.message, error.statusCode);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -62,23 +94,55 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   // ── Authentication — all disputes routes require a valid JWT ──────────────────
   router.use(requireAuth);
 
-  // ── Disputes error handling — centralizes dispute-specific errors ─────────────
-  router.use(disputesErrorHandler);
-
-  // ── GET / — list disputes ─────────────────────────────────────────────────────
+  // ── GET / — list disputes (soft-deleted excluded by default) ──────────────────
   /** @permission disputes:list — admin, auditor, client (ownOnly), freelancer (ownOnly) */
   router.get(
     '/',
     requirePermission('disputes', 'list'),
-    controller.getDisputes,
+    (req: Request, res: Response) => {
+      const includeDeleted = req.query.includeDeleted === 'true';
+      const disputes = disputesService.listDisputes({ includeDeleted });
+      res.status(200).json({
+        disputes: disputes.map(serializeDispute),
+        total: disputes.length,
+      });
+    },
   );
 
-  // ── GET /:id — get a single dispute ───────────────────────────────────────────
+  // ── POST /:id/restore — restore soft-deleted dispute within retention window ──
+  // Registered before GET /:id so Express matches the static "restore" segment.
+  /** @permission disputes:delete — admin only (same as delete) */
+  router.post(
+    '/:id/restore',
+    requirePermission('disputes', 'delete'),
+    (req: Request, res: Response) => {
+      try {
+        const restored = disputesService.restoreDispute(req.params.id!);
+        ok(res, {
+          dispute: serializeDispute(restored),
+          message: `Dispute ${req.params.id} restored`,
+        });
+      } catch (error) {
+        if (mapDisputeError(res, error)) return;
+        throw error;
+      }
+    },
+  );
+
+  // ── GET /:id — get a single dispute (404 if soft-deleted) ─────────────────────
   /** @permission disputes:read — admin, auditor, client (ownOnly), freelancer (ownOnly) */
   router.get(
     '/:id',
     requirePermission('disputes', 'read'),
-    controller.getDisputeById,
+    (req: Request, res: Response) => {
+      try {
+        const dispute = disputesService.getDisputeById(req.params.id!);
+        res.status(200).json({ dispute: serializeDispute(dispute) });
+      } catch (error) {
+        if (mapDisputeError(res, error)) return;
+        throw error;
+      }
+    },
   );
 
   // ── POST / — create a new dispute ─────────────────────────────────────────────
@@ -86,7 +150,15 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.post(
     '/',
     requirePermission('disputes', 'create'),
-    controller.createDispute,
+    (req: Request, res: Response) => {
+      const body = req.body ?? {};
+      const created = disputesService.createDispute({
+        contractId: typeof body.contractId === 'string' ? body.contractId : 'unknown',
+        reason: typeof body.reason === 'string' ? body.reason : undefined,
+        raisedBy: typeof body.raisedBy === 'string' ? body.raisedBy : undefined,
+      });
+      res.status(201).json({ dispute: serializeDispute(created) });
+    },
   );
 
   // ── PATCH /:id — update a dispute ────────────────────────────────────────────
@@ -94,15 +166,38 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   router.patch(
     '/:id',
     requirePermission('disputes', 'update'),
-    controller.updateDispute,
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const body = req.body ?? {};
+        const updated = await disputesService.updateDispute(req.params.id!, {
+          status: body.status,
+          resolution: body.resolution,
+        });
+        res.status(200).json({ dispute: serializeDispute(updated) });
+      } catch (error) {
+        if (mapDisputeError(res, error)) return;
+        next(error);
+      }
+    },
   );
 
-  // ── DELETE /:id — delete a dispute ────────────────────────────────────────────
+  // ── DELETE /:id — soft-delete a dispute ───────────────────────────────────────
   /** @permission disputes:delete — admin only */
   router.delete(
     '/:id',
     requirePermission('disputes', 'delete'),
-    controller.deleteDispute,
+    (req: Request, res: Response) => {
+      try {
+        const deleted = disputesService.softDeleteDispute(req.params.id!);
+        res.status(200).json({
+          dispute: serializeDispute(deleted),
+          message: `Dispute ${req.params.id} soft-deleted successfully`,
+        });
+      } catch (error) {
+        if (mapDisputeError(res, error)) return;
+        throw error;
+      }
+    },
   );
 
   return router;
