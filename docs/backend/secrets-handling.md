@@ -182,3 +182,39 @@ Comprehensive tests are located in `src/config/secrets.test.ts`. These tests cov
 - Secret rotation/refreshing
 - `SecretsManager` registration and retrieval
 - `RotatingSecret` fail-safe behavior
+
+# Secrets Handling
+
+## Required secrets
+
+`JWT_SECRET` and `DATABASE_URL` are **required outside `development`/`test`**.
+If either is missing when `NODE_ENV` is `production` or `staging`, the app
+throws at boot (`initializeSecrets()` in `src/config/secrets.ts`) instead of
+silently falling back to a committed default.
+
+## JWT_SECRET rules
+
+- Required in production/staging (no fallback).
+- Must be at least 32 characters.
+- The known development placeholder (`dev-secret-keep-it-safe`) is rejected
+  even if explicitly set — it's committed to source, so anyone can forge a
+  valid JWT if it's ever used outside development.
+
+## DATABASE_URL rules
+
+- Required in production/staging (no fallback).
+- The known development placeholder
+  (`postgresql://localhost:5432/talenttrust`) is rejected even if explicitly
+  set, for the same reason.
+
+## Why fail-fast
+
+A missing or placeholder secret in production is a silent security hole —
+the app boots fine, but auth tokens (or DB access) are signed/secured with a
+value anyone can find in the repo. Failing at boot turns that into an
+immediately visible deploy failure instead of a live vulnerability.
+
+## Local development
+
+In `development` and `test`, both secrets fall back to their documented
+defaults automatically — no setup needed. See `.env.example`.
