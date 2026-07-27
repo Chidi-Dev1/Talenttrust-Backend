@@ -41,6 +41,9 @@ export const CATALOG_METRIC_NAMES: readonly string[] = [
   'api_keys_requests_total',
   'api_keys_request_duration_seconds',
   'api_keys_errors_total',
+  'auth_requests_total',
+  'auth_request_duration_seconds',
+  'auth_errors_total',
   'service_health_status',
   'webhook_deliveries_total',
   'webhook_dlq_depth',
@@ -62,6 +65,7 @@ export interface MetricsServiceLike {
   contentType: string;
   trackHttpRequest: (req: Request, res: Response, next: NextFunction) => void;
   trackApiKeysRequest: (req: Request, res: Response, next: NextFunction) => void;
+  trackAuthRequest: (req: Request, res: Response, next: NextFunction) => void;
   getMetrics: () => Promise<string>;
   recordReputationRequest: (metric: ReputationRequestMetric) => void;
   recordHealthStatus: (status: ServiceStatus) => void;
@@ -110,6 +114,12 @@ export class MetricsService implements MetricsServiceLike {
   private readonly apiKeysRequestDurationSeconds: Histogram;
 
   private readonly apiKeysErrorsTotal: Counter;
+
+  private readonly authRequestsTotal: Counter;
+
+  private readonly authRequestDurationSeconds: Histogram;
+
+  private readonly authErrorsTotal: Counter;
 
   private readonly serviceHealthStatus: Gauge;
 
@@ -181,6 +191,28 @@ export class MetricsService implements MetricsServiceLike {
     this.apiKeysErrorsTotal = new Counter({
       name: 'api_keys_errors_total',
       help: 'Total number of API key management request errors by cause.',
+      labelNames: ['operation', 'cause'],
+      registers: [this.register],
+    });
+
+    this.authRequestsTotal = new Counter({
+      name: 'auth_requests_total',
+      help: 'Total number of authentication requests.',
+      labelNames: ['operation', 'status_code'],
+      registers: [this.register],
+    });
+
+    this.authRequestDurationSeconds = new Histogram({
+      name: 'auth_request_duration_seconds',
+      help: 'Duration of authentication requests in seconds.',
+      labelNames: ['operation', 'status_code'],
+      buckets: resolvedBuckets,
+      registers: [this.register],
+    });
+
+    this.authErrorsTotal = new Counter({
+      name: 'auth_errors_total',
+      help: 'Total number of authentication request errors by cause.',
       labelNames: ['operation', 'cause'],
       registers: [this.register],
     });
@@ -310,6 +342,45 @@ export class MetricsService implements MetricsServiceLike {
         log.warn('api_keys_request', logFields);
       } else {
         log.info('api_keys_request', logFields);
+      }
+    });
+
+    next();
+  }
+
+  trackAuthRequest(req: Request, res: Response, next: NextFunction): void {
+    const start = process.hrtime.bigint();
+
+    res.on('finish', () => {
+      const durationSeconds = Number(process.hrtime.bigint() - start) / 1_000_000_000;
+      const statusCode = res.statusCode;
+      const operation = authOperation(req.method, req.route?.path);
+      const labels = { operation, status_code: String(statusCode) };
+      const errorCause = authErrorCause(statusCode, res);
+
+      this.authRequestsTotal.inc(labels);
+      this.authRequestDurationSeconds.observe(labels, durationSeconds);
+      if (errorCause !== null) {
+        this.authErrorsTotal.inc({ operation, cause: errorCause });
+      }
+
+      const log = (res.locals['log'] as Logger | undefined) ?? rootLogger;
+      const logFields = {
+        method: req.method,
+        route: authRouteTemplate(req.route?.path),
+        operation,
+        statusCode,
+        durationMs: Number((durationSeconds * 1000).toFixed(3)),
+        outcome: statusCode < 400 ? 'success' : 'error',
+        ...(errorCause !== null && { errorCause }),
+      };
+
+      if (statusCode >= 500) {
+        log.error('auth_request', logFields);
+      } else if (statusCode >= 400) {
+        log.warn('auth_request', logFields);
+      } else {
+        log.info('auth_request', logFields);
       }
     });
 
@@ -455,6 +526,49 @@ function apiKeysOperation(method: string, routePath: unknown): string {
 
 function apiKeysRouteTemplate(routePath: unknown): string {
   return typeof routePath === 'string' ? `/api/v1${routePath}` : '/api/v1/api-keys';
+}
+
+type AuthErrorCause =
+  | 'validation_error'
+  | 'invalid_credentials'
+  | 'invalid_token'
+  | 'conflict'
+  | 'rate_limit'
+  | 'client_error'
+  | 'server_error';
+
+function authErrorCause(statusCode: number, res: Response): AuthErrorCause | null {
+  if (statusCode < 400) return null;
+
+  const explicit = res.locals?.['errorCause'];
+  if (explicit === 'validation_error') return 'validation_error';
+  if (explicit === 'invalid_credentials') return 'invalid_credentials';
+  if (explicit === 'invalid_refresh_token' || explicit === 'unauthorized') return 'invalid_token';
+  if (explicit === 'conflict') return 'conflict';
+
+  if (statusCode === 400 || statusCode === 422) return 'validation_error';
+  if (statusCode === 401 || statusCode === 403) return 'invalid_token';
+  if (statusCode === 409) return 'conflict';
+  if (statusCode === 429) return 'rate_limit';
+  if (statusCode < 500) return 'client_error';
+  return 'server_error';
+}
+
+function authOperation(method: string, routePath: unknown): string {
+  const route = typeof routePath === 'string' ? routePath : '';
+  if (method !== 'POST') return 'unknown';
+  if (route === '/login') return 'login';
+  if (route === '/register') return 'register';
+  if (route === '/refresh') return 'refresh';
+  if (route === '/logout') return 'logout';
+  return 'unknown';
+}
+
+function authRouteTemplate(routePath: unknown): string {
+  const route = typeof routePath === 'string' ? routePath : '';
+  return ['/login', '/register', '/refresh', '/logout'].includes(route)
+    ? `/api/v1/auth${route}`
+    : '/api/v1/auth';
 }
 
 /**
