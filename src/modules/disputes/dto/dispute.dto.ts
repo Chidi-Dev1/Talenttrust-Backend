@@ -1,3 +1,16 @@
+export type DisputeStatus = 'open' | 'under_review' | 'resolved' | 'escalated';
+
+export interface BatchDisputeOperation {
+  id: string;
+  status: DisputeStatus;
+  resolution?: string;
+}
+
+export interface UpdateDisputePayload {
+  status?: DisputeStatus;
+  resolution?: string;
+}
+
 export interface CreateDisputeDto {
   contractId?: string;
   reason?: string;
