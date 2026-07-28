@@ -26,6 +26,7 @@ export interface ErrorPayload {
     message: string;
     requestId: string;
     details?: ValidationIssue[];
+    correlationId?: string;
   };
 }
 

@@ -68,6 +68,10 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
 
   res.locals.errorCause = mapped.payload.error.code;
 
+  if (correlationId !== undefined) {
+    mapped.payload.error.correlationId = correlationId;
+  }
+
   log.error('API request failed', {
     err: {
       type: errorName(error),
