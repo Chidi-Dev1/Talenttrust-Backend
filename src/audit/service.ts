@@ -192,6 +192,33 @@ export class AuditService {
   verifyIntegrity(): IntegrityReport {
     return this.repository.verifyIntegrity();
   }
+
+  /**
+   * Soft-deletes an audit entry by ID.
+   * @returns true if successful, false if not found or already deleted.
+   */
+  softDelete(id: string): boolean {
+    return this.repository.softDelete(id);
+  }
+
+  /**
+   * Restores a soft-deleted audit entry if within retention window.
+   * @param id The ID of the entry to restore.
+   * @param retentionDays The retention window in days (default: 30).
+   * @returns true if restored, false if not found. Throws error if past retention.
+   */
+  restore(id: string, retentionDays: number = 30): boolean {
+    return this.repository.restore(id, retentionDays);
+  }
+
+  /**
+   * Purges soft-deleted audit entries that are past the retention window.
+   * @param retentionDays The retention window in days (default: 30).
+   * @returns The number of records deleted.
+   */
+  purgeExpiredAuditLogs(retentionDays: number = 30): number {
+    return this.repository.purgeExpired(retentionDays);
+  }
 }
 
 /** Singleton service instance. */

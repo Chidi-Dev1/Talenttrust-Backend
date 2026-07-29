@@ -14,9 +14,9 @@ interface AuditRow {
   resource_id: string;
   metadata_json: string;
   ip_address: string | null;
-  correlation_id: string | null;
   hash: string;
   previous_hash: string;
+  deleted_at: string | null;
 }
 
 function toAuditEntry(row: AuditRow): AuditEntry {
@@ -33,6 +33,7 @@ function toAuditEntry(row: AuditRow): AuditEntry {
     correlationId: row.correlation_id ?? undefined,
     hash: row.hash,
     previousHash: row.previous_hash,
+    ...(row.deleted_at ? { deletedAt: row.deleted_at } : {})
   });
 }
 
@@ -100,9 +101,9 @@ export class SqliteAuditRepository implements AuditLogRepository {
   getById(id: string): AuditEntry | undefined {
     const row = this.db
       .prepare<[string], AuditRow>(
-        `SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash
+        `SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash, deleted_at
          FROM audit_log_entries
-         WHERE id = ?`
+         WHERE id = ? AND deleted_at IS NULL`
       )
       .get(id);
 
@@ -125,7 +126,7 @@ export class SqliteAuditRepository implements AuditLogRepository {
 
   count(): number {
     const row = this.db
-      .prepare<[], { total: number }>('SELECT COUNT(*) AS total FROM audit_log_entries')
+      .prepare<[], { total: number }>('SELECT COUNT(*) AS total FROM audit_log_entries WHERE deleted_at IS NULL')
       .get();
     return row?.total ?? 0;
   }
@@ -134,7 +135,7 @@ export class SqliteAuditRepository implements AuditLogRepository {
     const checkedAt = new Date().toISOString();
     const rows = this.db
       .prepare<[], AuditRow>(
-        `SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash
+        `SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash, deleted_at
          FROM audit_log_entries
          ORDER BY seq ASC`
       )
@@ -191,7 +192,8 @@ export class SqliteAuditRepository implements AuditLogRepository {
         ip_address     TEXT,
         correlation_id TEXT,
         hash           TEXT    NOT NULL,
-        previous_hash  TEXT    NOT NULL
+        previous_hash  TEXT    NOT NULL,
+        deleted_at     TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log_entries(timestamp);
@@ -199,7 +201,15 @@ export class SqliteAuditRepository implements AuditLogRepository {
       CREATE INDEX IF NOT EXISTS idx_audit_severity ON audit_log_entries(severity);
       CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log_entries(actor);
       CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log_entries(resource, resource_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_deleted_at ON audit_log_entries(deleted_at);
     `);
+
+    // Add deleted_at column if it does not exist (migration)
+    try {
+      this.db.exec(`ALTER TABLE audit_log_entries ADD COLUMN deleted_at TEXT;`);
+    } catch {
+      // Ignore if it already exists
+    }
   }
 
   private buildQuerySql(query: AuditQuery): { sql: string; params: unknown[] } {
@@ -234,6 +244,9 @@ export class SqliteAuditRepository implements AuditLogRepository {
       where.push('timestamp <= ?');
       params.push(query.to);
     }
+    if (!query.includeDeleted) {
+      where.push('deleted_at IS NULL');
+    }
 
     const offset = Math.max(query.offset ?? 0, 0);
     const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
@@ -248,12 +261,57 @@ export class SqliteAuditRepository implements AuditLogRepository {
     }
 
     const sql = `
-      SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash
+      SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash, deleted_at
       FROM audit_log_entries
       ${whereClause}
       ORDER BY seq ASC
       ${paginationClause}
     `;
     return { sql, params };
+  }
+
+  softDelete(id: string): boolean {
+    const result = this.db
+      .prepare<[string], { changes: number }>(
+        `UPDATE audit_log_entries SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL`
+      )
+      .run(id);
+    return result.changes > 0;
+  }
+
+  restore(id: string, retentionDays: number): boolean {
+    // First find the entry to check if it exists and retention
+    const row = this.db
+      .prepare<[string], AuditRow>(
+        `SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash, deleted_at
+         FROM audit_log_entries WHERE id = ? AND deleted_at IS NOT NULL`
+      )
+      .get(id);
+
+    if (!row) return false;
+
+    const deletedDate = new Date(row.deleted_at + "Z");
+    const now = new Date();
+    const ageDays = (now.getTime() - deletedDate.getTime()) / (1000 * 60 * 60 * 24);
+
+    if (ageDays > retentionDays) {
+      throw new Error('Cannot restore entry past retention window');
+    }
+
+    const result = this.db
+      .prepare<[string], { changes: number }>(
+        `UPDATE audit_log_entries SET deleted_at = NULL WHERE id = ?`
+      )
+      .run(id);
+    return result.changes > 0;
+  }
+
+  purgeExpired(retentionDays: number): number {
+    const result = this.db
+      .prepare<[number], { changes: number }>(
+        `DELETE FROM audit_log_entries WHERE deleted_at IS NOT NULL AND (julianday('now') - julianday(deleted_at)) > ?`
+      )
+      .run(retentionDays);
+    return result.changes;
   }
 }

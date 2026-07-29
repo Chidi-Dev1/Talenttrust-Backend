@@ -232,6 +232,49 @@ export function createAuditRouter(options: AuditRouterOptions = {}): Router {
     res.json(entry);
   });
 
+/**
+ * DELETE /api/v1/audit/:id
+ * Soft-delete an audit entry.
+ */
+  router.delete('/:id', ...accessMiddleware, (req: Request, res: Response): void => {
+    const success = service.softDelete(req.params['id'] ?? '');
+    if (!success) {
+      res.status(404).json({ error: 'Audit entry not found or already deleted' });
+      return;
+    }
+    res.json({ success: true });
+  });
+
+/**
+ * POST /api/v1/audit/:id/restore
+ * Restore a soft-deleted audit entry.
+ */
+  router.post('/:id/restore', ...accessMiddleware, (req: Request, res: Response): void => {
+    try {
+      const success = service.restore(req.params['id'] ?? '', 30); // 30 days default
+      if (!success) {
+        res.status(404).json({ error: 'Audit entry not found or not soft-deleted' });
+        return;
+      }
+      res.json({ success: true });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+
+/**
+ * POST /api/v1/audit/maintenance/purge
+ * Permanently purge expired soft-deleted audit entries.
+ */
+  router.post('/maintenance/purge', ...accessMiddleware, (req: Request, res: Response): void => {
+    try {
+      const count = service.purgeExpiredAuditLogs(30);
+      res.json({ success: true, purgedCount: count });
+    } catch (error) {
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
   return router;
 }
 

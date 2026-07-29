@@ -462,3 +462,97 @@ describe('SqliteAuditRepository — verifyIntegrity()', () => {
     expect(report.valid).toBe(false);
   });
 });
+
+// ─── softDelete, restore, purgeExpired ─────────────────────────────────────
+
+describe('SqliteAuditRepository — soft-delete, restore, and purge', () => {
+  let db: DbInstance;
+  let repository: SqliteAuditRepository;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    repository = new SqliteAuditRepository(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('hides soft-deleted entries from default queries and getById', () => {
+    const entry1 = repository.append(makeInput({ resourceId: '1' }));
+    const entry2 = repository.append(makeInput({ resourceId: '2' }));
+
+    expect(repository.count()).toBe(2);
+
+    expect(repository.softDelete(entry1.id)).toBe(true);
+    expect(repository.softDelete('unknown')).toBe(false);
+
+    expect(repository.count()).toBe(1);
+    expect(repository.getById(entry1.id)).toBeUndefined();
+    expect(repository.getById(entry2.id)).toBeDefined();
+
+    const results = repository.query();
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe(entry2.id);
+
+    // including deleted
+    const allResults = repository.query({ includeDeleted: true });
+    expect(allResults).toHaveLength(2);
+  });
+
+  it('restores soft-deleted entries within retention window', () => {
+    const entry = repository.append(makeInput());
+    repository.softDelete(entry.id);
+
+    expect(repository.count()).toBe(0);
+
+    const restoreResult = repository.restore(entry.id, 30);
+    expect(restoreResult).toBe(true);
+    expect(repository.count()).toBe(1);
+    expect(repository.getById(entry.id)).toBeDefined();
+
+    // Not soft deleted anymore
+    expect(repository.restore(entry.id, 30)).toBe(false);
+  });
+
+  it('fails to restore entries past retention window', () => {
+    const entry = repository.append(makeInput());
+    repository.softDelete(entry.id);
+    
+    // forcefully update deleted_at to past retention window
+    db.prepare(`UPDATE audit_log_entries SET deleted_at = datetime('now', '-40 days') WHERE id = ?`).run(entry.id);
+
+    expect(() => repository.restore(entry.id, 30)).toThrow('Cannot restore entry past retention window');
+  });
+
+  it('purges soft-deleted entries past retention window', () => {
+    const entry1 = repository.append(makeInput({ resourceId: '1' }));
+    const entry2 = repository.append(makeInput({ resourceId: '2' }));
+    const entry3 = repository.append(makeInput({ resourceId: '3' }));
+
+    repository.softDelete(entry1.id);
+    repository.softDelete(entry2.id);
+
+    // forcefully update entry1 deleted_at to 40 days ago
+    db.prepare(`UPDATE audit_log_entries SET deleted_at = datetime('now', '-40 days') WHERE id = ?`).run(entry1.id);
+
+    // entry2 is recent, entry3 is active
+    const purged = repository.purgeExpired(30);
+    expect(purged).toBe(1);
+
+    const remainingRows = db.prepare('SELECT id FROM audit_log_entries').all() as { id: string }[];
+    expect(remainingRows.map(r => r.id).sort()).toEqual([entry2.id, entry3.id].sort());
+  });
+
+  it('maintains integrity verification across soft-deleted records', () => {
+    const entry1 = repository.append(makeInput());
+    const entry2 = repository.append(makeInput());
+    
+    repository.softDelete(entry1.id);
+    
+    const report = repository.verifyIntegrity();
+    expect(report.valid).toBe(true);
+    expect(report.totalEntries).toBe(2);
+  });
+});
+

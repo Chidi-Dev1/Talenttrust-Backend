@@ -14,6 +14,9 @@ export interface AuditLogRepository {
   stream(query?: AuditQuery): IterableIterator<AuditEntry>;
   count(): number;
   verifyIntegrity(): IntegrityReport;
+  softDelete(id: string): boolean;
+  restore(id: string, retentionDays: number): boolean;
+  purgeExpired(retentionDays: number): number;
 }
 
 export function createDefaultAuditRepository(): AuditLogRepository {
