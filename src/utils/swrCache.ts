@@ -166,6 +166,28 @@ export class SWRCache {
   }
 
   /**
+   * Invalidate a cached entry and its in-flight fetch (if any).
+   * After invalidation the next {@link SWRCache.get | get} for this key will
+   * trigger a fresh upstream fetch.
+   *
+   * @param key - The cache key to invalidate.
+   */
+  public invalidate(key: string): void {
+    this.cache.delete(key);
+    this.activeFetches.delete(key);
+  }
+
+  /**
+   * Clear all cached entries and cancel all in-flight fetches.
+   * After clearing, every subsequent {@link SWRCache.get | get} will behave
+   * as a cache miss and trigger a fresh upstream fetch.
+   */
+  public clear(): void {
+    this.cache.clear();
+    this.activeFetches.clear();
+  }
+
+  /**
    * Retrieve data from cache or upstream fetcher using SWR strategy.
    *
    * The SWR strategy follows these rules:

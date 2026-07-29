@@ -108,29 +108,25 @@ describe('correlationId utilities', () => {
     });
 
     /**
-     * Should throw an error when request ID is not set.
+     * Should return 'unknown' when request ID is not set.
      */
-    it('should throw error when request ID is not set', () => {
+    it('should return "unknown" when request ID is not set', () => {
       const res = {
         locals: {},
       } as any as Response;
 
-      expect(() => getRequestId(res)).toThrow(
-        'Request ID not found in response locals'
-      );
+      expect(getRequestId(res)).toBe('unknown');
     });
 
     /**
-     * Should throw a specific error message when request ID is missing.
+     * Should not throw when request ID is missing — graceful fallback.
      */
-    it('should provide helpful error message when request ID is missing', () => {
+    it('should not throw when request ID is missing', () => {
       const res = {
         locals: {},
       } as any as Response;
 
-      expect(() => getRequestId(res)).toThrow(
-        /Ensure requestIdMiddleware is registered/
-      );
+      expect(() => getRequestId(res)).not.toThrow();
     });
   });
 
@@ -215,18 +211,20 @@ describe('correlationId utilities', () => {
     });
 
     /**
-     * Should throw an error when request ID is missing.
+     * Should return 'unknown' for requestId when missing (graceful fallback).
      */
-    it('should throw error when requestId is missing', () => {
+    it('should return "unknown" for requestId when missing', () => {
       const res = {
         locals: {
           correlationId: 'corr-456',
         },
       } as any as Response;
 
-      expect(() => getRequestContext(res)).toThrow(
-        'Request ID not found in response locals'
-      );
+      const result = getRequestContext(res);
+      expect(result).toEqual({
+        requestId: 'unknown',
+        correlationId: 'corr-456',
+      });
     });
   });
 
