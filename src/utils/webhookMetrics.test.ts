@@ -130,11 +130,6 @@ describe('incrementDlqOperation', () => {
     expect(value).toBe(1);
   });
 
-      await expect(
-        getCounterValue('webhook_dlq_replays_total', { outcome: 'success' }),
-      ).resolves.toBe(1);
-    });
-
     it('emits only bounded replay label values', async () => {
       incrementDlqReplay('success');
       incrementDlqReplay('failed');
