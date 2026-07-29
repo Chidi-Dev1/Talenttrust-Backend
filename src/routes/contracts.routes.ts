@@ -30,6 +30,7 @@ import {
   validateQuery,
 } from "../middleware/validate.middleware";
 import type { MetricsServiceLike } from "../observability/metrics-service";
+import { createContractsObservabilityMiddleware } from "../observability/contracts-observability";
 
 // ─── Inline route-param validator ────────────────────────────────────────────
 
@@ -148,6 +149,7 @@ function createContractsRouter(
   // Enable compression for large payloads (e.g. milestones arrays)
   // The threshold is 1KB by default, but we set it explicitly here.
   router.use(compression({ threshold: 1024 }));
+  router.use(createContractsObservabilityMiddleware({ metricsService }));
 
   const db = customDb ?? getDb();
   const repo = new ContractRepository(db);
@@ -249,6 +251,7 @@ function createContractsRouter(
     validateContractId,
     validateRequest(createMilestoneSchema),
     requireAuth,
+    contractCreateIdempotencyMiddleware(),
     requirePermission("contracts", "update", getContractOwnerId),
     milestonesSoftDelete.create.bind(milestonesSoftDelete),
   );
@@ -260,6 +263,7 @@ function createContractsRouter(
     validateContractId,
     validateParams(milestoneIdParamSchema),
     requireAuth,
+    contractCreateIdempotencyMiddleware(),
     requirePermission("contracts", "update", getContractOwnerId),
     milestonesSoftDelete.restore.bind(milestonesSoftDelete),
   );
@@ -271,6 +275,7 @@ function createContractsRouter(
     validateContractId,
     validateParams(milestoneIdParamSchema),
     requireAuth,
+    contractCreateIdempotencyMiddleware(),
     requirePermission("contracts", "update", getContractOwnerId),
     milestonesSoftDelete.softDelete.bind(milestonesSoftDelete),
   );
@@ -317,6 +322,7 @@ function createContractsRouter(
     "/bulk",
     requireAuth,
     requirePermission("contracts", "create"),
+    contractCreateIdempotencyMiddleware(),
     validateSchema(bulkCreateContractsSchema),
     bulkController.bulkCreateContracts,
   );
@@ -353,6 +359,7 @@ function createContractsRouter(
     validateContractId,
     requireAuth,
     requirePermission("contracts", "delete", getContractOwnerId),
+    contractCreateIdempotencyMiddleware(),
     controller.deleteContract,
   );
 

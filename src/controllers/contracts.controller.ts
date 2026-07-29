@@ -124,6 +124,7 @@ export class ContractsController {
       });
       const items = page.data.map(toContractResponseDto);
 
+      log.info('contracts.getContracts: success', { ...ctx, count: items.length });
       ok(res, items, {
         limit: page.limit,
         nextCursor: page.nextCursor,

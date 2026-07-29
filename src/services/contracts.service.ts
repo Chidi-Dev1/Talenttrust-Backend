@@ -21,6 +21,7 @@ import {
   NotFoundError,
   MissingVersionError,
   InvalidVersionError,
+  VersionConflictError,
 } from "../errors/appError";
 import { parseBoolEnv } from "../config/env";
 import { parseRetentionDays } from "../utils/softDelete";
