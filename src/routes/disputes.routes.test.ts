@@ -57,6 +57,9 @@ import { Logger, LogRecord } from '../logger';
 import { MetricsService } from '../observability/metrics-service';
 import { Registry } from 'prom-client';
 
+// ── Shared test UUID ────────────────────────────────────────────────────
+const testUuid = '123e4567-e89b-12d3-a456-426614174000';
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 const silentLogger = new Logger();
@@ -1058,7 +1061,6 @@ describe('Disputes endpoints — observability', () => {
 // ── Correlation ID propagation ────────────────────────────────────────────────
 
 describe('Disputes endpoints — correlation ID propagation', () => {
-  const testUuid = '123e4567-e89b-12d3-a456-426614174000';
 
   beforeEach(() => {
     mockDisputesEnabled = true;
@@ -1349,7 +1351,6 @@ describe('Disputes endpoints — correlation ID propagation', () => {
 // ── Logging with correlation context ──────────────────────────────────────────
 
 describe('Disputes endpoints — logging with correlation context', () => {
-  const testUuid = '123e4567-e89b-12d3-a456-426614174000';
 
   beforeEach(() => {
     mockDisputesEnabled = true;
