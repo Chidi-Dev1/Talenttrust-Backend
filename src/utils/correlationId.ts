@@ -75,7 +75,7 @@ export function getCorrelationId(res: Response): string | undefined {
 export function getRequestId(res: Response): string {
   const requestId = res.locals['requestId'] as string | undefined;
   if (!requestId) {
-    throw new Error('Request ID not found in response locals. Ensure requestIdMiddleware is registered before this handler.');
+    return 'unknown';
   }
   return requestId;
 }
