@@ -623,6 +623,15 @@ MIGRATIONS.push({
     "ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0",
   ].join("\n"),
   up: (db) => {
+    // The api_keys table is created by sqliteStore.ts (not by any migration),
+    // so it may not exist when migrations run on a fresh in-memory database.
+    // Guard with a table-existence check to avoid crashing with
+    // "SqliteError: no such table: api_keys".
+    const tables = db.pragma("table_list") as Array<{ name: string }>;
+    if (!tables.some((t) => t.name === "api_keys")) {
+      return;
+    }
+
     // Check if the column already exists to prevent errors during repeated migrations
     const columns = db.pragma("table_info(api_keys)") as Array<{
       name: string;
