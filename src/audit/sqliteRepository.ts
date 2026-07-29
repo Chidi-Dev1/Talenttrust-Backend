@@ -4,6 +4,7 @@ import { computeEntryHash, GENESIS_HASH } from './store';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport, AuditQueryResult, CursorData } from './types';
 import { encodeCursor, decodeCursor } from './types';
 import type { AuditLogRepository } from './repository';
+import { AUDIT_MESSAGES } from '../constants/audit';
 
 interface AuditRow {
   id: string;
@@ -115,12 +116,12 @@ export class SqliteAuditRepository implements AuditLogRepository {
     const updateTransaction = this.db.transaction((id: string, payload: Partial<CreateAuditEntryInput>) => {
       const current = this.getById(id);
       if (!current) {
-        throw new Error('Audit entry not found');
+        throw new Error(AUDIT_MESSAGES.NOT_FOUND);
       }
 
       const seqRow = this.db.prepare('SELECT seq FROM audit_log_entries WHERE id = ?').get(id);
       if (!seqRow) {
-        throw new Error('Audit entry not found');
+        throw new Error(AUDIT_MESSAGES.NOT_FOUND);
       }
 
       const partial: Omit<AuditEntry, 'hash'> = {
@@ -170,7 +171,7 @@ export class SqliteAuditRepository implements AuditLogRepository {
     const deleteTransaction = this.db.transaction((id: string) => {
       const seqRow = this.db.prepare('SELECT seq FROM audit_log_entries WHERE id = ?').get(id);
       if (!seqRow) {
-        throw new Error('Audit entry not found');
+        throw new Error(AUDIT_MESSAGES.NOT_FOUND);
       }
 
       this.db.prepare('DELETE FROM audit_log_entries WHERE id = ?').run(id);
@@ -251,11 +252,11 @@ export class SqliteAuditRepository implements AuditLogRepository {
             cursorData.filters.resourceId !== query.resourceId ||
             cursorData.filters.from !== query.from ||
             cursorData.filters.to !== query.to) {
-          throw new Error('Cursor filters do not match query filters');
+          throw new Error(AUDIT_MESSAGES.CURSOR_FILTERS_MISMATCH);
         }
       } catch (error) {
         // Re-throw filter mismatch errors, but handle invalid cursor format gracefully
-        if (error instanceof Error && error.message === 'Cursor filters do not match query filters') {
+        if (error instanceof Error && error.message === AUDIT_MESSAGES.CURSOR_FILTERS_MISMATCH) {
           throw error;
         }
         // If cursor is invalid (format error), start from beginning
@@ -455,6 +456,59 @@ export class SqliteAuditRepository implements AuditLogRepository {
     return { sql, params };
   }
 
+  private buildCursorQuerySql(query: AuditQuery, startIndex: number, limit: number): { sql: string; params: unknown[] } {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (startIndex > 0) {
+      where.push('seq > ?');
+      params.push(startIndex);
+    }
+    if (query.action) {
+      where.push('action = ?');
+      params.push(query.action);
+    }
+    if (query.severity) {
+      where.push('severity = ?');
+      params.push(query.severity);
+    }
+    if (query.actor) {
+      where.push('actor = ?');
+      params.push(query.actor);
+    }
+    if (query.resource) {
+      where.push('resource = ?');
+      params.push(query.resource);
+    }
+    if (query.resourceId) {
+      where.push('resource_id = ?');
+      params.push(query.resourceId);
+    }
+    if (query.from) {
+      where.push('timestamp >= ?');
+      params.push(query.from);
+    }
+    if (query.to) {
+      where.push('timestamp <= ?');
+      params.push(query.to);
+    }
+    if (!query.includeDeleted) {
+      where.push('deleted_at IS NULL');
+    }
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    params.push(limit);
+
+    const sql = `
+      SELECT id, timestamp, action, severity, actor, resource, resource_id, metadata_json, ip_address, correlation_id, hash, previous_hash, deleted_at
+      FROM audit_log_entries
+      ${whereClause}
+      ORDER BY seq ASC
+      LIMIT ?
+    `;
+    return { sql, params };
+  }
+
   softDelete(id: string): boolean {
     const result = this.db
       .prepare<[string], { changes: number }>(
@@ -480,7 +534,7 @@ export class SqliteAuditRepository implements AuditLogRepository {
     const ageDays = (now.getTime() - deletedDate.getTime()) / (1000 * 60 * 60 * 24);
 
     if (ageDays > retentionDays) {
-      throw new Error('Cannot restore entry past retention window');
+      throw new Error(AUDIT_MESSAGES.CANNOT_RESTORE_PAST_RETENTION);
     }
 
     const result = this.db

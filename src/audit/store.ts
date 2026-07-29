@@ -18,9 +18,10 @@ import { createHash, randomUUID } from 'crypto';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport, AuditQueryResult, CursorData } from './types';
 import { encodeCursor, decodeCursor } from './types';
 import type { AuditLogRepository } from './repository';
+import { AUDIT_DEFAULTS, AUDIT_MESSAGES } from '../constants/audit';
 
 /** Sentinel hash used as the previousHash of the very first entry. */
-export const GENESIS_HASH = 'GENESIS';
+export const GENESIS_HASH = AUDIT_DEFAULTS.GENESIS_HASH;
 
 /**
  * Computes the SHA-256 hash for an audit entry.
@@ -64,7 +65,7 @@ export class AuditStore implements AuditLogRepository {
 
   append(input: CreateAuditEntryInput): AuditEntry {
     if (this._appendGuard) {
-      throw new Error('AuditStore append re-entrancy detected');
+      throw new Error(AUDIT_MESSAGES.REENTRANCY_DETECTED);
     }
 
     this._appendGuard = true;
@@ -104,7 +105,7 @@ export class AuditStore implements AuditLogRepository {
   update(id: string, payload: Partial<CreateAuditEntryInput>): AuditEntry {
     const index = this.log.findIndex(e => e.id === id);
     if (index === -1) {
-      throw new Error('Audit entry not found');
+      throw new Error(AUDIT_MESSAGES.NOT_FOUND);
     }
 
     const current = this.log[index];
@@ -136,7 +137,7 @@ export class AuditStore implements AuditLogRepository {
   delete(id: string): void {
     const index = this.log.findIndex(e => e.id === id);
     if (index === -1) {
-      throw new Error('Audit entry not found');
+      throw new Error(AUDIT_MESSAGES.NOT_FOUND);
     }
 
     this.log.splice(index, 1);
@@ -239,10 +240,10 @@ export class AuditStore implements AuditLogRepository {
             cursorData.filters.resourceId !== query.resourceId ||
             cursorData.filters.from !== query.from ||
             cursorData.filters.to !== query.to) {
-          throw new Error('Cursor filters do not match query filters');
+          throw new Error(AUDIT_MESSAGES.CURSOR_FILTERS_MISMATCH);
         }
       } catch (err) {
-        if (err instanceof Error && err.message === 'Cursor filters do not match query filters') {
+        if (err instanceof Error && err.message === AUDIT_MESSAGES.CURSOR_FILTERS_MISMATCH) {
           throw err;
         }
         // If cursor is invalid, start from beginning
@@ -378,11 +379,11 @@ export class AuditStore implements AuditLogRepository {
     const ageDays = (now.getTime() - deletedDate.getTime()) / (1000 * 60 * 60 * 24);
 
     if (ageDays > retentionDays) {
-      throw new Error('Cannot restore entry past retention window');
+      throw new Error(AUDIT_MESSAGES.CANNOT_RESTORE_PAST_RETENTION);
     }
 
     // Restore
-    const { deletedAt, ...rest } = entry;
+    const { deletedAt: _deletedAt, ...rest } = entry;
     this.log[index] = Object.freeze(rest as AuditEntry);
     return true;
   }
