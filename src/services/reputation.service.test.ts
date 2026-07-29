@@ -1051,6 +1051,7 @@ describe('ReputationService.getProfile — error paths', () => {
       const err = e as AppError;
       expect(err.statusCode).toBe(400);
       expect(err.code).toBe('bad_request');
+    }
   });
 
   afterAll(() => {
