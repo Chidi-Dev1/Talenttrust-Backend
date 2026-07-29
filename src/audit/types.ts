@@ -115,10 +115,12 @@ export interface AuditEntry {
   readonly hash: string;
   /** Hash of the immediately preceding entry, or 'GENESIS' for the first entry. */
   readonly previousHash: string;
+  /** Optional ISO-8601 UTC timestamp of when this entry was soft-deleted. */
+  readonly deletedAt?: string;
 }
 
 /** Input required to create a new audit entry (hash fields are computed internally). */
-export type CreateAuditEntryInput = Omit<AuditEntry, 'id' | 'timestamp' | 'hash' | 'previousHash'>;
+export type CreateAuditEntryInput = Omit<AuditEntry, 'id' | 'timestamp' | 'hash' | 'previousHash' | 'deletedAt'>;
 
 /**
  * Outcome of a single item within a `POST /api/v1/audit/bulk` request.
@@ -175,8 +177,8 @@ export interface AuditQuery {
   limit?: number;
   /** Zero-based offset for pagination (deprecated, use cursor instead). */
   offset?: number;
-  /** Opaque cursor for pagination. */
-  cursor?: AuditCursor;
+  /** Include soft-deleted entries. Defaults to false. */
+  includeDeleted?: boolean;
 }
 
 /** Result of a chain integrity verification. */
