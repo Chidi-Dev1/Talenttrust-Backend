@@ -6,34 +6,19 @@ import {
 } from '../services/milestones.service';
 import { SoftDeleteRetentionError } from '../utils/softDelete';
 import { fail, ok } from '../utils/apiResponse';
-import { createMilestoneSchema, type CreateMilestoneInput } from '../modules/contracts/dto/milestones.dto';
+import {
+  toCreateMilestoneInput,
+  toListMilestonesOptions,
+  toListMilestonesResponseDto,
+  toSingleMilestoneResponseDto,
+  type CreateMilestoneRequestDto,
+  type ListMilestonesQueryDto,
+} from '../modules/milestones/dto/milestone.dto';
 
-function serializeMilestone(m: {
-  id: string;
-  contractId: string;
-  title: string;
-  description: string;
-  amount: number;
-  deadline?: string;
-  completed: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  deletedAt?: Date | null;
-}) {
-  return {
-    id: m.id,
-    contractId: m.contractId,
-    title: m.title,
-    description: m.description,
-    amount: m.amount,
-    deadline: m.deadline,
-    completed: m.completed,
-    createdAt: m.createdAt.toISOString(),
-    updatedAt: m.updatedAt.toISOString(),
-    deletedAt: m.deletedAt ? m.deletedAt.toISOString() : null,
-  };
-}
-
+/**
+ * Maps well-known domain errors to structured HTTP responses.
+ * Returns `true` when an error was handled so the caller can skip `next(error)`.
+ */
 function mapMilestoneError(res: Response, error: unknown): boolean {
   if (error instanceof MilestoneNotFoundError) {
     fail(res, error.code, error.message, error.statusCode);
@@ -53,17 +38,19 @@ function mapMilestoneError(res: Response, error: unknown): boolean {
 /**
  * Handlers for milestone soft-delete / restore / list / create.
  * Mounted under `/api/v1/contracts/:id/milestones…`.
+ *
+ * All request bodies are mapped through typed DTOs before reaching the
+ * service layer, and all domain records are mapped through typed DTOs before
+ * being handed to `ok()`. No loose `any`-typed objects cross the HTTP boundary.
  */
 export class MilestonesSoftDeleteController {
   public list(req: Request, res: Response, next: NextFunction): void {
     try {
       const contractId = req.params.id!;
-      const includeDeleted = req.query.includeDeleted === 'true';
-      const milestones = milestonesService.listByContract(contractId, { includeDeleted });
-      ok(res, {
-        milestones: milestones.map(serializeMilestone),
-        total: milestones.length,
-      });
+      const queryDto = req.query as unknown as ListMilestonesQueryDto;
+      const options = toListMilestonesOptions(queryDto);
+      const milestones = milestonesService.listByContract(contractId, options);
+      ok(res, toListMilestonesResponseDto(milestones));
     } catch (error) {
       if (mapMilestoneError(res, error)) return;
       next(error);
@@ -73,9 +60,14 @@ export class MilestonesSoftDeleteController {
   public create(req: Request, res: Response, next: NextFunction): void {
     try {
       const contractId = req.params.id!;
-      const body = req.body as CreateMilestoneInput;
-      const created = milestonesService.create(contractId, body);
-      ok(res, { milestone: serializeMilestone(created) }, undefined, 201);
+      const body = (req.body ?? {}) as CreateMilestoneRequestDto;
+      if (!body.title || typeof body.amount !== 'number') {
+        fail(res, 'validation_error', 'title and amount are required', 400);
+        return;
+      }
+      const input = toCreateMilestoneInput(body);
+      const created = milestonesService.create(contractId, input);
+      ok(res, toSingleMilestoneResponseDto(created), undefined, 201);
     } catch (error) {
       if (mapMilestoneError(res, error)) return;
       next(error);
@@ -87,10 +79,7 @@ export class MilestonesSoftDeleteController {
       const contractId = req.params.id!;
       const milestoneId = req.params.milestoneId!;
       const deleted = milestonesService.softDelete(contractId, milestoneId);
-      ok(res, {
-        milestone: serializeMilestone(deleted),
-        message: `Milestone ${milestoneId} soft-deleted`,
-      });
+      ok(res, toSingleMilestoneResponseDto(deleted, `Milestone ${milestoneId} soft-deleted`));
     } catch (error) {
       if (mapMilestoneError(res, error)) return;
       next(error);
@@ -102,10 +91,7 @@ export class MilestonesSoftDeleteController {
       const contractId = req.params.id!;
       const milestoneId = req.params.milestoneId!;
       const restored = milestonesService.restore(contractId, milestoneId);
-      ok(res, {
-        milestone: serializeMilestone(restored),
-        message: `Milestone ${milestoneId} restored`,
-      });
+      ok(res, toSingleMilestoneResponseDto(restored, `Milestone ${milestoneId} restored`));
     } catch (error) {
       if (mapMilestoneError(res, error)) return;
       next(error);
