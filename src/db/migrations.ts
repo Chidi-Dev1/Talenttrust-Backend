@@ -614,25 +614,3 @@ MIGRATIONS.push({
     `);
   },
 });
-
-// Version 14: add deleted_at column and index to contracts
-MIGRATIONS.push({
-  version: 14,
-  name: "add_deleted_at_to_contracts",
-  checksumSource: [
-    "ALTER TABLE contracts ADD COLUMN deleted_at TEXT",
-    "CREATE INDEX IF NOT EXISTS idx_contracts_deleted_at ON contracts(deleted_at)",
-  ].join("\n"),
-  up: (db) => {
-    const columns = db.pragma("table_info(contracts)") as Array<{
-      name: string;
-    }>;
-    const hasDeletedAt = columns.some((col) => col.name === "deleted_at");
-    if (!hasDeletedAt) {
-      db.exec("ALTER TABLE contracts ADD COLUMN deleted_at TEXT");
-    }
-    db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_contracts_deleted_at ON contracts(deleted_at)",
-    );
-  },
-});
