@@ -133,7 +133,9 @@ describe('AccountLockoutTracker — config & initial state', () => {
   });
 
   it('treats disabled trackers as a no-op', () => {
-    const { tracker, auditCalls, sleep } = makeTracker({ enabled: false, ...FAST_CONFIG });
+    // Spread FAST_CONFIG first so the explicit `enabled: false` overrides
+    // it last (object spread order matters).
+    const { tracker, auditCalls, sleep } = makeTracker({ ...FAST_CONFIG, enabled: false });
 
     expect(tracker.assess('a@example.com')).toEqual({
       isLocked: false,

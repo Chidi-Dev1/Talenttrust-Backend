@@ -128,9 +128,43 @@ router.post(
     const pre = accountLockout.assess(email);
 
     try {
-      const dto = mapLoginRequest(req.body);
-      const tokens = await getAuthService().login(dto.email, dto.password);
-      return res.status(200).json(mapAuthTokensResponse(tokens));
+      // SECURITY: always run authService.login (constant-time scrypt +
+      // dummy-hash path) regardless of whether the account is currently
+      // locked. Skipping this would create a different timing oracle
+      // that lets an attacker enumerate accounts (locked vs. missing
+      // would respond at conspicuously different latencies).
+      const tokens = await getAuthService().login(email, password);
+
+      // Re-assess live state after scrypt completes: `pre` was
+      // captured ~100ms ago and the lockout deadline may have lapsed
+      // during the wait. Without this re-check, a user with the
+      // correct password arriving 1ms before lockout-expiry would be
+      // unjustly rejected. We still pad to `pre.preDelayMs` so the
+      // timing surface (from the attacker's perspective) is uniformly
+      // determined by the request's start-of-flight state.
+      const live = accountLockout.assess(email);
+
+      if (live.isLocked) {
+        // Lockout still active — honor the policy: suppress token
+        // issuance and return the same uniform `invalid_credentials`
+        // shape. The record is NOT cleared — the next eligible user
+        // login will emit AUTH_LOCKOUT_RELEASED via `recordSuccess`.
+        await padResponseTime(startMs, pre.preDelayMs);
+        return authError(res, 401, 'invalid_credentials', 'Request validation failed');
+      }
+
+      // Lockout was cleared between snapshot and now (or never
+      // present) — issue tokens. Padding remains `pre.preDelayMs` so
+      // wall time matches what the request would have taken had the
+      // lockout still been active at the start of the request.
+      // (Note: this is a deliberate security/UX tradeoff — a legit
+      // user who fat-fingers their password N times and then enters
+      // it correctly will wait `computeDelay(N)` ms after the last
+      // failed attempt. The alternative (no success padding) re-
+      // introduces a high-failure timing oracle — see issue #631.)
+      accountLockout.recordSuccess(email, lockoutCtx);
+      await padResponseTime(startMs, pre.preDelayMs);
+      return res.status(200).json(tokens);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'invalid_credentials') {
