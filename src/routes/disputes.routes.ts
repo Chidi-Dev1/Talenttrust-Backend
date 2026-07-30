@@ -46,6 +46,11 @@ import { features } from '../config/features';
 import { ok, fail } from '../utils/apiResponse';
 import { getRequestLogger, getRequestContext } from '../utils/correlationId';
 import { createDisputesController } from '../controllers/disputes.controller';
+import {
+  DISPUTE_STATUS,
+  DISPUTES_FEATURE_DISABLED_CODE,
+  DISPUTES_FEATURE_DISABLED_MESSAGE,
+} from '../modules/disputes/constants';
 import type { Logger } from '../logger';
 import type { MetricsServiceLike } from '../observability/metrics-service';
 
@@ -68,7 +73,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
   // ── Feature flag — gate all disputes routes ───────────────────────────────────
   router.use((_req: Request, res: Response, next: NextFunction) => {
     if (!features.disputesEnabled) {
-      fail(res, 'feature_disabled', 'Disputes feature is currently disabled.', 404);
+      fail(res, DISPUTES_FEATURE_DISABLED_CODE, DISPUTES_FEATURE_DISABLED_MESSAGE, 404);
       return;
     }
     next();
@@ -117,7 +122,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
         {
           dispute: {
             id: disputeId,
-            status: 'open',
+            status: DISPUTE_STATUS.OPEN,
             createdAt: new Date().toISOString(),
           },
         },
@@ -145,7 +150,7 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
           dispute: {
             id: disputeId,
             ...body,
-            status: 'open',
+            status: DISPUTE_STATUS.OPEN,
             createdAt: new Date().toISOString(),
           },
         },

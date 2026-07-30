@@ -12,6 +12,8 @@ export default defineConfig({
       'src/hooks/**/*.test.{ts,tsx}',
       'src/components/voice/**/*.test.{ts,tsx}',
       'src/i18n/**/*.test.{ts,tsx}',
+      'src/lib/**/*.test.{ts,tsx}',
+      'src/pages/**/*.test.{ts,tsx}',
     ],
   },
 });
