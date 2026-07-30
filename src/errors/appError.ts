@@ -25,6 +25,7 @@ export interface ErrorPayload {
     code: string;
     message: string;
     requestId: string;
+    correlationId?: string;
     details?: ValidationIssue[];
     correlationId?: string;
   };
@@ -174,6 +175,7 @@ function mapZodErrorToDetails(error: ZodError): ValidationIssue[] {
 export function mapErrorToPayload(
   error: unknown,
   requestId: string,
+  correlationId?: string,
 ): { statusCode: number; payload: ErrorPayload } {
   if (error instanceof AppError) {
     const message = error.expose
@@ -187,6 +189,7 @@ export function mapErrorToPayload(
           code: error.code,
           message,
           requestId,
+          ...(correlationId !== undefined && { correlationId }),
         },
       },
     };
@@ -200,6 +203,7 @@ export function mapErrorToPayload(
           code: 'validation_error',
           message: safeMessageForCode('validation_error'),
           requestId,
+          ...(correlationId !== undefined && { correlationId }),
           details: mapZodErrorToDetails(error),
         },
       },
@@ -213,6 +217,7 @@ export function mapErrorToPayload(
         code: 'internal_error',
         message: safeMessageForCode('internal_error'),
         requestId,
+        ...(correlationId !== undefined && { correlationId }),
       },
     },
   };

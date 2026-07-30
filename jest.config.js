@@ -35,13 +35,19 @@ module.exports = {
     // 'src/shutdown.test.ts', — re-enabled: drain phase tests are now stable
   ],
   transform: {
-    '^.+\\.ts$': ['ts-jest', {
+    '^.+\\.[jt]s$': ['ts-jest', {
       diagnostics: false,
     }],
   },
+  moduleNameMapper: {
+    '^uuid$': require.resolve('uuid'),
+  },
+  transformIgnorePatterns: [
+    'node_modules/(?!(uuid)/)',
+  ],
   testEnvironment: 'node',
   testTimeout: 15000,
-  roots: ['<rootDir>/src'],
+  roots: ['<rootDir>/src', '<rootDir>/tests'],
   testMatch: ['**/*.test.ts'],
   collectCoverageFrom: [
     'src/**/*.ts',

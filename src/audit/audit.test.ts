@@ -16,6 +16,7 @@ import { AuditService } from './service';
 import { auditMiddleware } from './middleware';
 import { auditRouter } from './router';
 import type { AuditEntry, CreateAuditEntryInput } from './types';
+import { requestIdMiddleware } from '../middleware/requestId';
 import {
   isSensitiveHeader,
   isSensitiveKey,
@@ -45,6 +46,7 @@ function makeInput(overrides: Partial<CreateAuditEntryInput> = {}): CreateAuditE
 function buildTestApp(store?: AuditStore) {
   const app = express();
   app.use(express.json());
+  app.use(requestIdMiddleware);
   app.use(auditMiddleware);
   if (store) {
     // Swap the singleton for an isolated store in integration tests
@@ -419,6 +421,29 @@ describe('AuditService', () => {
     service.log(makeInput());
     expect(service.count()).toBe(1);
   });
+
+  it('softDelete() delegates to repository', () => {
+    const entry = service.log(makeInput());
+    expect(service.softDelete(entry.id)).toBe(true);
+    expect(service.softDelete(entry.id)).toBe(false);
+  });
+
+  it('restore() delegates to repository', () => {
+    const entry = service.log(makeInput());
+    service.softDelete(entry.id);
+    expect(service.restore(entry.id)).toBe(true);
+  });
+
+  it('purgeExpiredAuditLogs() delegates to repository', () => {
+    const entry = service.log(makeInput());
+    service.softDelete(entry.id);
+    
+    // forcefully update deletedAt to past 30 days
+    const log = (store as unknown as any).log;
+    log[0] = { ...log[0], deletedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString() };
+
+    expect(service.purgeExpiredAuditLogs()).toBe(1);
+  });
 });
 
 // ─── auditMiddleware unit tests ───────────────────────────────────────────────
@@ -594,6 +619,37 @@ describe('auditRouter (singleton, real router)', () => {
     expect(lines).toHaveLength(1);
     const first = JSON.parse(lines[0]) as { actor: string };
     expect(first.actor).toBe('stream-user-1');
+  });
+
+  it('DELETE /api/v1/audit/:id soft-deletes an entry', async () => {
+    const app = buildTestApp();
+    const entry = singletonStore.append(makeInput());
+    
+    await request(app).delete(`/api/v1/audit/${entry.id}`).expect(200);
+    await request(app).get(`/api/v1/audit/${entry.id}`).expect(404);
+  });
+
+  it('POST /api/v1/audit/:id/restore restores a soft-deleted entry', async () => {
+    const app = buildTestApp();
+    const entry = singletonStore.append(makeInput());
+    
+    await request(app).delete(`/api/v1/audit/${entry.id}`).expect(200);
+    await request(app).post(`/api/v1/audit/${entry.id}/restore`).expect(200);
+    await request(app).get(`/api/v1/audit/${entry.id}`).expect(200);
+  });
+
+  it('POST /api/v1/audit/maintenance/purge purges expired entries', async () => {
+    const app = buildTestApp();
+    const entry = singletonStore.append(makeInput());
+    
+    await request(app).delete(`/api/v1/audit/${entry.id}`).expect(200);
+    
+    // manually edit deletedAt in memory to simulate expired
+    const log = (singletonStore as unknown as any).log;
+    log[log.length - 1] = { ...log[log.length - 1], deletedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString() };
+
+    const res = await request(app).post('/api/v1/audit/maintenance/purge').expect(200);
+    expect(res.body.purgedCount).toBe(1);
   });
 });
 
@@ -990,6 +1046,7 @@ describe('protectedEndpointAuditMiddleware', () => {
     const app = buildProtectedApp({ method: 'GET', statusCode: 200 });
     await request(app).get('/api/v1/contracts').expect(200);
 
+    console.log(store.getAll());
     expect(store.count()).toBe(1);
     const entry = store.getAll()[0];
     expect(entry.action).toBe('ENDPOINT_ACCESS');

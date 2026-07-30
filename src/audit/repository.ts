@@ -7,6 +7,8 @@ import Database from '../db/betterSqlite3';
 export interface AuditLogRepository {
   append(input: CreateAuditEntryInput): AuditEntry;
   getById(id: string): AuditEntry | undefined;
+  update(id: string, payload: Partial<CreateAuditEntryInput>): AuditEntry;
+  delete(id: string): void;
   query(query?: AuditQuery): AuditEntry[];
   /**
    * Query with cursor-based pagination.
@@ -18,6 +20,9 @@ export interface AuditLogRepository {
   stream(query?: AuditQuery): IterableIterator<AuditEntry>;
   count(): number;
   verifyIntegrity(): IntegrityReport;
+  softDelete(id: string): boolean;
+  restore(id: string, retentionDays: number): boolean;
+  purgeExpired(retentionDays: number): number;
 }
 
 export function createDefaultAuditRepository(): AuditLogRepository {

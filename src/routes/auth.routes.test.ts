@@ -6,6 +6,7 @@
  */
 
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import { getDb, closeDb } from '../db/database';
 import authRouter from './auth.routes';
@@ -317,11 +318,105 @@ describe('POST /auth/logout', () => {
     expect(res.status).toBe(401);
   });
 
+  it('returns 401 for a malformed Authorization header', async () => {
+    const res = await request(app)
+      .post('/auth/logout')
+      .set('Authorization', 'Token not-a-bearer-token');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+  });
+
+  it('returns 401 for a JWT signed with the wrong secret', async () => {
+    const forged = jwt.sign(
+      { sub: 'user-1', email: 'alice@example.com', role: 'client' },
+      'wrong-secret',
+      { algorithm: 'HS256' },
+    );
+
+    const res = await request(app)
+      .post('/auth/logout')
+      .set('Authorization', `Bearer ${forged}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+  });
+
+  it('only revokes the authenticated caller’s refresh token on logout', async () => {
+    await request(app)
+      .post('/auth/register')
+      .send({ email: 'bob@example.com', password: 'Password1!', username: 'bob' });
+
+    const bobLogin = await request(app)
+      .post('/auth/login')
+      .send({ email: 'bob@example.com', password: 'Password1!' });
+
+    await request(app)
+      .post('/auth/logout')
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    const aliceRefresh = await request(app).post('/auth/refresh').send({ refreshToken });
+    expect(aliceRefresh.status).toBe(401);
+
+    const bobRefresh = await request(app)
+      .post('/auth/refresh')
+      .send({ refreshToken: bobLogin.body.refreshToken as string });
+    expect(bobRefresh.status).toBe(200);
+  });
+
   it('refresh token is invalid after logout', async () => {
     await request(app)
       .post('/auth/logout')
       .set('Authorization', `Bearer ${accessToken}`);
     const res = await request(app).post('/auth/refresh').send({ refreshToken });
     expect(res.status).toBe(401);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bulk
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('POST /auth/bulk', () => {
+  const loginOp = { operation: 'login', payload: { email: 'bulk@example.com', password: 'Password1!' } };
+  const registerOp = { operation: 'register', payload: { email: 'bulk@example.com', password: 'Password1!', username: 'bulk' } };
+
+  it('processes a batch and reports per-item results', async () => {
+    const res = await request(app)
+      .post('/auth/bulk')
+      .send([
+        registerOp,
+        loginOp
+      ]);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(2);
+    expect(res.body.items[0].status).toBe('success');
+    expect(res.body.items[1].status).toBe('success');
+  });
+
+  it('rejects an empty batch with 400', async () => {
+    const res = await request(app).post('/auth/bulk').send([]);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('rejects a batch exceeding 100 items with 400', async () => {
+    const hugeBatch = Array(101).fill(loginOp);
+    const res = await request(app).post('/auth/bulk').send(hugeBatch);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('validation_error');
+  });
+
+  it('handles partial failures', async () => {
+    const res = await request(app)
+      .post('/auth/bulk')
+      .send([
+        registerOp,
+        { operation: 'login', payload: { email: 'bulk@example.com', password: 'WrongPassword!' } }
+      ]);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(2);
+    expect(res.body.items[0].status).toBe('success');
+    expect(res.body.items[1].status).toBe('error');
+    expect(res.body.items[1].error.code).toBe('invalid_credentials');
   });
 });

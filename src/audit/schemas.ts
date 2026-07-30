@@ -13,22 +13,17 @@
 
 import { z } from 'zod';
 import { decodeCursor } from './types';
+import {
+  AUDIT_ACTIONS_LIST,
+  AUDIT_SEVERITIES_LIST,
+  AUDIT_MESSAGES,
+} from '../constants/audit';
 
 /** Mirrors the `AuditAction` union in `./types.ts`. Keep these in sync. */
-export const AUDIT_ACTIONS = [
-  'CONTRACT_CREATED', 'CONTRACT_UPDATED', 'CONTRACT_CANCELLED', 'CONTRACT_COMPLETED',
-  'PAYMENT_INITIATED', 'PAYMENT_RELEASED', 'PAYMENT_DISPUTED',
-  'REPUTATION_UPDATED',
-  'USER_CREATED', 'USER_UPDATED', 'USER_DELETED',
-  'AUTH_LOGIN', 'AUTH_LOGOUT', 'AUTH_FAILED',
-  'AUTH_LOCKOUT_TRIGGERED', 'AUTH_LOCKOUT_RELEASED',
-  'ADMIN_ACTION',
-  'ENDPOINT_ACCESS', 'ENDPOINT_MUTATION',
-  'DEPLOYMENT_PROMOTED', 'DEPLOYMENT_ROLLED_BACK',
-] as const;
+export const AUDIT_ACTIONS = AUDIT_ACTIONS_LIST;
 
 /** Mirrors the `AuditSeverity` union in `./types.ts`. */
-export const AUDIT_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const;
+export const AUDIT_SEVERITIES = AUDIT_SEVERITIES_LIST;
 
 export const auditActionSchema = z.enum(AUDIT_ACTIONS);
 export const auditSeveritySchema = z.enum(AUDIT_SEVERITIES);
@@ -89,7 +84,7 @@ const cursorSchema = z.string().refine(
       return false;
     }
   },
-  { message: 'Invalid cursor format' },
+  { message: AUDIT_MESSAGES.INVALID_CURSOR_FORMAT },
 );
 
 /**
@@ -119,10 +114,10 @@ export function buildAuditQuerySchema(options: { maxLimit: number; defaultLimit?
     resourceId: emptyStringToUndefined(z.string().min(1)),
     from: isoDateStringSchema('from').optional(),
     to: isoDateStringSchema('to').optional(),
-    limit: positiveIntStringSchema('Invalid limit')
+    limit: positiveIntStringSchema(AUDIT_MESSAGES.INVALID_LIMIT)
       .optional()
       .transform((value) => (value === undefined ? options.defaultLimit : Math.min(value, options.maxLimit))),
-    offset: nonNegativeIntStringSchema('Invalid offset')
+    offset: nonNegativeIntStringSchema(AUDIT_MESSAGES.INVALID_OFFSET)
       .optional()
       .transform((value) => value ?? 0),
     cursor: emptyStringToUndefined(cursorSchema),
