@@ -17,16 +17,82 @@ describe('ContractsService', () => {
   let contractsService: ContractsService;
   let repository: InMemoryContractRepository;
   let mockSorobanService: jest.Mocked<SorobanService>;
+  let mockWebhookService: { trigger: jest.Mock };
 
   beforeEach(() => {
     repository = new InMemoryContractRepository();
-    contractsService = new ContractsService(repository as any);
+    mockWebhookService = { trigger: jest.fn().mockResolvedValue(undefined) };
+    contractsService = new ContractsService(repository as any, undefined, mockWebhookService as any);
     mockSorobanService = new SorobanService() as jest.Mocked<SorobanService>;
     (contractsService as any).sorobanService = mockSorobanService;
   });
 
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('webhook emission', () => {
+    it('emits a contract.created webhook after creating a contract', async () => {
+      await contractsService.createContract({
+        title: 'Webhook Create',
+        description: 'Emits create webhook',
+        clientId: 'client-1',
+        budget: 250,
+      });
+
+      expect(mockWebhookService.trigger).toHaveBeenCalledWith(
+        'contract.created',
+        expect.objectContaining({
+          contractId: expect.any(String),
+          contract: expect.objectContaining({ title: 'Webhook Create' }),
+        }),
+        undefined,
+      );
+    });
+
+    it('emits a contract.updated webhook after updating a contract', async () => {
+      const created = await contractsService.createContract({
+        title: 'Webhook Update',
+        description: 'Initial',
+        clientId: 'client-2',
+        budget: 500,
+      });
+
+      mockWebhookService.trigger.mockClear();
+
+      await contractsService.updateContract(created.id, { version: 0, title: 'Updated Title' });
+
+      expect(mockWebhookService.trigger).toHaveBeenCalledWith(
+        'contract.updated',
+        expect.objectContaining({
+          contractId: created.id,
+          contract: expect.objectContaining({ title: 'Updated Title' }),
+        }),
+        undefined,
+      );
+    });
+
+    it('emits a contract.deleted webhook after deleting a contract', async () => {
+      const created = await contractsService.createContract({
+        title: 'Webhook Delete',
+        description: 'Delete me',
+        clientId: 'client-3',
+        budget: 750,
+      });
+
+      mockWebhookService.trigger.mockClear();
+
+      await contractsService.deleteContract(created.id);
+
+      expect(mockWebhookService.trigger).toHaveBeenCalledWith(
+        'contract.deleted',
+        expect.objectContaining({
+          contractId: created.id,
+          deleted: true,
+        }),
+        undefined,
+      );
+    });
   });
 
   describe('getAllContracts', () => {
