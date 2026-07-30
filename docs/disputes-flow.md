@@ -2,6 +2,10 @@
 
 This document provides an end-to-end view of the request lifecycle for the Disputes feature. It is designed to help new contributors understand how a request moves from the routing layer through middleware, into the handler, and down to the database.
 
+> **See also**: For per-operation sequence diagrams (POST, GET, PATCH, DELETE, batch)
+> with the full middleware chain and service/store interactions, see
+> [disputes-request-lifecycle.md](./disputes-request-lifecycle.md) (issue #1048).
+
 ## Architecture Diagram
 
 ```mermaid
