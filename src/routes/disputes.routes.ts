@@ -51,6 +51,7 @@ import {
   DISPUTES_FEATURE_DISABLED_CODE,
   DISPUTES_FEATURE_DISABLED_MESSAGE,
 } from '../modules/disputes/constants';
+import { buildEtag, isIfNoneMatchSatisfied } from '../utils/etag';
 import type { Logger } from '../logger';
 import type { MetricsServiceLike } from '../observability/metrics-service';
 
@@ -97,9 +98,18 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
       const { correlationId } = getRequestContext(res);
       log.info('Listing disputes', { query: req.query });
 
+      const data = { disputes: [], total: 0 };
+      const etag = buildEtag('disputes:list', data);
+      res.setHeader('ETag', etag);
+
+      if (isIfNoneMatchSatisfied(req.headers['if-none-match'], etag)) {
+        res.status(304).send();
+        return;
+      }
+
       ok(
         res,
-        { disputes: [], total: 0 },
+        data,
         correlationId ? { correlationId } : undefined,
       );
     },
@@ -117,15 +127,24 @@ export function createDisputesRouter(options: DisputesRouterOptions = {}): Route
       const disputeId = req.params.id;
       log.info('Getting dispute', { disputeId });
 
+      const data = {
+        dispute: {
+          id: disputeId,
+          status: DISPUTE_STATUS.OPEN,
+          createdAt: new Date().toISOString(),
+        },
+      };
+      const etag = buildEtag(`disputes:item:${disputeId}`, data);
+      res.setHeader('ETag', etag);
+
+      if (isIfNoneMatchSatisfied(req.headers['if-none-match'], etag)) {
+        res.status(304).send();
+        return;
+      }
+
       ok(
         res,
-        {
-          dispute: {
-            id: disputeId,
-            status: DISPUTE_STATUS.OPEN,
-            createdAt: new Date().toISOString(),
-          },
-        },
+        data,
         correlationId ? { correlationId } : undefined,
       );
     },
