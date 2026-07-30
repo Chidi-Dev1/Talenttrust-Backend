@@ -101,7 +101,9 @@ describe('authenticateMiddleware', () => {
     authenticateMiddleware(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Missing or invalid Authorization header' });
+    expect(res.json).toHaveBeenCalledWith({
+      error: { code: 'unauthorized', message: 'Missing or invalid Authorization header', requestId: 'unknown' },
+    });
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -124,7 +126,9 @@ describe('authenticateMiddleware', () => {
     authenticateMiddleware(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Invalid token' });
+    expect(res.json).toHaveBeenCalledWith({
+      error: { code: 'unauthorized', message: 'Invalid token', requestId: 'unknown' },
+    });
     expect(next).not.toHaveBeenCalled();
   });
 

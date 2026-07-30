@@ -9,16 +9,13 @@
  * "teeth" tests proving those schemas actually reject drift rather than
  * rubber-stamping anything object-shaped.
  *
- * No runtime behaviour is changed by this file — see the module doc comment
- * in `auth.responseSchemas.ts` for the one known pre-existing inconsistency
- * (missing `requestId` on three of the four auth-route error paths) that is
- * intentionally codified as-is rather than "fixed" here.
+ * No runtime behaviour is changed by this file.
  *
  * Coverage:
  * 1. Success shapes — register/login/refresh token pairs (+ decoded JWT
  *    payload contract), logout message.
- * 2. Error shapes — local `authError()` shape (401/409), shared
- *    `validation_error` shape (400), shared `unauthorized` shape (401),
+ * 2. Error shapes — centralized `sendAuthError()` shape (401/409/500),
+ *    shared `validation_error` shape (400), shared `unauthorized` shape (401),
  *    shared `rate_limited` shape (429).
  * 3. Optional fields — register's optional `role` request field always
  *    produces a required, schema-valid `role` claim in the issued token,
@@ -317,12 +314,12 @@ describe('Auth response contract — schema teeth (extra/missing fields)', () =>
     expect(result.success).toBe(false);
   });
 
-  it('rejects a local-error response with an unexpected extra field (e.g. a stray requestId)', async () => {
+  it('rejects a local-error response with an unexpected extra field (e.g. a stray meta field)', async () => {
     const body = { email: 'teeth3@example.com', password: 'Password1!', username: 'teeth3' };
     await request(app).post('/auth/register').send(body);
     const res = await request(app).post('/auth/register').send(body);
 
-    const mutated = { error: { ...res.body.error, requestId: 'unexpected' } };
+    const mutated = { error: { ...res.body.error, meta: 'unexpected' } };
     const result = authLocalErrorResponseSchema.safeParse(mutated);
 
     expect(result.success).toBe(false);
@@ -331,12 +328,12 @@ describe('Auth response contract — schema teeth (extra/missing fields)', () =>
     }
   });
 
-  it('rejects a local-error response missing the required message field', async () => {
+  it('rejects a local-error response missing the required requestId field', async () => {
     const res = await request(app)
       .post('/auth/login')
       .send({ email: 'nobody2@example.com', password: 'WrongPass1!' });
 
-    const { message: _message, ...errorRest } = res.body.error;
+    const { requestId: _requestId, ...errorRest } = res.body.error;
     const result = authLocalErrorResponseSchema.safeParse({ error: errorRest });
 
     expect(result.success).toBe(false);
