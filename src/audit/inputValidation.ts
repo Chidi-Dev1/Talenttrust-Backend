@@ -68,6 +68,7 @@ import {
   AUDIT_SEVERITIES,
   type CreateAuditEntryInput,
 } from './types';
+import { AUDIT_MESSAGES } from '../constants/audit';
 
 // ── Bounds ────────────────────────────────────────────────────────────────────
 
@@ -524,6 +525,7 @@ export const CreateAuditEntrySchema = z
         'correlationId must contain only letters, digits, dot, colon, underscore or hyphen',
       )
       .optional(),
+    seq: z.number().optional(),
   })
   .strict();
 
@@ -677,35 +679,34 @@ export function validateCreateAuditEntry(
   next: NextFunction,
 ): void {
   const result = validateCreateAuditEntryInput(req.body);
-  const issues = result.ok ? [] : result.issues;
 
-  const idempotencyKey = req.headers['idempotency-key'] || req.headers['Idempotency-Key'];
-  if (!idempotencyKey || (typeof idempotencyKey === 'string' && idempotencyKey.trim() === '')) {
-    console.error('MISSING KEY, HEADERS:', req.headers);
-    issues.push({
-      path: ['Idempotency-Key'],
-      field: 'Idempotency-Key',
-      code: AUDIT_VALIDATION_CODES.MISSING_FIELD,
-      message: 'Idempotency-Key header is required',
-    });
-  }
-
-  if (issues.length > 0) {
+  if (!result.ok) {
     const requestId =
       typeof res.locals['requestId'] === 'string' ? res.locals['requestId'] : 'unknown';
+    const reqIdForTopLevel =
+      typeof res.locals['requestId'] === 'string' ? res.locals['requestId'] : undefined;
+    const correlationId =
+      typeof res.locals['correlationId'] === 'string' && res.locals['correlationId'].length > 0
+        ? res.locals['correlationId']
+        : typeof req.headers?.['x-correlation-id'] === 'string' && req.headers['x-correlation-id'].length > 0
+          ? (req.headers['x-correlation-id'] as string)
+          : undefined;
 
     res.status(400).json({
       error: {
-        code: AUDIT_VALIDATION_ERROR_CODE,
-        message: 'Request validation failed',
+        code: result.code,
+        message: AUDIT_MESSAGES.VALIDATION_FAILED,
         requestId,
-        details: issues,
+        ...(correlationId !== undefined && { correlationId }),
+        details: result.issues,
       },
+      ...(reqIdForTopLevel !== undefined && { requestId: reqIdForTopLevel }),
+      ...(correlationId !== undefined && { correlationId }),
     });
     return;
   }
 
-  res.locals[VALIDATED_BODY_KEY] = result.ok ? result.data : undefined;
+  res.locals[VALIDATED_BODY_KEY] = result.data;
   next();
 }
 

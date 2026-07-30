@@ -623,10 +623,33 @@ MIGRATIONS.push({
     "ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0",
   ].join("\n"),
   up: (db) => {
-    // Check if the column already exists to prevent errors during repeated migrations
     const columns = db.pragma("table_info(api_keys)") as Array<{
       name: string;
     }>;
+
+    if (columns.length === 0) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id           TEXT    PRIMARY KEY,
+          name         TEXT    NOT NULL,
+          key_hash     TEXT    NOT NULL,
+          key_selector TEXT,
+          scope        TEXT    NOT NULL,
+          created_by   TEXT    NOT NULL,
+          created_at   TEXT    NOT NULL,
+          updated_at   TEXT    NOT NULL,
+          expires_at   TEXT,
+          last_used_at TEXT,
+          call_count   INTEGER NOT NULL DEFAULT 0,
+          is_active    INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys (key_hash);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_selector ON api_keys (key_selector);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys (created_by, created_at DESC);
+      `);
+      return;
+    }
+
     const hasCallCount = columns.some((column) => column.name === "call_count");
 
     if (!hasCallCount) {

@@ -128,7 +128,7 @@ describe('ContractsService', () => {
       const contract = await service.getContractById('abc');
 
       expect(contract).toBe(fakeContract);
-      expect(mockRepository.findById).toHaveBeenCalledWith('abc');
+      expect(mockRepository.findById).toHaveBeenCalledWith('abc', undefined);
     });
 
     it('returns undefined for a non-existent id from the real repository', async () => {
@@ -220,7 +220,7 @@ describe('ContractsService', () => {
       const service = new ContractsService(mockRepository);
 
       await expect(service.deleteContract('missing')).rejects.toThrow(/not found/);
-      expect(mockRepository.delete).toHaveBeenCalledWith('missing');
+      expect(mockRepository.delete).toHaveBeenCalledWith('missing', undefined);
     });
   });
 
