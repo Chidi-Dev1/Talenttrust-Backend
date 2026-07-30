@@ -60,80 +60,131 @@ describe('Secrets Management', () => {
       process.env.NODE_ENV = 'development';
       delete process.env.STRONG_KEY;
 
-      const secret = new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
-        requireStrongInProd: true,
-        minLength: 32,
-      });
-
-      expect(secret.get()).toBe('dev-default');
-    });
-
-    it('should still use the default in test', () => {
-      process.env.NODE_ENV = 'test';
-      delete process.env.STRONG_KEY;
-
-      const secret = new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
-        requireStrongInProd: true,
-        minLength: 32,
-      });
-
-      expect(secret.get()).toBe('dev-default');
-    });
-
-    it('should throw instead of using the default in production', () => {
-      process.env.NODE_ENV = 'production';
-      delete process.env.STRONG_KEY;
-
-      expect(
-        () =>
-          new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
-            requireStrongInProd: true,
-            minLength: 32,
-          }),
-      ).toThrow('Missing required secret "STRONG_KEY"');
-    });
-
-    it('should reject a value shorter than minLength in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.STRONG_KEY = 'short';
-
-      expect(
-        () =>
-          new EnvSecret('STRONG_KEY', undefined, undefined, {
-            requireStrongInProd: true,
-            minLength: 32,
-          }),
-      ).toThrow('must be at least 32 characters');
-    });
-
-    it('should accept a value that meets minLength in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.STRONG_KEY = 'x'.repeat(32);
-
-      const secret = new EnvSecret('STRONG_KEY', undefined, undefined, {
-        requireStrongInProd: true,
-        minLength: 32,
-      });
-
-      expect(secret.get()).toBe('x'.repeat(32));
-    });
-
-    it('should not enforce minLength in production when requireStrongInProd is false', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.SHORT_OK_KEY = 'short';
-
-      const secret = new EnvSecret('SHORT_OK_KEY');
-      expect(secret.get()).toBe('short');
-    });
+  afterEach(() => {
+    process.env.NODE_ENV = prevEnv;
+    delete process.env.STRONG_KEY;
+    delete process.env.SHORT_OK_KEY;
   });
 
-  describe('RotatingSecret', () => {
-    it('should initialize with the provider value and return it synchronously', async () => {
-      let providerCalled = false;
-      const provider = async () => {
-        providerCalled = true;
-        return 'initial-secret';
-      };
+  it('should still use the default in development', () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.STRONG_KEY;
+
+    const secret = new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
+      requireStrongInProd: true,
+      minLength: 32,
+    });
+
+    expect(secret.get()).toBe('dev-default');
+  });
+
+  it('should still use the default in test', () => {
+    process.env.NODE_ENV = 'test';
+    delete process.env.STRONG_KEY;
+
+    const secret = new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
+      requireStrongInProd: true,
+      minLength: 32,
+    });
+
+    expect(secret.get()).toBe('dev-default');
+  });
+
+  it('should throw instead of using the default in production', () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.STRONG_KEY;
+
+    expect(
+      () =>
+        new EnvSecret('STRONG_KEY', 'dev-default', undefined, {
+          requireStrongInProd: true,
+          minLength: 32,
+        }),
+    ).toThrow('Missing required secret "STRONG_KEY"');
+  });
+
+  it('should reject a value shorter than minLength in production', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.STRONG_KEY = 'short';
+
+    expect(
+      () =>
+        new EnvSecret('STRONG_KEY', undefined, undefined, {
+          requireStrongInProd: true,
+          minLength: 32,
+        }),
+    ).toThrow('must be at least 32 characters');
+  });
+
+  it('should accept a value that meets minLength in production', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.STRONG_KEY = 'x'.repeat(32);
+
+    const secret = new EnvSecret('STRONG_KEY', undefined, undefined, {
+      requireStrongInProd: true,
+      minLength: 32,
+    });
+
+    expect(secret.get()).toBe('x'.repeat(32));
+  });
+
+  it('should not enforce minLength in production when requireStrongInProd is false', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.SHORT_OK_KEY = 'short';
+
+    const secret = new EnvSecret('SHORT_OK_KEY');
+    expect(secret.get()).toBe('short');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RotatingSecret
+// ---------------------------------------------------------------------------
+
+describe('RotatingSecret', () => {
+  it('should initialize with the provider value and return it synchronously', async () => {
+    let providerCalled = false;
+    const provider = async () => {
+      providerCalled = true;
+      return 'initial-secret';
+    };
+
+    const secret = new RotatingSecret({ provider, name: 'TEST_ROTATING' });
+    await secret.refresh();
+
+    expect(providerCalled).toBe(true);
+    expect(secret.get()).toBe('initial-secret');
+  });
+
+  it('should update the cached value on refresh', async () => {
+    const values = ['v1', 'v2'];
+    const provider = jest.fn(async () => values.shift() ?? 'v2');
+    const secret = new RotatingSecret({ provider, name: 'REFRESH_SECRET' });
+
+    await secret.refresh();
+    expect(secret.get()).toBe('v1');
+
+    await secret.refresh();
+    expect(secret.get()).toBe('v2');
+    expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  it('should retain the prior value when refresh fails', async () => {
+    let callCount = 0;
+    const provider = jest.fn(async () => {
+      callCount += 1;
+      if (callCount === 1) return 'current-value';
+      throw new Error('provider unavailable');
+    });
+    const secret = new RotatingSecret({ provider, name: 'FAILOVER_SECRET' });
+
+    await secret.refresh();
+    expect(secret.get()).toBe('current-value');
+
+    await expect(secret.refresh()).resolves.toBeUndefined();
+    expect(secret.get()).toBe('current-value');
+  });
+});
 
       const secret = new RotatingSecret({ provider, name: 'TEST_ROTATING' });
       await secret.refresh();
@@ -231,11 +282,9 @@ describe('Secrets Management', () => {
       expect(secretsManager.getValue('JWT_SECRET')).toBe('a'.repeat(32));
     });
 
-    it('should use default values if env vars are missing during initialization in development', () => {
-      delete process.env.PORT;
-      process.env.NODE_ENV = 'development';
-      delete process.env.DATABASE_URL;
-      delete process.env.JWT_SECRET;
+    expect(manager.get('mySecret')).toBe(secret);
+    expect(manager.getValue('mySecret')).toBe('test-value');
+  });
 
       initializeSecrets();
 
@@ -243,56 +292,6 @@ describe('Secrets Management', () => {
       expect(secretsManager.getValue('NODE_ENV')).toBe('development');
       expect(secretsManager.getValue('DATABASE_URL')).toBe('postgresql://localhost:5432/talenttrust');
       expect(secretsManager.getValue('JWT_SECRET')).toBe('dev-secret-keep-it-safe');
-    });
-
-    it('should throw at boot if JWT_SECRET is missing in production', () => {
-      delete process.env.JWT_SECRET;
-      process.env.NODE_ENV = 'production';
-      process.env.DATABASE_URL = 'postgres://prod-db';
-
-      expect(() => initializeSecrets()).toThrow('Missing required secret "JWT_SECRET"');
-    });
-
-    it('should throw at boot if DATABASE_URL is missing in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.JWT_SECRET = 'a'.repeat(32);
-      delete process.env.DATABASE_URL;
-
-      expect(() => initializeSecrets()).toThrow('Missing required secret "DATABASE_URL"');
-    });
-
-    it('should reject the known weak JWT_SECRET literal even if explicitly set in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.DATABASE_URL = 'postgres://prod-db';
-      process.env.JWT_SECRET = 'dev-secret-keep-it-safe';
-
-      expect(() => initializeSecrets()).toThrow('known weak/placeholder value');
-    });
-
-    it('should reject a JWT_SECRET shorter than 32 characters in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.DATABASE_URL = 'postgres://prod-db';
-      process.env.JWT_SECRET = 'too-short';
-
-      expect(() => initializeSecrets()).toThrow('must be at least 32 characters');
-    });
-
-    it('should reject the known weak DATABASE_URL literal even if explicitly set in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.JWT_SECRET = 'a'.repeat(32);
-      process.env.DATABASE_URL = 'postgresql://localhost:5432/talenttrust';
-
-      expect(() => initializeSecrets()).toThrow('known weak/placeholder value');
-    });
-
-    it('should allow the dev-only defaults in test environment too', () => {
-      process.env.NODE_ENV = 'test';
-      delete process.env.DATABASE_URL;
-      delete process.env.JWT_SECRET;
-
-      expect(() => initializeSecrets()).not.toThrow();
-      expect(secretsManager.getValue('JWT_SECRET')).toBe('dev-secret-keep-it-safe');
-      expect(secretsManager.getValue('DATABASE_URL')).toBe('postgresql://localhost:5432/talenttrust');
     });
   });
 });

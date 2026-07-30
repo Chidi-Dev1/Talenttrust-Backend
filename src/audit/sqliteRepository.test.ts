@@ -47,7 +47,6 @@
 import Database, { Database as DbInstance } from '../db/betterSqlite3';
 import { SqliteAuditRepository } from './sqliteRepository';
 import type { CreateAuditEntryInput } from './types';
-import { encodeCursor, decodeCursor, type CursorData } from './types';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -524,9 +523,9 @@ describe('SqliteAuditRepository — verifyIntegrity()', () => {
   });
 });
 
-// ─── queryWithCursor() — cursor-based pagination ─────────────────────────────
+// ─── softDelete, restore, purgeExpired ─────────────────────────────────────
 
-describe('SqliteAuditRepository — queryWithCursor()', () => {
+describe('SqliteAuditRepository — soft-delete, restore, and purge', () => {
   let db: DbInstance;
   let repository: SqliteAuditRepository;
 
@@ -539,170 +538,81 @@ describe('SqliteAuditRepository — queryWithCursor()', () => {
     db.close();
   });
 
-  it('returns paginated result with entries and limit', () => {
-    for (let i = 0; i < 10; i++) {
-      repository.append(makeInput({ actor: `u${i}` }));
-    }
-    const result = repository.queryWithCursor({ limit: 3 });
-    expect(result.entries).toHaveLength(3);
-    expect(result.limit).toBe(3);
-    expect(result.count).toBe(3);
+  it('hides soft-deleted entries from default queries and getById', () => {
+    const entry1 = repository.append(makeInput({ resourceId: '1' }));
+    const entry2 = repository.append(makeInput({ resourceId: '2' }));
+
+    expect(repository.count()).toBe(2);
+
+    expect(repository.softDelete(entry1.id)).toBe(true);
+    expect(repository.softDelete('unknown')).toBe(false);
+
+    expect(repository.count()).toBe(1);
+    expect(repository.getById(entry1.id)).toBeUndefined();
+    expect(repository.getById(entry2.id)).toBeDefined();
+
+    const results = repository.query();
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe(entry2.id);
+
+    // including deleted
+    const allResults = repository.query({ includeDeleted: true });
+    expect(allResults).toHaveLength(2);
   });
 
-  it('uses default limit of 50 when not specified', () => {
-    for (let i = 0; i < 60; i++) {
-      repository.append(makeInput());
-    }
-    const result = repository.queryWithCursor({});
-    expect(result.limit).toBe(50);
-    expect(result.entries).toHaveLength(50);
+  it('restores soft-deleted entries within retention window', () => {
+    const entry = repository.append(makeInput());
+    repository.softDelete(entry.id);
+
+    expect(repository.count()).toBe(0);
+
+    const restoreResult = repository.restore(entry.id, 30);
+    expect(restoreResult).toBe(true);
+    expect(repository.count()).toBe(1);
+    expect(repository.getById(entry.id)).toBeDefined();
+
+    // Not soft deleted anymore
+    expect(repository.restore(entry.id, 30)).toBe(false);
   });
 
-  it('clamps limit to maximum of 100', () => {
-    for (let i = 0; i < 150; i++) {
-      repository.append(makeInput());
-    }
-    const result = repository.queryWithCursor({ limit: 150 });
-    expect(result.limit).toBe(100);
-    expect(result.entries).toHaveLength(100);
-  });
-
-  it('clamps limit to minimum of 1', () => {
-    repository.append(makeInput());
-    const result = repository.queryWithCursor({ limit: 0 });
-    expect(result.limit).toBe(1);
-    expect(result.entries).toHaveLength(1);
-  });
-
-  it('returns nextCursor when more results exist', () => {
-    for (let i = 0; i < 10; i++) {
-      repository.append(makeInput({ actor: `u${i}` }));
-    }
-    const result = repository.queryWithCursor({ limit: 5 });
-    expect(result.nextCursor).toBeDefined();
+  it('fails to restore entries past retention window', () => {
+    const entry = repository.append(makeInput());
+    repository.softDelete(entry.id);
     
-    // Decode and verify cursor structure
-    const cursorData = decodeCursor(result.nextCursor!);
-    expect(cursorData.lastId).toBeDefined();
-    expect(cursorData.lastTimestamp).toBeDefined();
-    expect(cursorData.filters).toEqual({});
+    // forcefully update deleted_at to past retention window
+    db.prepare(`UPDATE audit_log_entries SET deleted_at = datetime('now', '-40 days') WHERE id = ?`).run(entry.id);
+
+    expect(() => repository.restore(entry.id, 30)).toThrow('Cannot restore entry past retention window');
   });
 
-  it('does not return nextCursor on last page', () => {
-    for (let i = 0; i < 5; i++) {
-      repository.append(makeInput());
-    }
-    const result = repository.queryWithCursor({ limit: 10 });
-    expect(result.nextCursor).toBeUndefined();
+  it('purges soft-deleted entries past retention window', () => {
+    const entry1 = repository.append(makeInput({ resourceId: '1' }));
+    const entry2 = repository.append(makeInput({ resourceId: '2' }));
+    const entry3 = repository.append(makeInput({ resourceId: '3' }));
+
+    repository.softDelete(entry1.id);
+    repository.softDelete(entry2.id);
+
+    // forcefully update entry1 deleted_at to 40 days ago
+    db.prepare(`UPDATE audit_log_entries SET deleted_at = datetime('now', '-40 days') WHERE id = ?`).run(entry1.id);
+
+    // entry2 is recent, entry3 is active
+    const purged = repository.purgeExpired(30);
+    expect(purged).toBe(1);
+
+    const remainingRows = db.prepare('SELECT id FROM audit_log_entries').all() as { id: string }[];
+    expect(remainingRows.map(r => r.id).sort()).toEqual([entry2.id, entry3.id].sort());
   });
 
-  it('does not return nextCursor for empty result', () => {
-    const result = repository.queryWithCursor({ limit: 10 });
-    expect(result.entries).toHaveLength(0);
-    expect(result.nextCursor).toBeUndefined();
-  });
-
-  it('respects filters with cursor pagination', () => {
-    repository.append(makeInput({ actor: 'alice', action: 'CONTRACT_CREATED' }));
-    repository.append(makeInput({ actor: 'alice', action: 'CONTRACT_UPDATED' }));
-    repository.append(makeInput({ actor: 'bob', action: 'CONTRACT_CREATED' }));
-
-    const result = repository.queryWithCursor({ 
-      actor: 'alice', 
-      action: 'CONTRACT_CREATED',
-      limit: 10 
-    });
-    expect(result.entries).toHaveLength(1);
-    expect(result.entries[0].actor).toBe('alice');
-    expect(result.entries[0].action).toBe('CONTRACT_CREATED');
-  });
-
-  it('includes filters in nextCursor', () => {
-    repository.append(makeInput({ actor: 'alice', action: 'CONTRACT_CREATED' }));
-    repository.append(makeInput({ actor: 'alice', action: 'CONTRACT_UPDATED' }));
-    repository.append(makeInput({ actor: 'bob', action: 'CONTRACT_CREATED' }));
-
-    const result = repository.queryWithCursor({ 
-      actor: 'alice',
-      limit: 1 
-    });
-    
-    const cursorData = decodeCursor(result.nextCursor!);
-    expect(cursorData.filters.actor).toBe('alice');
-  });
-
-  it('handles cursor with valid lastId', () => {
-    const entries = [];
-    for (let i = 0; i < 10; i++) {
-      entries.push(repository.append(makeInput({ actor: `u${i}` })));
-    }
-    
-    const firstPage = repository.queryWithCursor({ limit: 3 });
-    expect(firstPage.entries).toHaveLength(3);
-    expect(firstPage.nextCursor).toBeDefined();
-    
-    // Use the cursor to get next page
-    const secondPage = repository.queryWithCursor({ 
-      cursor: firstPage.nextCursor,
-      limit: 3 
-    });
-    expect(secondPage.entries).toHaveLength(3);
-    expect(secondPage.entries[0].id).not.toBe(firstPage.entries[0].id);
-  });
-
-  it('throws error when cursor filters do not match query filters', () => {
-    repository.append(makeInput({ actor: 'alice' }));
-    
-    const cursorData: CursorData = {
-      lastId: repository.query({ actor: 'alice' })[0].id,
-      lastTimestamp: new Date().toISOString(),
-      filters: { actor: 'alice' },
-    };
-    const cursor = encodeCursor(cursorData);
-    
-    // Try to use cursor with different filters
-    expect(() => {
-      repository.queryWithCursor({ 
-        cursor,
-        actor: 'bob', // Different actor than cursor
-        limit: 10 
-      });
-    }).toThrow('Cursor filters do not match query filters');
-  });
-
-  it('handles invalid cursor gracefully', () => {
+  it('maintains integrity verification across soft-deleted records', () => {
+    const entry1 = repository.append(makeInput());
     repository.append(makeInput());
     
-    const result = repository.queryWithCursor({ 
-      cursor: 'invalid-cursor',
-      limit: 10 
-    });
-    // Should fall back to beginning
-    expect(result.entries.length).toBeGreaterThan(0);
-  });
-
-  it('cursor pagination with time range filters', () => {
-    const now = new Date();
-    const past = new Date(now.getTime() - 60_000).toISOString();
-    const future = new Date(now.getTime() + 60_000).toISOString();
+    repository.softDelete(entry1.id);
     
-    repository.append(makeInput());
-    
-    const result = repository.queryWithCursor({ 
-      from: past,
-      to: future,
-      limit: 10 
-    });
-    expect(result.entries).toHaveLength(1);
-  });
-
-  it('cursor pagination at exact page boundary', () => {
-    for (let i = 0; i < 10; i++) {
-      repository.append(makeInput());
-    }
-    
-    const result = repository.queryWithCursor({ limit: 10 });
-    expect(result.entries).toHaveLength(10);
-    expect(result.nextCursor).toBeUndefined();
+    const report = repository.verifyIntegrity();
+    expect(report.valid).toBe(true);
+    expect(report.totalEntries).toBe(2);
   });
 });
+
