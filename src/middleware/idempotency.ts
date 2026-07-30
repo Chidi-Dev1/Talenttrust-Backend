@@ -153,6 +153,8 @@ const defaultInFlight = new Map<string, string>();
 
 export const idempotencyMiddleware = createIdempotencyMiddleware();
 
+export default idempotencyMiddleware;
+
 /**
  * Clears cached idempotency records and in-flight markers (for tests or maintenance).
  */

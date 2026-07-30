@@ -623,14 +623,44 @@ MIGRATIONS.push({
     "ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0",
   ].join("\n"),
   up: (db) => {
-    // Check if the column already exists to prevent errors during repeated migrations
-    const columns = db.pragma("table_info(api_keys)") as Array<{
-      name: string;
-    }>;
-    const hasCallCount = columns.some((column) => column.name === "call_count");
+    // Check if the api_keys table exists first
+    const tableExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'")
+      .get();
 
-    if (!hasCallCount) {
-      db.exec("ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0");
+    if (!tableExists) {
+      // Table doesn't exist yet (e.g. fresh :memory: DB in tests) — create it
+      // with the full schema including call_count already present so the ALTER
+      // below is not needed.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id           TEXT    PRIMARY KEY,
+          name         TEXT    NOT NULL,
+          key_hash     TEXT    NOT NULL,
+          key_selector TEXT,
+          scope        TEXT    NOT NULL,
+          created_by   TEXT    NOT NULL,
+          created_at   TEXT    NOT NULL,
+          updated_at   TEXT    NOT NULL,
+          expires_at   TEXT,
+          last_used_at TEXT,
+          call_count   INTEGER NOT NULL DEFAULT 0,
+          is_active    INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys (created_by, is_active, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_selector ON api_keys (key_selector);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys (key_hash);
+      `);
+    } else {
+      // Table exists — check if call_count column is already present
+      const columns = db.pragma("table_info(api_keys)") as Array<{
+        name: string;
+      }>;
+      const hasCallCount = columns.some((column) => column.name === "call_count");
+
+      if (!hasCallCount) {
+        db.exec("ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0");
+      }
     }
   },
 });

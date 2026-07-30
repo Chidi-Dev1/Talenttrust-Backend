@@ -21,7 +21,7 @@ import { getDb } from '../db/database';
 import { requireAuth } from '../middleware/authorization';
 import { authRateLimitKeyFn } from '../auth/rateLimitKey';
 import { accountLockout } from '../auth/accountLockout';
-import idempotencyMiddleware from '../middleware/idempotency.middleware';
+import idempotencyMiddleware from '../middleware/idempotency';
 import type { AuthenticatedRequest } from '../lib/types';
 
 const router = Router();
@@ -56,6 +56,15 @@ const refreshSchema = z.object({
   body: z.object({
     refreshToken: z.string().min(1).max(1024),
   }).strict(),
+});
+
+const bulkAuthSchema = z.object({
+  body: z.array(
+    z.object({
+      operation: z.enum(['login', 'register', 'refresh']),
+      payload: z.record(z.unknown()),
+    }),
+  ).min(1).max(100),
 });
 
 import {
