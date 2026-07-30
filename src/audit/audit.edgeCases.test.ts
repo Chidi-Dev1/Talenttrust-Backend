@@ -691,6 +691,243 @@ describe('InputValidation — EDGE: malformed', () => {
 });
 
 // =============================================================================
+// ExportService — edge cases
+// =============================================================================
+
+describe('ExportService — EDGE: empty inputs', () => {
+  let service: AuditService;
+  let store: AuditStore;
+
+  beforeEach(() => {
+    store = new AuditStore();
+    service = new AuditService(store);
+  });
+
+  it('createNdjsonExport with no filters and empty store still produces valid NDJSON', async () => {
+    const exportSvc = new (jest.requireActual('./exportService').AuditExportService)(service, {
+      exportRoot: os.tmpdir(),
+    });
+    const result = await exportSvc.createNdjsonExport();
+    expect(result.recordCount).toBe(0);
+    expect(result.bytesWritten).toBeGreaterThanOrEqual(0);
+    const content = await (jest.requireActual('fs').promises.readFile)(result.filePath, 'utf8');
+    expect(content.trim()).toBe('');
+    await result.cleanup();
+  });
+
+  it('createCsvExport with no filters and empty store still produces valid CSV header', async () => {
+    const exportSvc = new (jest.requireActual('./exportService').AuditExportService)(service, {
+      exportRoot: os.tmpdir(),
+    });
+    const result = await exportSvc.createCsvExport();
+    expect(result.recordCount).toBe(0);
+    // Even empty CSV should have a header row
+    const content = await (jest.requireActual('fs').promises.readFile)(result.filePath, 'utf8');
+    expect(content).toContain('id,timestamp,action,severity');
+    await result.cleanup();
+  });
+});
+
+describe('ExportService — EDGE: malformed inputs', () => {
+  it('createNdjsonExport with filters that match nothing returns zero records', async () => {
+    const store = new AuditStore();
+    const service = new AuditService(store);
+    store.append(makeInput());
+    const exportSvc = new (jest.requireActual('./exportService').AuditExportService)(service, {
+      exportRoot: os.tmpdir(),
+    });
+    const result = await exportSvc.createNdjsonExport({ action: 'NONEXISTENT' as any });
+    expect(result.recordCount).toBe(0);
+    await result.cleanup();
+  });
+
+  it('streamNdjsonExport handles empty result without error', async () => {
+    const store = new AuditStore();
+    const service = new AuditService(store);
+    const exportSvc = new (jest.requireActual('./exportService').AuditExportService)(service, {
+      exportRoot: os.tmpdir(),
+    });
+    const chunks: Buffer[] = [];
+    const dest = new (jest.requireActual('stream').PassThrough)();
+    dest.on('data', (chunk: Buffer) => chunks.push(chunk));
+    const result = await exportSvc.streamNdjsonExport({}, dest);
+    expect(result.recordCount).toBe(0);
+    await result.cleanup();
+  });
+});
+
+// =============================================================================
+// Audit schemas — edge cases
+// =============================================================================
+
+describe('AuditSchemas — EDGE: empty inputs', () => {
+  it('createAuditEntryBodySchema rejects completely empty body', () => {
+    const { createAuditEntryBodySchema } = jest.requireActual('./schemas');
+    const result = createAuditEntryBodySchema.safeParse({});
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const fields = result.error.issues.map((i: { path: (string | number)[] }) => i.path[0]);
+      expect(fields).toContain('action');
+      expect(fields).toContain('severity');
+      expect(fields).toContain('actor');
+      expect(fields).toContain('resource');
+      expect(fields).toContain('resourceId');
+    }
+  });
+
+  it('createAuditEntryBodySchema defaults metadata to {} when omitted', () => {
+    const { createAuditEntryBodySchema } = jest.requireActual('./schemas');
+    const result = createAuditEntryBodySchema.safeParse({
+      action: 'CONTRACT_CREATED',
+      severity: 'INFO',
+      actor: 'user',
+      resource: 'contract',
+      resourceId: 'c1',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.metadata).toEqual({});
+    }
+  });
+
+  it('createAuditEntryBodySchema rejects empty actor string', () => {
+    const { createAuditEntryBodySchema } = jest.requireActual('./schemas');
+    const result = createAuditEntryBodySchema.safeParse({
+      action: 'CONTRACT_CREATED',
+      severity: 'INFO',
+      actor: '',
+      resource: 'contract',
+      resourceId: 'c1',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('AuditSchemas — EDGE: boundary inputs', () => {
+  it('buildAuditQuerySchema caps limit at maxLimit', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100, defaultLimit: 10 });
+    const result = schema.safeParse({ limit: '999' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.limit).toBe(100);
+    }
+  });
+
+  it('buildAuditQuerySchema defaults limit when omitted', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100, defaultLimit: 50 });
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.limit).toBe(50);
+    }
+  });
+
+  it('buildAuditQuerySchema defaults offset to 0 when omitted', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.offset).toBe(0);
+    }
+  });
+
+  it('buildAuditQuerySchema rejects negative offset', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({ offset: '-1' });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('AuditSchemas — EDGE: malformed inputs', () => {
+  it('buildAuditQuerySchema rejects invalid action', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({ action: 'BOGUS_ACTION' });
+    expect(result.success).toBe(false);
+  });
+
+  it('buildAuditQuerySchema rejects invalid severity', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({ severity: 'FATAL' });
+    expect(result.success).toBe(false);
+  });
+
+  it('buildAuditQuerySchema rejects non-numeric limit', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({ limit: 'abc' });
+    expect(result.success).toBe(false);
+  });
+
+  it('buildAuditQuerySchema treats empty string action as undefined (defaults to success)', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({ action: '' });
+    expect(result.success).toBe(true);
+  });
+
+  it('buildAuditQuerySchema rejects invalid cursor', () => {
+    const { buildAuditQuerySchema } = jest.requireActual('./schemas');
+    const schema = buildAuditQuerySchema({ maxLimit: 100 });
+    const result = schema.safeParse({ cursor: 'not-a-valid-cursor!' });
+    expect(result.success).toBe(false);
+  });
+});
+
+// =============================================================================
+// Audit Middleware — edge cases
+// =============================================================================
+
+describe('AuditMiddleware — EDGE: empty inputs', () => {
+  it('auditMiddleware attaches log helper even when AUDIT_ENABLED is false', async () => {
+    // Store original env and override
+    const origEnv = process.env.AUDIT_ENABLED;
+    process.env.AUDIT_ENABLED = 'false';
+    try {
+      const express = jest.requireActual('express');
+      const app = express();
+      const { auditMiddleware } = jest.requireActual('./middleware');
+      app.use(auditMiddleware);
+      app.get('/probe', (_req: any, res: any) => {
+        expect(typeof res.locals.audit.log).toBe('function');
+        const entry = res.locals.audit.log({
+          action: 'CONTRACT_CREATED',
+          severity: 'INFO',
+          actor: 'system',
+          resource: 'test',
+          resourceId: 'test-1',
+          metadata: {},
+        });
+        expect(entry.id).toBe(''); // Stub entry
+        res.status(204).send();
+      });
+      const request = jest.requireActual('supertest');
+      await request(app).get('/probe').expect(204);
+    } finally {
+      process.env.AUDIT_ENABLED = origEnv;
+    }
+  });
+
+  it('auditMiddleware handles missing X-Correlation-ID gracefully', async () => {
+    const express = jest.requireActual('express');
+    const app = express();
+    const { auditMiddleware } = jest.requireActual('./middleware');
+    app.use(auditMiddleware);
+    app.get('/probe', (_req: any, res: any) => {
+      expect(typeof res.locals.audit.log).toBe('function');
+      res.status(204).send();
+    });
+    const request = jest.requireActual('supertest');
+    await request(app).get('/probe').expect(204);
+  });
+});
+
+// =============================================================================
 // Cross-module integration edge cases
 // =============================================================================
 
