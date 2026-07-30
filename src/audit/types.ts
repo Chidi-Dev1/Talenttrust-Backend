@@ -29,6 +29,8 @@ export type AuditAction = AuditActionType;
 
 export const AUDIT_SEVERITIES = AUDIT_SEVERITIES_LIST;
 
+export const AUDIT_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const;
+
 /** Severity level of the audit event. */
 export type AuditSeverity = AuditSeverityType;
 
