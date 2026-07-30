@@ -26,7 +26,7 @@ import {
 import { parseBoolEnv } from "../config/env";
 import { parseRetentionDays } from "../utils/softDelete";
 import { createLogger } from "../logger";
-import { EventIngestionService } from "../events/eventIngestionService";
+import { eventIngestionService } from "../events/registry";
 
 const log = createLogger({ service: "contracts" });
 
@@ -412,7 +412,7 @@ export class ContractsService {
    * Retrieves contract event history by contract ID.
    * @param id - UUID of the contract.
    */
-  public async getContractHistory(_id: string) {
-    return [];
+  public async getContractHistory(id: string) {
+    return eventIngestionService.getContractHistory(id);
   }
 }
