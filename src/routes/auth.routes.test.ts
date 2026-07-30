@@ -6,6 +6,7 @@
  */
 
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import { getDb, closeDb } from '../db/database';
 import authRouter from './auth.routes';
@@ -315,6 +316,51 @@ describe('POST /auth/logout', () => {
   it('returns 401 without auth header', async () => {
     const res = await request(app).post('/auth/logout');
     expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for a malformed Authorization header', async () => {
+    const res = await request(app)
+      .post('/auth/logout')
+      .set('Authorization', 'Token not-a-bearer-token');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+  });
+
+  it('returns 401 for a JWT signed with the wrong secret', async () => {
+    const forged = jwt.sign(
+      { sub: 'user-1', email: 'alice@example.com', role: 'client' },
+      'wrong-secret',
+      { algorithm: 'HS256' },
+    );
+
+    const res = await request(app)
+      .post('/auth/logout')
+      .set('Authorization', `Bearer ${forged}`);
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+  });
+
+  it('only revokes the authenticated caller’s refresh token on logout', async () => {
+    await request(app)
+      .post('/auth/register')
+      .send({ email: 'bob@example.com', password: 'Password1!', username: 'bob' });
+
+    const bobLogin = await request(app)
+      .post('/auth/login')
+      .send({ email: 'bob@example.com', password: 'Password1!' });
+
+    await request(app)
+      .post('/auth/logout')
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    const aliceRefresh = await request(app).post('/auth/refresh').send({ refreshToken });
+    expect(aliceRefresh.status).toBe(401);
+
+    const bobRefresh = await request(app)
+      .post('/auth/refresh')
+      .send({ refreshToken: bobLogin.body.refreshToken as string });
+    expect(bobRefresh.status).toBe(200);
   });
 
   it('refresh token is invalid after logout', async () => {
