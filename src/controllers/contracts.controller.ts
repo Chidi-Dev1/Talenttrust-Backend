@@ -144,13 +144,7 @@ export class ContractsController {
       try {
         limit = parseLimit(query["limit"]);
       } catch (error) {
-        next(
-          new AppError(
-            400,
-            "bad_request",
-            error instanceof Error ? error.message : "Invalid limit",
-          ),
-        );
+        next(new AppError(400, "bad_request", error instanceof Error ? error.message : "Invalid limit"));
         return;
       }
 
@@ -279,7 +273,7 @@ export class ContractsController {
           durationSeconds,
           "contract_bounds_error",
         );
-        next(new AppError(422, "contract_bounds_error", error.message));
+        next(error);
         return;
       }
       log.error("Milestone create operation failed with unexpected error", {
@@ -345,7 +339,7 @@ export class ContractsController {
           durationSeconds,
           "contract_bounds_error",
         );
-        next(new AppError(422, "contract_bounds_error", error.message));
+        next(error);
         return;
       }
       if (error instanceof NotFoundError) {
@@ -419,7 +413,7 @@ export class ContractsController {
       ok(res, toContractResponseDto(restored));
     } catch (error) {
       if (error instanceof SoftDeleteRetentionError) {
-        next(new AppError(error.statusCode, error.code, error.message));
+        next(error);
         return;
       }
       log.error("contracts.restoreContract: error", {
@@ -452,7 +446,7 @@ export class ContractsController {
       );
     } catch (error) {
       if (error instanceof ContractBoundsError) {
-        next(new AppError(422, "contract_bounds_error", error.message));
+        next(error);
         return;
       }
       log.error("contracts.getContractStats: error", {

@@ -133,7 +133,7 @@ describe('Audit correlation ID propagation', () => {
     });
 
     it('rejects invalid correlation ID from header', async () => {
-      const maliciousId = 'trace\r\nX-Injected-Header: yes';
+      const maliciousId = 'trace<invalid>X-Injected-Header:yes';
       const payload = {
         action: 'USER_CREATED',
         severity: 'INFO',

@@ -57,6 +57,12 @@ import type { AuthenticatedRequest } from '../auth/authenticate';
 import { buildAuditMetadata } from './redact';
 import { auditService, AuditService } from './service';
 import { validateEnv } from '../config/env.schema';
+import {
+  AUDIT_ACTIONS,
+  AUDIT_SEVERITIES,
+  AUDIT_RESOURCES,
+  AUDIT_DEFAULTS,
+} from '../constants/audit';
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -66,10 +72,10 @@ import { validateEnv } from '../config/env.schema';
  */
 function deriveAction(method: string, statusCode: number): AuditAction {
   if (statusCode === 401 || statusCode === 403) {
-    return 'AUTH_FAILED';
+    return AUDIT_ACTIONS.AUTH_FAILED;
   }
   const verb = method.toUpperCase();
-  return verb === 'GET' || verb === 'HEAD' ? 'ENDPOINT_ACCESS' : 'ENDPOINT_MUTATION';
+  return verb === 'GET' || verb === 'HEAD' ? AUDIT_ACTIONS.ENDPOINT_ACCESS : AUDIT_ACTIONS.ENDPOINT_MUTATION;
 }
 
 /**
@@ -77,9 +83,9 @@ function deriveAction(method: string, statusCode: number): AuditAction {
  * Auth failures and unexpected errors are WARNING; routine access is INFO.
  */
 function deriveSeverity(action: AuditAction, statusCode: number): AuditSeverity {
-  if (action === 'AUTH_FAILED') return 'WARNING';
-  if (statusCode >= 400) return 'WARNING';
-  return 'INFO';
+  if (action === AUDIT_ACTIONS.AUTH_FAILED) return AUDIT_SEVERITIES.WARNING;
+  if (statusCode >= 400) return AUDIT_SEVERITIES.WARNING;
+  return AUDIT_SEVERITIES.INFO;
 }
 
 /**
@@ -93,7 +99,7 @@ function deriveSeverity(action: AuditAction, statusCode: number): AuditSeverity 
  */
 function deriveResource(path: string): string {
   const match = /^\/api\/v\d+\/([^/?#]+)/i.exec(path);
-  return match?.[1] ?? 'endpoint';
+  return match?.[1] ?? AUDIT_RESOURCES.ENDPOINT;
 }
 
 /**
@@ -140,7 +146,7 @@ export function createProtectedEndpointAuditMiddleware(
       try {
         // req.user is populated by authenticateMiddleware after this runs
         const actor =
-          (req as AuthenticatedRequest).user?.userId ?? 'anonymous';
+          (req as AuthenticatedRequest).user?.userId ?? AUDIT_DEFAULTS.ANONYMOUS_ACTOR;
 
         const action = deriveAction(req.method, res.statusCode);
         const severity = deriveSeverity(action, res.statusCode);

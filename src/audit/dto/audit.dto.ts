@@ -350,7 +350,7 @@ export function toIntegrityReportResponseDto(
     ...(report.firstCorruptedId !== undefined && {
       firstCorruptedId: report.firstCorruptedId,
     }),
-    checkedAt: report.checkedAt,
+    checkedAt: report.checkedAt ?? new Date().toISOString(),
   };
 }
 
