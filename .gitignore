@@ -24,3 +24,33 @@ data/*.db-shm
 *.db-shm
 *.db-wal
 .opencode
+
+# Build / test output capture files (large generated artifacts)
+build_output.txt
+jest_output.txt
+jest_stdout.txt
+jest_stderr.txt
+jest_exit.txt
+lint_output.txt
+lint_results.txt
+node_probe.txt
+out1.txt
+out2.txt
+err2.txt
+pr_body.txt
+results.json
+
+# Build / test output capture files (large generated artifacts)
+build_output.txt
+jest_output.txt
+jest_stdout.txt
+jest_stderr.txt
+jest_exit.txt
+lint_output.txt
+lint_results.txt
+node_probe.txt
+out1.txt
+out2.txt
+err2.txt
+pr_body.txt
+results.json

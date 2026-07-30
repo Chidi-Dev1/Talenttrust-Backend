@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DISPUTE_STATUS } from '../modules/disputes/constants';
 
 export const createDisputeSchema = z.object({
   contractId: z.string().uuid(),
@@ -7,7 +8,7 @@ export const createDisputeSchema = z.object({
 });
 
 export const updateDisputeSchema = z.object({
-  status: z.enum(['open', 'resolved', 'cancelled']).optional(),
+  status: z.enum([DISPUTE_STATUS.OPEN, DISPUTE_STATUS.RESOLVED, DISPUTE_STATUS.CANCELLED]).optional(),
   resolution: z.string().min(1).max(2000).optional(),
   resolvedBy: z.string().uuid().optional(),
 });
