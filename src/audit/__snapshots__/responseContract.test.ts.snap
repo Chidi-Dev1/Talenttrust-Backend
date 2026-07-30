@@ -1,0 +1,145 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Contract: POST /api/v1/audit returns exactly { error } on missing required fields 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "missing_field",
+        "field": "severity",
+        "message": "severity is required",
+        "path": [
+          "severity",
+        ],
+      },
+      {
+        "code": "missing_field",
+        "field": "actor",
+        "message": "actor is required",
+        "path": [
+          "actor",
+        ],
+      },
+      {
+        "code": "missing_field",
+        "field": "resource",
+        "message": "resource is required",
+        "path": [
+          "resource",
+        ],
+      },
+      {
+        "code": "missing_field",
+        "field": "resourceId",
+        "message": "resourceId is required",
+        "path": [
+          "resourceId",
+        ],
+      },
+    ],
+    "message": "Request validation failed",
+    "requestId": "unknown",
+  },
+}
+`;
+
+exports[`Contract: error responses GET / with invalid action returns exactly { error: string } 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "invalid_enum_value",
+        "field": "action",
+        "message": "Invalid enum value. Expected 'CONTRACT_CREATED' | 'CONTRACT_UPDATED' | 'CONTRACT_CANCELLED' | 'CONTRACT_COMPLETED' | 'CONTRACT_DELETED' | 'PAYMENT_INITIATED' | 'PAYMENT_RELEASED' | 'PAYMENT_DISPUTED' | 'REPUTATION_UPDATED' | 'USER_CREATED' | 'USER_UPDATED' | 'USER_DELETED' | 'AUTH_LOGIN' | 'AUTH_LOGOUT' | 'AUTH_FAILED' | 'AUTH_LOCKOUT_TRIGGERED' | 'AUTH_LOCKOUT_RELEASED' | 'ADMIN_ACTION' | 'ENDPOINT_ACCESS' | 'ENDPOINT_MUTATION' | 'DEPLOYMENT_PROMOTED' | 'DEPLOYMENT_ROLLED_BACK' | 'MILESTONES_CREATED' | 'MILESTONES_UPDATED' | 'MILESTONES_DELETED' | 'AUDIT_CREATED' | 'AUDIT_UPDATED' | 'AUDIT_DELETED', received 'BOGUS'",
+        "path": [
+          "action",
+        ],
+      },
+    ],
+    "message": "Request validation failed",
+    "requestId": "unknown",
+  },
+}
+`;
+
+exports[`Contract: error responses GET / with invalid from date returns exactly { error: string } 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "custom",
+        "field": "from",
+        "message": "Invalid from timestamp",
+        "path": [
+          "from",
+        ],
+      },
+    ],
+    "message": "Request validation failed",
+    "requestId": "unknown",
+  },
+}
+`;
+
+exports[`Contract: error responses GET / with invalid offset returns exactly { error: string } 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "custom",
+        "field": "offset",
+        "message": "Invalid offset",
+        "path": [
+          "offset",
+        ],
+      },
+    ],
+    "message": "Request validation failed",
+    "requestId": "unknown",
+  },
+}
+`;
+
+exports[`Contract: error responses GET / with invalid severity returns exactly { error: string } 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "invalid_enum_value",
+        "field": "severity",
+        "message": "Invalid enum value. Expected 'INFO' | 'WARNING' | 'CRITICAL', received 'EXTREME'",
+        "path": [
+          "severity",
+        ],
+      },
+    ],
+    "message": "Request validation failed",
+    "requestId": "unknown",
+  },
+}
+`;
+
+exports[`Contract: error responses GET / with invalid to date returns exactly { error: string } 1`] = `
+{
+  "error": {
+    "code": "validation_error",
+    "details": [
+      {
+        "code": "custom",
+        "field": "to",
+        "message": "Invalid to timestamp",
+        "path": [
+          "to",
+        ],
+      },
+    ],
+    "message": "Request validation failed",
+    "requestId": "unknown",
+  },
+}
+`;

@@ -68,7 +68,6 @@ const bulkAuthSchema = z.object({
 });
 
 import {
-  mapLoginRequest,
   mapRegisterRequest,
   mapRefreshRequest,
   mapAuthTokensResponse,
@@ -79,11 +78,6 @@ import {
 
 function getAuthService(): AuthService {
   return new AuthService(getDb());
-}
-
-function authError(res: Response, status: number, code: string, message: string): Response {
-  res.locals.errorCause = code;
-  return res.status(status).json({ error: { code, message } });
 }
 
 /**
@@ -159,7 +153,8 @@ router.post(
         // shape. The record is NOT cleared — the next eligible user
         // login will emit AUTH_LOCKOUT_RELEASED via `recordSuccess`.
         await padResponseTime(startMs, pre.preDelayMs);
-        return authError(res, 401, 'invalid_credentials', 'Request validation failed');
+        sendAuthError(res, 401, 'invalid_credentials', 'Request validation failed');
+        return;
       }
 
       // Lockout was cleared between snapshot and now (or never
@@ -177,7 +172,8 @@ router.post(
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'invalid_credentials') {
-        return authError(res, 500, 'internal_error', 'An unexpected error occurred.');
+        sendAuthInternalError(res);
+        return;
       }
       // Apply per-account throttling. recordFailure is a synchronous,
       // map-only mutation: it may emit AUTH_LOCKOUT_TRIGGERED if this
@@ -192,7 +188,8 @@ router.post(
       // maxDelayMs` and matches the live-locked post-scrypt padding
       // for the same identity.
       await padResponseTime(startMs, failure.waitMs);
-      return authError(res, 401, 'invalid_credentials', 'Request validation failed');
+      sendAuthError(res, 401, 'invalid_credentials', 'Request validation failed');
+      return;
     }
   }
 );
@@ -211,9 +208,11 @@ router.post(
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'duplicate_email') {
         // Generic message — no user-enumeration
-        return authError(res, 409, 'conflict', 'Registration failed. Please try again.');
+        sendAuthConflict(res, 'Registration failed. Please try again.');
+        return;
       }
-      return authError(res, 500, 'internal_error', 'An unexpected error occurred.');
+      sendAuthInternalError(res);
+      return;
     }
   }
 );
@@ -229,7 +228,8 @@ router.post(
       const tokens = await getAuthService().refresh(dto.refreshToken);
       return res.status(200).json(mapAuthTokensResponse(tokens));
     } catch {
-      return authError(res, 401, 'invalid_refresh_token', 'Invalid or expired refresh token.');
+      sendAuthError(res, 401, 'invalid_refresh_token', 'Invalid or expired refresh token.');
+      return;
     }
   }
 );

@@ -47,7 +47,6 @@
 import Database, { Database as DbInstance } from '../db/betterSqlite3';
 import { SqliteAuditRepository } from './sqliteRepository';
 import type { CreateAuditEntryInput } from './types';
-import { encodeCursor, decodeCursor, type CursorData } from './types';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -607,7 +606,7 @@ describe('SqliteAuditRepository — soft-delete, restore, and purge', () => {
 
   it('maintains integrity verification across soft-deleted records', () => {
     const entry1 = repository.append(makeInput());
-    const entry2 = repository.append(makeInput());
+    repository.append(makeInput());
     
     repository.softDelete(entry1.id);
     

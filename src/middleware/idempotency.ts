@@ -11,6 +11,7 @@ const IDEMPOTENCY_PAYLOAD_CONFLICT = 'idempotency_payload_conflict';
 interface IdempotencyMiddlewareOptions {
   store?: IdempotencyStore;
   inFlight?: Map<string, string>;
+  enforceHeader?: boolean;
 }
 
 function requestIdFrom(res: Response): string {
@@ -79,9 +80,28 @@ export function createIdempotencyMiddleware(options: IdempotencyMiddlewareOption
   const inFlight = options.inFlight ?? defaultInFlight;
 
   return (req: Request, res: Response, next: NextFunction) => {
-    const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
+    const rawKey = req.headers['idempotency-key'] ?? req.headers['Idempotency-Key'];
+    const idempotencyKey = typeof rawKey === 'string' ? rawKey : undefined;
 
-    if (!idempotencyKey) {
+    if (!idempotencyKey || idempotencyKey.trim() === '') {
+      if (options.enforceHeader) {
+        const requestId = requestIdFrom(res);
+        return res.status(400).json({
+          error: {
+            code: 'validation_error',
+            message: 'Request validation failed',
+            requestId,
+            details: [
+              {
+                path: ['Idempotency-Key'],
+                field: 'Idempotency-Key',
+                code: 'missing_field',
+                message: 'Idempotency-Key header is required',
+              },
+            ],
+          },
+        });
+      }
       return next();
     }
 

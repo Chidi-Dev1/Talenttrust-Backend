@@ -18,6 +18,7 @@ import { Response, NextFunction } from 'express';
 import { Resource, Action } from './roles';
 import { AuthenticatedRequest } from './authenticate';
 import { isAllowed } from './authorize';
+import { sendAuthUnauthorized, sendAuthForbidden } from './errorResponses';
 
 /**
  * Factory that returns Express middleware enforcing a specific permission.
@@ -29,12 +30,12 @@ import { isAllowed } from './authorize';
 export function requirePermission(resource: Resource, action: Action) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      res.status(401).json({ error: 'Not authenticated' });
+      sendAuthUnauthorized(res, 'Not authenticated');
       return;
     }
 
     if (!isAllowed(req.user.role, resource, action)) {
-      res.status(403).json({ error: 'Forbidden: insufficient permissions' });
+      sendAuthForbidden(res, 'Forbidden: insufficient permissions');
       return;
     }
 

@@ -56,18 +56,28 @@ function buildTestApp(maxRequests = 3, windowMs = 60_000): Server {
     keyFn: healthRateLimitKeyFn,
   });
 
-  // Mount the readiness router with the test limiter applied BEFORE the router
-  const readiness = express.Router();
-  readiness.use(limiter);
-  readiness.use(readinessRouter);
+  const router = express.Router();
+  router.use(limiter);
 
-  // Mount the legacy router with the same limiter
-  const legacy = express.Router();
-  legacy.use(limiter);
-  legacy.use(legacyRouter);
+  router.get('/live', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).json({ status: 'ok', service: 'talenttrust-backend', probe: 'live' });
+  });
 
-  app.use('/health', legacy);
-  app.use('/health', readiness);
+  router.get('/ready', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).json({ status: 'ready', service: 'talenttrust-backend' });
+  });
+
+  router.get('/', (_req, res) => {
+    res.status(200).json({ status: 'ok', service: 'talenttrust-backend' });
+  });
+
+  router.post('/', (_req, res) => {
+    res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString(), version: '0.1.0' });
+  });
+
+  app.use('/health', router);
 
   return app.listen(0);
 }

@@ -107,7 +107,9 @@ describe('authenticateApiKey', () => {
     authenticateApiKey(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Missing X-API-Key header' });
+    expect(res.json).toHaveBeenCalledWith({
+      error: { code: 'unauthorized', message: 'Missing X-API-Key header', requestId: 'unknown' },
+    });
     expectNoInternalLeak(jsonBody(res));
     expect(next).not.toHaveBeenCalled();
     expect(mockedValidateApiKey).not.toHaveBeenCalled();
@@ -125,7 +127,9 @@ describe('authenticateApiKey', () => {
 
     expect(mockedValidateApiKey).toHaveBeenCalledWith(secret);
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Invalid API key' });
+    expect(res.json).toHaveBeenCalledWith({
+      error: { code: 'unauthorized', message: 'Invalid API key', requestId: 'unknown' },
+    });
     expectNoInternalLeak(jsonBody(res), secret);
     expect(next).not.toHaveBeenCalled();
     expect(req.apiKey).toBeUndefined();
@@ -157,7 +161,9 @@ describe('authenticateApiKey', () => {
     await flushAsync();
 
     expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Internal server error' });
+    expect(res.json).toHaveBeenCalledWith({
+      error: { code: 'internal_error', message: 'Internal server error', requestId: 'unknown' },
+    });
     expectNoInternalLeak(jsonBody(res));
     expect(next).not.toHaveBeenCalled();
 
@@ -202,9 +208,7 @@ describe('requireApiKeyScope', () => {
 
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith({
-      error: 'Forbidden: insufficient API key scope',
-      required: 'contracts:delete',
-      provided: ['contracts:read'],
+      error: { code: 'forbidden', message: 'Forbidden: insufficient API key scope', requestId: 'unknown' },
     });
     expectNoInternalLeak(jsonBody(res));
     expect(jsonBody(res)).not.toHaveProperty('stack');
@@ -220,7 +224,9 @@ describe('requireApiKeyScope', () => {
     mw(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Not authenticated with API key' });
+    expect(res.json).toHaveBeenCalledWith({
+      error: { code: 'unauthorized', message: 'Not authenticated with API key', requestId: 'unknown' },
+    });
     expectNoInternalLeak(jsonBody(res));
     expect(next).not.toHaveBeenCalled();
   });
@@ -278,8 +284,12 @@ describe('authenticateEither', () => {
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({
-      error:
-        'Authentication required. Provide either Authorization: Bearer <token> or X-API-Key header',
+      error: {
+        code: 'unauthorized',
+        message:
+          'Authentication required. Provide either Authorization: Bearer <token> or X-API-Key header',
+        requestId: 'unknown',
+      },
     });
     expectNoInternalLeak(jsonBody(res));
     expect(mockedAuthenticateMiddleware).not.toHaveBeenCalled();

@@ -27,7 +27,7 @@ import { AuditService } from './service';
 import { AuditExportService } from './exportService';
 import { createAuditRouter } from './router';
 import { requireAuth, requireRole } from '../middleware/authorization';
-import { idempotencyMiddleware, clearIdempotencyStore, createIdempotencyMiddleware } from '../middleware/idempotency';
+import { clearIdempotencyStore, createIdempotencyMiddleware } from '../middleware/idempotency';
 import { InMemoryIdempotencyStore } from '../db/idempotencyStore';
 import type { AuditEntry, CreateAuditEntryInput } from './types';
 import { encodeCursor, decodeCursor, type CursorData } from './types';
@@ -87,7 +87,7 @@ function buildApp(
       exportService: exportSvc,
       accessMiddleware: opts.accessMiddleware ?? [],
       exportMiddleware: opts.exportMiddleware ?? [],
-      idempotencyMiddleware: opts.idempotencyStore ? createIdempotencyMiddleware({ store: opts.idempotencyStore }) : undefined,
+      idempotencyMiddleware: opts.idempotencyStore ? createIdempotencyMiddleware({ store: opts.idempotencyStore, enforceHeader: true }) : undefined,
     }),
   );
 
