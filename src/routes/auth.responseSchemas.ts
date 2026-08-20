@@ -11,6 +11,15 @@
  *
  * All object schemas are `.strict()` so an unexpected extra field fails
  * validation, not just a missing one.
+ *
+ * Known inconsistency (not fixed here — no behaviour change): `authError()`
+ * in `auth.routes.ts` (login 401/500, register 409/500, refresh 401) emits
+ * `{ error: { code, message } }` without `requestId`/`details`, unlike the
+ * rest of the app's `ErrorPayload` shape (`src/errors/appError.ts`) which
+ * `validateSchema`, the rate limiter, and `requireAuth` all include. This is
+ * intentionally captured as two distinct schemas below rather than papered
+ * over, so a future fix that unifies them is a visible, deliberate schema
+ * change instead of a silent one.
  */
 
 import { z } from 'zod';
@@ -27,20 +36,17 @@ export const logoutResponseSchema = z.object({
 }).strict();
 
 /**
- * Error shape emitted by auth routes via the shared `sendAuthError()` helper
- * (`src/auth/errorResponses.ts`):
+ * Error shape emitted by `auth.routes.ts`'s local `authError()` helper:
  * login 401 (`invalid_credentials`) / 500 (`internal_error`),
  * register 409 (`conflict`) / 500 (`internal_error`),
  * refresh 401 (`invalid_refresh_token`).
  *
- * Includes `requestId` for traceability, matching the rest of the app's
- * `ErrorPayload` shape (`src/errors/appError.ts`).
+ * Deliberately has no `requestId`/`details` — see module doc comment.
  */
 export const authLocalErrorResponseSchema = z.object({
   error: z.object({
     code: z.string().min(1),
     message: z.string().min(1),
-    requestId: z.string().min(1),
   }).strict(),
 }).strict();
 

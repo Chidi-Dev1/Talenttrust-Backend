@@ -1,6 +1,5 @@
 import { Counter, register as promRegister } from 'prom-client';
 import { SWRCache } from './swrCache';
-import { DISPUTES_METRICS, DISPUTES_CACHE_KEYS } from '../modules/disputes/constants';
 
 export interface DisputesCacheConfig {
   ttlMs: number;
@@ -13,14 +12,14 @@ const DEFAULT_SWR_MS = 30_000;
 const DEFAULT_MAX_ENTRIES = 100;
 
 export const disputesCacheHitsTotal = new Counter({
-  name: DISPUTES_METRICS.CACHE_HITS_TOTAL,
+  name: 'disputes_cache_hits_total',
   help: 'Total number of disputes cache hits',
   labelNames: ['type'] as const,
   registers: [promRegister],
 });
 
 export const disputesCacheMissesTotal = new Counter({
-  name: DISPUTES_METRICS.CACHE_MISSES_TOTAL,
+  name: 'disputes_cache_misses_total',
   help: 'Total number of disputes cache misses',
   labelNames: ['type'] as const,
   registers: [promRegister],
@@ -41,7 +40,7 @@ export class DisputesCache {
   }
 
   async getOrFetchList<T>(fetcher: () => Promise<T>): Promise<{ data: T; source: 'cache_fresh' | 'cache_stale' | 'upstream' }> {
-    const result = await this.cache.get(DISPUTES_CACHE_KEYS.LIST, fetcher, this.options);
+    const result = await this.cache.get('disputes:list', fetcher, this.options);
     if (result.source === 'cache_fresh' || result.source === 'cache_stale') {
       disputesCacheHitsTotal.inc({ type: 'list' });
     } else {
@@ -51,7 +50,7 @@ export class DisputesCache {
   }
 
   async getOrFetchDispute<T>(id: string, fetcher: () => Promise<T>): Promise<{ data: T; source: 'cache_fresh' | 'cache_stale' | 'upstream' }> {
-    const result = await this.cache.get(DISPUTES_CACHE_KEYS.forDispute(id), fetcher, this.options);
+    const result = await this.cache.get(`disputes:${id}`, fetcher, this.options);
     if (result.source === 'cache_fresh' || result.source === 'cache_stale') {
       disputesCacheHitsTotal.inc({ type: 'dispute' });
     } else {
@@ -61,11 +60,11 @@ export class DisputesCache {
   }
 
   invalidateList(): void {
-    this.cache.delete(DISPUTES_CACHE_KEYS.LIST);
+    this.cache.delete('disputes:list');
   }
 
   invalidateDispute(id: string): void {
-    this.cache.delete(DISPUTES_CACHE_KEYS.forDispute(id));
+    this.cache.delete(`disputes:${id}`);
   }
 
   get size(): number {

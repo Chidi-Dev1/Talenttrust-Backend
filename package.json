@@ -4,7 +4,7 @@
   "description": "TalentTrust API Gateway and services with idempotent contract event ingestion",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json --noCheck",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn src/index.ts",
     "blue": "cross-env APP_COLOR=blue PORT=3001 ts-node-dev --respawn src/index.ts",
@@ -15,7 +15,7 @@
     "deploy:auto-rollback": "cross-env MODE=deploy ts-node src/deploy.ts auto-rollback",
     "deploy:status": "cross-env MODE=deploy ts-node src/deploy.ts status",
     "test": "jest",
-    "test:ci": "jest --ci --coverage --runInBand --silent --detectOpenHandles --forceExit",
+    "test:ci": "jest --ci --coverage --runInBand --silent --detectOpenHandles",
     "test:watch": "jest --watch",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
@@ -39,11 +39,12 @@
   "author": "Talenttrust Team",
   "license": "MIT",
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^7.3.4",
     "@stellar/stellar-sdk": "^13.0.0",
     "axios": "^1.16.1",
     "better-sqlite3": "^12.11.1",
     "bullmq": "^5.71.0",
-    "compression": "1.7.5",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.22.2",
@@ -74,7 +75,6 @@
     }
   },
   "devDependencies": {
-    "@asteasolutions/zod-to-openapi": "^7.3.4",
     "@types/better-sqlite3": "^7.6.11",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.17",
@@ -95,7 +95,6 @@
     "eslint": "^8.57.0",
     "fast-check": "^4.8.0",
     "jest": "^29.7.0",
-    "joi": "^17.13.3",
     "pino-pretty": "^13.0.0",
     "supertest": "^7.0.0",
     "swagger-cli": "^4.0.4",

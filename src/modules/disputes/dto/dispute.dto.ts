@@ -1,5 +1,3 @@
-import { DISPUTE_STATUS } from '../constants';
-
 export type DisputeStatus = 'open' | 'under_review' | 'resolved' | 'escalated';
 
 export interface CreateDisputeDto {
@@ -47,7 +45,7 @@ export interface DisputeResponseDto {
 export function mapToDisputeResponse(data: any): DisputeResponseDto {
   const response: DisputeResponseDto = {
     id: data?.id,
-    status: data?.status || DISPUTE_STATUS.OPEN,
+    status: data?.status || 'open',
   };
 
   if (data?.contractId !== undefined) response.contractId = data.contractId;

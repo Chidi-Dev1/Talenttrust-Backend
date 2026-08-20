@@ -98,9 +98,6 @@ export class InMemoryIdempotencyStore implements IdempotencyStore {
       }
     }
 
-    if (!record) {
-      console.error('UNDEFINED RECORD IN SET:', { args: arguments, stack: new Error().stack });
-    }
     const now = this.clock();
     const expiresAt = record.expiresAt ?? new Date(now.getTime() + this.ttlMs);
     this.records.set(record.key, {

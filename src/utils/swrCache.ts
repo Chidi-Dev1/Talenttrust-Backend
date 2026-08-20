@@ -166,26 +166,6 @@ export class SWRCache {
   }
 
   /**
-   * Invalidate a single cache entry by key. Removes the entry from the cache
-   * and cleans up any in-flight fetch for that key.
-   *
-   * @param key - The cache key to invalidate.
-   * @returns `true` if the entry existed and was removed, `false` otherwise.
-   */
-  public invalidate(key: string): boolean {
-    this.activeFetches.delete(key);
-    return this.cache.delete(key);
-  }
-
-  /**
-   * Clear all entries from the cache and cancel all in-flight fetches.
-   */
-  public clear(): void {
-    this.cache.clear();
-    this.activeFetches.clear();
-  }
-
-  /**
    * Retrieve data from cache or upstream fetcher using SWR strategy.
    *
    * The SWR strategy follows these rules:

@@ -22,13 +22,6 @@ import {
   BatchDisputeOperation,
   UpdateDisputePayload,
 } from '../modules/disputes/dto/dispute.dto';
-import {
-  DISPUTE_STATUS,
-  DISPUTE_ERRORS,
-  DISPUTES_LOG_PREFIX,
-  DISPUTES_SEED,
-  DISPUTES_DEMO_CONTEXT,
-} from '../modules/disputes/constants';
 import { EscrowHooks, EscrowEventPayload } from '../hooks/escrow.hooks';
 import {
   SoftDeleteRetentionError,
@@ -67,10 +60,10 @@ const disputeStore = new Map<string, DisputeRecord>();
  * Maps from current state → set of allowed next states.
  */
 const VALID_TRANSITIONS: Record<DisputeStatus, Set<DisputeStatus>> = {
-  open: new Set<DisputeStatus>([DISPUTE_STATUS.UNDER_REVIEW, DISPUTE_STATUS.RESOLVED, DISPUTE_STATUS.ESCALATED]),
-  under_review: new Set<DisputeStatus>([DISPUTE_STATUS.RESOLVED, DISPUTE_STATUS.ESCALATED]),
+  open: new Set<DisputeStatus>(['under_review', 'resolved', 'escalated']),
+  under_review: new Set<DisputeStatus>(['resolved', 'escalated']),
   resolved: new Set<DisputeStatus>([]), // terminal state
-  escalated: new Set<DisputeStatus>([DISPUTE_STATUS.RESOLVED]),
+  escalated: new Set<DisputeStatus>(['resolved']),
 };
 
 /**
@@ -128,10 +121,10 @@ export class DisputesService {
   ): DisputeRecord {
     const dispute = disputeStore.get(id);
     if (!dispute) {
-      throw new DisputeError(DISPUTE_ERRORS.NOT_FOUND, `Dispute ${id} not found`, 404);
+      throw new DisputeError('dispute_not_found', `Dispute ${id} not found`, 404);
     }
     if (!options.includeDeleted && isSoftDeleted(dispute.deletedAt)) {
-      throw new DisputeError(DISPUTE_ERRORS.NOT_FOUND, `Dispute ${id} not found`, 404);
+      throw new DisputeError('dispute_not_found', `Dispute ${id} not found`, 404);
     }
     return { ...dispute };
   }
@@ -155,7 +148,7 @@ export class DisputesService {
     const record: DisputeRecord = {
       id: randomUUID(),
       contractId: input.contractId,
-      status: input.status ?? DISPUTE_STATUS.OPEN,
+      status: input.status ?? 'open',
       reason: input.reason,
       raisedBy: input.raisedBy,
       createdAt: now,
@@ -172,11 +165,11 @@ export class DisputesService {
   public softDeleteDispute(id: string, now: Date = new Date()): DisputeRecord {
     const dispute = disputeStore.get(id);
     if (!dispute) {
-      throw new DisputeError(DISPUTE_ERRORS.NOT_FOUND, `Dispute ${id} not found`, 404);
+      throw new DisputeError('dispute_not_found', `Dispute ${id} not found`, 404);
     }
     if (isSoftDeleted(dispute.deletedAt)) {
       throw new DisputeError(
-        DISPUTE_ERRORS.ALREADY_DELETED,
+        'dispute_already_deleted',
         `Dispute ${id} is already soft-deleted`,
         409,
       );
@@ -196,11 +189,11 @@ export class DisputesService {
   public restoreDispute(id: string, now: Date = new Date()): DisputeRecord {
     const dispute = disputeStore.get(id);
     if (!dispute) {
-      throw new DisputeError(DISPUTE_ERRORS.NOT_FOUND, `Dispute ${id} not found`, 404);
+      throw new DisputeError('dispute_not_found', `Dispute ${id} not found`, 404);
     }
     if (!isSoftDeleted(dispute.deletedAt) || !dispute.deletedAt) {
       throw new DisputeError(
-        DISPUTE_ERRORS.NOT_DELETED,
+        'dispute_not_deleted',
         `Dispute ${id} is not soft-deleted`,
         409,
       );
@@ -268,7 +261,7 @@ export class DisputesService {
     const allowedStates = VALID_TRANSITIONS[fromStatus];
     if (!allowedStates || !allowedStates.has(toStatus)) {
       throw new DisputeError(
-        DISPUTE_ERRORS.INVALID_STATE_TRANSITION,
+        'invalid_state_transition',
         `Invalid state transition from ${fromStatus} to ${toStatus}`,
         400,
       );
@@ -318,13 +311,13 @@ export class DisputesService {
       try {
         const payload: EscrowEventPayload = {
           contractId: dispute.contractId,
-          userEmail: DISPUTES_DEMO_CONTEXT.USER_EMAIL, // Would be fetched from request context
-          userId: DISPUTES_DEMO_CONTEXT.USER_ID, // Would be from request context
+          userEmail: 'admin@talenttrust.example', // Would be fetched from request context
+          userId: 'admin-id', // Would be from request context
           reason: updates.resolution,
         };
 
         await EscrowHooks.onStateTransition(dispute.status, newStatus, payload);
-        logger.info(`${DISPUTES_LOG_PREFIX} Cascading side effects dispatched`, {
+        logger.info('[DisputesService] Cascading side effects dispatched', {
           disputeId: id,
           oldStatus: dispute.status,
           newStatus,
@@ -332,7 +325,7 @@ export class DisputesService {
       } catch (err) {
         // Side effect failures do not fail the main operation
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn(`${DISPUTES_LOG_PREFIX} Side effect dispatch failed (non-fatal)`, {
+        logger.warn('[DisputesService] Side effect dispatch failed (non-fatal)', {
           disputeId: id,
           error: message,
         });
@@ -374,14 +367,14 @@ export class DisputesService {
           dispute: updatedDispute,
         });
 
-        logger.info(`${DISPUTES_LOG_PREFIX} Batch item succeeded`, {
+        logger.info('[DisputesService] Batch item succeeded', {
           index,
           disputeId: operation.id,
           newStatus: operation.status,
         });
       } catch (err) {
         const error = err instanceof DisputeError ? err : new DisputeError(
-          DISPUTE_ERRORS.INTERNAL_ERROR,
+          'internal_error',
           err instanceof Error ? err.message : String(err),
           500,
         );
@@ -395,7 +388,7 @@ export class DisputesService {
           },
         });
 
-        logger.warn(`${DISPUTES_LOG_PREFIX} Batch item failed`, {
+        logger.warn('[DisputesService] Batch item failed', {
           index,
           disputeId: operation.id,
           error: error.code,
@@ -412,18 +405,18 @@ export class DisputesService {
    */
   public seedDemoDisputes(): void {
     const now = new Date();
-    disputeStore.set(DISPUTES_SEED.DISPUTE_001_ID, {
-      id: DISPUTES_SEED.DISPUTE_001_ID,
-      contractId: DISPUTES_SEED.CONTRACT_001_ID,
-      status: DISPUTE_STATUS.OPEN,
+    disputeStore.set('dispute-001', {
+      id: 'dispute-001',
+      contractId: 'contract-001',
+      status: 'open',
       createdAt: new Date(now.getTime() - 86400000), // 1 day ago
       updatedAt: new Date(now.getTime() - 86400000),
       deletedAt: null,
     });
-    disputeStore.set(DISPUTES_SEED.DISPUTE_002_ID, {
-      id: DISPUTES_SEED.DISPUTE_002_ID,
-      contractId: DISPUTES_SEED.CONTRACT_002_ID,
-      status: DISPUTE_STATUS.UNDER_REVIEW,
+    disputeStore.set('dispute-002', {
+      id: 'dispute-002',
+      contractId: 'contract-002',
+      status: 'under_review',
       createdAt: new Date(now.getTime() - 172800000), // 2 days ago
       updatedAt: new Date(now.getTime() - 3600000), // 1 hour ago
       deletedAt: null,

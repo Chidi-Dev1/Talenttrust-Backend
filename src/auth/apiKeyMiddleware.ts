@@ -19,7 +19,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { validateApiKey, ApiKeyInfo } from './apiKeys';
 import { authenticateMiddleware } from './authenticate';
-import { sendAuthUnauthorized, sendAuthForbidden, sendAuthError } from './errorResponses';
 
 /** Express request extended with API key info. */
 export interface ApiKeyAuthenticatedRequest extends Request {
@@ -53,14 +52,14 @@ export function authenticateApiKey(
   const apiKey = req.headers['x-api-key'] as string;
 
   if (!apiKey) {
-    sendAuthUnauthorized(res, 'Missing X-API-Key header');
+    res.status(401).json({ error: 'Missing X-API-Key header' });
     return;
   }
 
   validateApiKey(apiKey)
     .then(keyInfo => {
       if (!keyInfo) {
-        sendAuthUnauthorized(res, 'Invalid API key');
+        res.status(401).json({ error: 'Invalid API key' });
         return;
       }
 
@@ -70,7 +69,7 @@ export function authenticateApiKey(
     .catch(err => {
       // eslint-disable-next-line no-console
       console.error('API key validation error:', err);
-      sendAuthError(res, 500, 'internal_error', 'Internal server error');
+      res.status(500).json({ error: 'Internal server error' });
     });
 }
 
@@ -96,7 +95,7 @@ export function authenticateApiKey(
 export function requireApiKeyScope(resource: string, action: string) {
   return (req: ApiKeyAuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.apiKey) {
-      sendAuthUnauthorized(res, 'Not authenticated with API key');
+      res.status(401).json({ error: 'Not authenticated with API key' });
       return;
     }
 
@@ -118,7 +117,11 @@ export function requireApiKeyScope(resource: string, action: string) {
     });
 
     if (!hasScope) {
-      sendAuthForbidden(res, 'Forbidden: insufficient API key scope');
+      res.status(403).json({ 
+        error: 'Forbidden: insufficient API key scope',
+        required: requiredScope,
+        provided: req.apiKey.scope
+      });
       return;
     }
 
@@ -163,8 +166,7 @@ export function authenticateEither(
   }
 
   // Neither authentication method found
-  sendAuthUnauthorized(
-    res,
-    'Authentication required. Provide either Authorization: Bearer <token> or X-API-Key header',
-  );
+  res.status(401).json({ 
+    error: 'Authentication required. Provide either Authorization: Bearer <token> or X-API-Key header' 
+  });
 }

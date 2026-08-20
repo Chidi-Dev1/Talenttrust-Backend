@@ -7,10 +7,6 @@ import {
   UpdateDisputePayload,
   BatchDisputeOperation,
 } from '../modules/disputes/dto/dispute.dto';
-import {
-  DISPUTE_STATUS,
-  DISPUTE_ERRORS,
-} from '../modules/disputes/constants';
 import { ok, fail } from '../utils/apiResponse';
 import type { Logger } from '../logger';
 
@@ -69,7 +65,7 @@ export class DisputesController {
     } catch (error) {
       if (error instanceof DisputeError && error.statusCode === 404) {
         log.warn('disputes.getDisputeById: not found', { ...ctx, disputeId: id });
-        fail(res, DISPUTE_ERRORS.NOT_FOUND, error.message, 404);
+        fail(res, 'dispute_not_found', error.message, 404);
         return;
       }
       log.error('disputes.getDisputeById: error', { ...ctx, disputeId: id, err: error as Error });
@@ -91,7 +87,7 @@ export class DisputesController {
       const dispute = {
         id: `dispute-${Date.now()}`,
         contractId: body.contractId ?? '',
-        status: DISPUTE_STATUS.OPEN,
+        status: 'open' as const,
         createdAt: new Date(),
         updatedAt: new Date(),
       };

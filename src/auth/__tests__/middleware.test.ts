@@ -37,9 +37,7 @@ describe('requirePermission middleware', () => {
     mw(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
-    expect(res.json).toHaveBeenCalledWith({
-      error: { code: 'unauthorized', message: 'Not authenticated', requestId: 'unknown' },
-    });
+    expect(res.json).toHaveBeenCalledWith({ error: 'Not authenticated' });
     expect(next).not.toHaveBeenCalled();
   });
 
@@ -52,9 +50,7 @@ describe('requirePermission middleware', () => {
     mw(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(403);
-    expect(res.json).toHaveBeenCalledWith({
-      error: { code: 'forbidden', message: 'Forbidden: insufficient permissions', requestId: 'unknown' },
-    });
+    expect(res.json).toHaveBeenCalledWith({ error: 'Forbidden: insufficient permissions' });
     expect(next).not.toHaveBeenCalled();
   });
 

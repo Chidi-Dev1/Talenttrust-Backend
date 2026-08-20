@@ -19,15 +19,23 @@
 import { Request, Response, NextFunction } from 'express';
 import { AppError } from '../errors/appError';
 import { DisputeError } from '../services/disputes.service';
-import { DISPUTE_ERRORS, DISPUTE_ERROR_MESSAGES } from '../modules/disputes/constants';
 
 /**
  * Maps dispute-specific error codes to standard HTTP status codes.
  */
 const DISPUTE_ERROR_STATUS_MAP: Record<string, number> = {
-  [DISPUTE_ERRORS.NOT_FOUND]: 404,
-  [DISPUTE_ERRORS.INVALID_STATE_TRANSITION]: 400,
-  [DISPUTE_ERRORS.INTERNAL_ERROR]: 500,
+  dispute_not_found: 404,
+  invalid_state_transition: 400,
+  internal_error: 500,
+} as const;
+
+/**
+ * Maps dispute-specific error codes to safe, user-friendly messages.
+ */
+const DISPUTE_ERROR_MESSAGES: Record<string, string> = {
+  dispute_not_found: 'The requested dispute was not found',
+  invalid_state_transition: 'The requested state transition is not allowed',
+  internal_error: 'An unexpected error occurred while processing the dispute',
 } as const;
 
 /**

@@ -20,7 +20,6 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { Role, VALID_ROLES } from './roles';
-import { sendAuthUnauthorized } from './errorResponses';
 
 /** Shape of the decoded token payload. */
 export interface TokenPayload {
@@ -81,7 +80,7 @@ export function authenticateMiddleware(
   const header = req.headers.authorization;
 
   if (!header || !header.startsWith('Bearer ')) {
-    sendAuthUnauthorized(res, 'Missing or invalid Authorization header');
+    res.status(401).json({ error: 'Missing or invalid Authorization header' });
     return;
   }
 
@@ -89,7 +88,7 @@ export function authenticateMiddleware(
   const payload = decodeToken(token);
 
   if (!payload) {
-    sendAuthUnauthorized(res, 'Invalid token');
+    res.status(401).json({ error: 'Invalid token' });
     return;
   }
 

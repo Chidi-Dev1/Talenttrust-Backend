@@ -26,8 +26,7 @@ import {
 import { parseBoolEnv } from "../config/env";
 import { parseRetentionDays } from "../utils/softDelete";
 import { createLogger } from "../logger";
-import { eventIngestionService } from "../events/registry";
-import type { WebhookService } from "./webhook.service";
+import { EventIngestionService } from "../events/eventIngestionService";
 
 const log = createLogger({ service: "contracts" });
 
@@ -59,7 +58,6 @@ export class ContractsService {
   constructor(
     contractRepository: IContractRepository,
     milestonesEnabled?: boolean,
-    private readonly webhookService?: Pick<WebhookService, "trigger">,
   ) {
     this.sorobanService = new SorobanService();
     this.contractRepository = contractRepository;
@@ -205,12 +203,6 @@ export class ContractsService {
 
     this.cache?.invalidateLists();
 
-    await this.webhookService?.trigger("contract.created", {
-      contractId: newContract.id,
-      contract: newContract,
-      event: "created",
-    }, correlationId);
-
     return newContract;
   }
 
@@ -304,17 +296,6 @@ export class ContractsService {
       contractId: id,
       version,
     });
-
-    await this.webhookService?.trigger(
-      "contract.updated",
-      {
-        contractId: updated.id,
-        contract: updated,
-        event: "updated",
-      },
-      correlationId,
-    );
-
     return updated;
   }
 
@@ -338,16 +319,6 @@ export class ContractsService {
       ...traceCtx,
       contractId: id,
     });
-
-    await this.webhookService?.trigger(
-      "contract.deleted",
-      {
-        contractId: id,
-        deleted: true,
-        event: "deleted",
-      },
-      correlationId,
-    );
   }
 
   /**
@@ -441,7 +412,7 @@ export class ContractsService {
    * Retrieves contract event history by contract ID.
    * @param id - UUID of the contract.
    */
-  public async getContractHistory(id: string) {
-    return eventIngestionService.getContractHistory(id);
+  public async getContractHistory(_id: string) {
+    return [];
   }
 }

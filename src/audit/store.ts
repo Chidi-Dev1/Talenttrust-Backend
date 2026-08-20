@@ -18,10 +18,9 @@ import { createHash, randomUUID } from 'crypto';
 import type { AuditEntry, AuditQuery, CreateAuditEntryInput, IntegrityReport, AuditQueryResult, CursorData } from './types';
 import { encodeCursor, decodeCursor } from './types';
 import type { AuditLogRepository } from './repository';
-import { AUDIT_DEFAULTS, AUDIT_MESSAGES } from '../constants/audit';
 
 /** Sentinel hash used as the previousHash of the very first entry. */
-export const GENESIS_HASH = AUDIT_DEFAULTS.GENESIS_HASH;
+export const GENESIS_HASH = 'GENESIS';
 
 /**
  * Computes the SHA-256 hash for an audit entry.
@@ -65,7 +64,7 @@ export class AuditStore implements AuditLogRepository {
 
   append(input: CreateAuditEntryInput): AuditEntry {
     if (this._appendGuard) {
-      throw new Error(AUDIT_MESSAGES.REENTRANCY_DETECTED);
+      throw new Error('AuditStore append re-entrancy detected');
     }
 
     this._appendGuard = true;
@@ -100,67 +99,6 @@ export class AuditStore implements AuditLogRepository {
   }
 
   /**
-   * Updates an entry by id and recomputes the hash chain.
-   */
-  update(id: string, payload: Partial<CreateAuditEntryInput>): AuditEntry {
-    const index = this.log.findIndex(e => e.id === id);
-    if (index === -1) {
-      throw new Error(AUDIT_MESSAGES.NOT_FOUND);
-    }
-
-    const current = this.log[index];
-    const partial: Omit<AuditEntry, 'hash'> = {
-      ...current,
-      action: payload.action ?? current.action,
-      severity: payload.severity ?? current.severity,
-      actor: payload.actor ?? current.actor,
-      resource: payload.resource ?? current.resource,
-      resourceId: payload.resourceId ?? current.resourceId,
-      metadata: payload.metadata ? Object.freeze({ ...payload.metadata }) : current.metadata,
-      ipAddress: payload.ipAddress !== undefined ? payload.ipAddress : current.ipAddress,
-      correlationId: payload.correlationId !== undefined ? payload.correlationId : current.correlationId,
-    };
-
-    const entry: AuditEntry = Object.freeze({
-      ...partial,
-      hash: computeEntryHash(partial),
-    });
-
-    this.log[index] = entry;
-    this._recomputeHashChainFrom(index + 1);
-    return entry;
-  }
-
-  /**
-   * Deletes an entry by id and recomputes the hash chain.
-   */
-  delete(id: string): void {
-    const index = this.log.findIndex(e => e.id === id);
-    if (index === -1) {
-      throw new Error(AUDIT_MESSAGES.NOT_FOUND);
-    }
-
-    this.log.splice(index, 1);
-    this._recomputeHashChainFrom(index);
-  }
-
-  private _recomputeHashChainFrom(startIndex: number): void {
-    for (let i = startIndex; i < this.log.length; i++) {
-      const current = this.log[i];
-      const previousHash = i === 0 ? GENESIS_HASH : this.log[i - 1].hash;
-      const partial = { ...current, previousHash };
-      
-      const { hash: _oldHash, ...rest } = partial;
-      const newHash = computeEntryHash(rest);
-
-      this.log[i] = Object.freeze({
-        ...rest,
-        hash: newHash,
-      });
-    }
-  }
-
-  /**
    * Returns a shallow copy of all entries (originals remain frozen).
    */
   getAll(): AuditEntry[] {
@@ -168,18 +106,18 @@ export class AuditStore implements AuditLogRepository {
   }
 
   /**
-   * Returns the total number of non-deleted entries in the log.
+   * Returns the total number of entries in the log.
    */
   count(): number {
-    return this.log.filter(e => !e.deletedAt).length;
+    return this.log.length;
   }
 
   /**
-   * Retrieves a single entry by its ID. Non-deleted only.
-   * @returns The entry, or undefined if not found or deleted.
+   * Retrieves a single entry by its ID.
+   * @returns The entry, or undefined if not found.
    */
   getById(id: string): AuditEntry | undefined {
-    return this.log.find((e) => e.id === id && !e.deletedAt);
+    return this.log.find((e) => e.id === id);
   }
 
   /**
@@ -193,7 +131,6 @@ export class AuditStore implements AuditLogRepository {
     const offset = Math.max(query.offset ?? 0, 0);
 
     const results = this.log.filter((entry) => {
-      if (!query.includeDeleted && entry.deletedAt) return false;
       if (query.action && entry.action !== query.action) return false;
       if (query.severity && entry.severity !== query.severity) return false;
       if (query.actor && entry.actor !== query.actor) return false;
@@ -240,12 +177,9 @@ export class AuditStore implements AuditLogRepository {
             cursorData.filters.resourceId !== query.resourceId ||
             cursorData.filters.from !== query.from ||
             cursorData.filters.to !== query.to) {
-          throw new Error(AUDIT_MESSAGES.CURSOR_FILTERS_MISMATCH);
+          throw new Error('Cursor filters do not match query filters');
         }
-      } catch (err) {
-        if (err instanceof Error && err.message === AUDIT_MESSAGES.CURSOR_FILTERS_MISMATCH) {
-          throw err;
-        }
+      } catch {
         // If cursor is invalid, start from beginning
         startIndex = 0;
       }
@@ -354,56 +288,6 @@ export class AuditStore implements AuditLogRepository {
   _reset(): void {
     this.log.length = 0;
     this._appendGuard = false;
-  }
-
-  softDelete(id: string): boolean {
-    const index = this.log.findIndex(e => e.id === id);
-    if (index === -1 || this.log[index].deletedAt) return false;
-
-    this.log[index] = Object.freeze({
-      ...this.log[index],
-      deletedAt: new Date().toISOString()
-    });
-    return true;
-  }
-
-  restore(id: string, retentionDays: number): boolean {
-    const index = this.log.findIndex(e => e.id === id);
-    if (index === -1) return false;
-
-    const entry = this.log[index];
-    if (!entry.deletedAt) return false; // Not soft-deleted
-
-    const deletedDate = new Date(entry.deletedAt);
-    const now = new Date();
-    const ageDays = (now.getTime() - deletedDate.getTime()) / (1000 * 60 * 60 * 24);
-
-    if (ageDays > retentionDays) {
-      throw new Error(AUDIT_MESSAGES.CANNOT_RESTORE_PAST_RETENTION);
-    }
-
-    // Restore
-    const { deletedAt: _deletedAt, ...rest } = entry;
-    this.log[index] = Object.freeze(rest as AuditEntry);
-    return true;
-  }
-
-  purgeExpired(retentionDays: number): number {
-    const now = new Date();
-    let purgedCount = 0;
-
-    for (let i = this.log.length - 1; i >= 0; i--) {
-      const entry = this.log[i];
-      if (entry.deletedAt) {
-        const deletedDate = new Date(entry.deletedAt);
-        const ageDays = (now.getTime() - deletedDate.getTime()) / (1000 * 60 * 60 * 24);
-        if (ageDays > retentionDays) {
-          this.log.splice(i, 1);
-          purgedCount++;
-        }
-      }
-    }
-    return purgedCount;
   }
 }
 

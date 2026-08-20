@@ -247,7 +247,6 @@ All sensitive metadata fields (`password`, `token`, `secret`, `credential`, `api
 - [Contract Event Indexer Cursor Model & Replay Protection](INDEXER.md)
 - [Data Retention, Archival, and Purge Lifecycle](docs/DATA_RETENTION.md)
 - [Disputes Operations Runbook](docs/runbook-disputes.md) — Configuration, failure modes, alerts, and recovery procedures for the disputes subsystem
-- [Disputes Request Lifecycle](docs/disputes-request-lifecycle.md) — Sequence diagrams for the full middleware → handler → service → store request flow (issue #1048)
 
 ## CI/CD
 

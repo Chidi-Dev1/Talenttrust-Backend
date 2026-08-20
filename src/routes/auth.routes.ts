@@ -21,7 +21,7 @@ import { getDb } from '../db/database';
 import { requireAuth } from '../middleware/authorization';
 import { authRateLimitKeyFn } from '../auth/rateLimitKey';
 import { accountLockout } from '../auth/accountLockout';
-import idempotencyMiddleware from '../middleware/idempotency';
+import idempotencyMiddleware from '../middleware/idempotency.middleware';
 import type { AuthenticatedRequest } from '../lib/types';
 
 const router = Router();
@@ -58,16 +58,8 @@ const refreshSchema = z.object({
   }).strict(),
 });
 
-const bulkAuthSchema = z.object({
-  body: z.array(
-    z.object({
-      operation: z.enum(['login', 'register', 'refresh']),
-      payload: z.record(z.unknown()),
-    }),
-  ).min(1).max(100),
-});
-
 import {
+  mapLoginRequest,
   mapRegisterRequest,
   mapRefreshRequest,
   mapAuthTokensResponse,
@@ -78,6 +70,11 @@ import {
 
 function getAuthService(): AuthService {
   return new AuthService(getDb());
+}
+
+function authError(res: Response, status: number, code: string, message: string): Response {
+  res.locals.errorCause = code;
+  return res.status(status).json({ error: { code, message } });
 }
 
 /**
@@ -153,8 +150,7 @@ router.post(
         // shape. The record is NOT cleared — the next eligible user
         // login will emit AUTH_LOCKOUT_RELEASED via `recordSuccess`.
         await padResponseTime(startMs, pre.preDelayMs);
-        sendAuthError(res, 401, 'invalid_credentials', 'Request validation failed');
-        return;
+        return authError(res, 401, 'invalid_credentials', 'Request validation failed');
       }
 
       // Lockout was cleared between snapshot and now (or never
@@ -172,8 +168,7 @@ router.post(
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'invalid_credentials') {
-        sendAuthInternalError(res);
-        return;
+        return authError(res, 500, 'internal_error', 'An unexpected error occurred.');
       }
       // Apply per-account throttling. recordFailure is a synchronous,
       // map-only mutation: it may emit AUTH_LOCKOUT_TRIGGERED if this
@@ -188,8 +183,7 @@ router.post(
       // maxDelayMs` and matches the live-locked post-scrypt padding
       // for the same identity.
       await padResponseTime(startMs, failure.waitMs);
-      sendAuthError(res, 401, 'invalid_credentials', 'Request validation failed');
-      return;
+      return authError(res, 401, 'invalid_credentials', 'Request validation failed');
     }
   }
 );
@@ -208,11 +202,9 @@ router.post(
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'duplicate_email') {
         // Generic message — no user-enumeration
-        sendAuthConflict(res, 'Registration failed. Please try again.');
-        return;
+        return authError(res, 409, 'conflict', 'Registration failed. Please try again.');
       }
-      sendAuthInternalError(res);
-      return;
+      return authError(res, 500, 'internal_error', 'An unexpected error occurred.');
     }
   }
 );
@@ -228,8 +220,7 @@ router.post(
       const tokens = await getAuthService().refresh(dto.refreshToken);
       return res.status(200).json(mapAuthTokensResponse(tokens));
     } catch {
-      sendAuthError(res, 401, 'invalid_refresh_token', 'Invalid or expired refresh token.');
-      return;
+      return authError(res, 401, 'invalid_refresh_token', 'Invalid or expired refresh token.');
     }
   }
 );

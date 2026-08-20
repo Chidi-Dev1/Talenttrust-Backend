@@ -8,7 +8,6 @@ import { ContractsService } from "../services/contracts.service";
 import { ContractRepository } from "../repositories/contractRepository";
 import { getDb } from "../db/database";
 import { validateSchema } from "../middleware/validate.middleware";
-import { contractsErrorHandler } from "../middleware/contractsErrorHandler";
 import { createRateLimiter } from "../middleware/rateLimiter";
 import { rateLimitConfig } from "../config/rateLimit";
 import {
@@ -363,8 +362,6 @@ function createContractsRouter(
     contractCreateIdempotencyMiddleware(),
     controller.deleteContract,
   );
-
-  router.use(contractsErrorHandler);
 
   return router;
 }

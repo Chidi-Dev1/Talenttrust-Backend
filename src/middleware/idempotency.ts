@@ -11,7 +11,6 @@ const IDEMPOTENCY_PAYLOAD_CONFLICT = 'idempotency_payload_conflict';
 interface IdempotencyMiddlewareOptions {
   store?: IdempotencyStore;
   inFlight?: Map<string, string>;
-  enforceHeader?: boolean;
 }
 
 function requestIdFrom(res: Response): string {
@@ -80,28 +79,9 @@ export function createIdempotencyMiddleware(options: IdempotencyMiddlewareOption
   const inFlight = options.inFlight ?? defaultInFlight;
 
   return (req: Request, res: Response, next: NextFunction) => {
-    const rawKey = req.headers['idempotency-key'] ?? req.headers['Idempotency-Key'];
-    const idempotencyKey = typeof rawKey === 'string' ? rawKey : undefined;
+    const idempotencyKey = req.headers['idempotency-key'] as string | undefined;
 
-    if (!idempotencyKey || idempotencyKey.trim() === '') {
-      if (options.enforceHeader) {
-        const requestId = requestIdFrom(res);
-        return res.status(400).json({
-          error: {
-            code: 'validation_error',
-            message: 'Request validation failed',
-            requestId,
-            details: [
-              {
-                path: ['Idempotency-Key'],
-                field: 'Idempotency-Key',
-                code: 'missing_field',
-                message: 'Idempotency-Key header is required',
-              },
-            ],
-          },
-        });
-      }
+    if (!idempotencyKey) {
       return next();
     }
 
@@ -140,27 +120,15 @@ export function createIdempotencyMiddleware(options: IdempotencyMiddlewareOption
 
     const originalSend = res.send.bind(res);
     res.send = function sendWithIdempotencyCache(body: unknown): Response {
-      try {
-        let result = body;
-        if (typeof body === 'string') {
-          try {
-            result = JSON.parse(body);
-          } catch {
-            // Ignore parse errors, store as is
-          }
-        }
+      const result = typeof body === 'string' ? JSON.parse(body) : body;
 
-        console.log('CALLING STORE SET, STORE CONSTRUCTOR:', store.constructor.name);
-        store.set({
-          key: idempotencyKey,
-          payloadHash,
-          result,
-          createdAt: new Date(),
-        });
-        inFlight.delete(idempotencyKey);
-      } catch (err) {
-        console.error('IDEMPOTENCY CACHE ERROR:', err instanceof Error ? err.stack : err);
-      }
+      store.set({
+        key: idempotencyKey,
+        payloadHash,
+        result,
+        createdAt: new Date(),
+      });
+      inFlight.delete(idempotencyKey);
 
       return originalSend(body);
     };
@@ -172,8 +140,6 @@ export function createIdempotencyMiddleware(options: IdempotencyMiddlewareOption
 const defaultInFlight = new Map<string, string>();
 
 export const idempotencyMiddleware = createIdempotencyMiddleware();
-
-export default idempotencyMiddleware;
 
 /**
  * Clears cached idempotency records and in-flight markers (for tests or maintenance).

@@ -26,18 +26,18 @@ export interface AuditServiceOptions {
   cache?: AuditCacheOptions;
 }
 
-/**
- * Callback invoked after an audit entry is successfully persisted.
- *
- * The callback is fire-and-forget — errors thrown by the callback are caught
- * and logged to avoid disrupting the primary audit logging flow. Implementers
- * should handle their own error recovery (e.g. retries, DLQ).
- */
-export type AfterLogCallback = (entry: AuditEntry) => void | Promise<void>;
+export const VALID_ACTIONS = new Set<AuditAction>([
+  'CONTRACT_CREATED', 'CONTRACT_UPDATED', 'CONTRACT_CANCELLED', 'CONTRACT_COMPLETED',
+  'PAYMENT_INITIATED', 'PAYMENT_RELEASED', 'PAYMENT_DISPUTED',
+  'REPUTATION_UPDATED',
+  'USER_CREATED', 'USER_UPDATED', 'USER_DELETED',
+  'AUTH_LOGIN', 'AUTH_LOGOUT', 'AUTH_FAILED',
+  'AUTH_LOCKOUT_TRIGGERED', 'AUTH_LOCKOUT_RELEASED',
+  'ADMIN_ACTION',
+  'ENDPOINT_ACCESS', 'ENDPOINT_MUTATION',
+]);
 
-export const VALID_ACTIONS = new Set<AuditAction>(Object.values(AUDIT_ACTIONS));
-
-export const VALID_SEVERITIES = new Set<AuditSeverity>(Object.values(AUDIT_SEVERITIES));
+export const VALID_SEVERITIES = new Set<AuditSeverity>(['INFO', 'WARNING', 'CRITICAL']);
 
 export function parseOptionalIsoDate(
   value: string | undefined,
@@ -62,7 +62,7 @@ export function parseOffset(value: string | undefined): number {
 
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(AUDIT_MESSAGES.INVALID_OFFSET);
+    throw new Error('Invalid offset');
   }
 
   return parsed;
@@ -75,7 +75,7 @@ export function parseLimit(value: string | undefined, maxLimit: number, defaultL
 
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 1) {
-    throw new Error(AUDIT_MESSAGES.INVALID_LIMIT);
+    throw new Error('Invalid limit');
   }
 
   return Math.min(parsed, maxLimit);
@@ -109,8 +109,8 @@ export function parseAuditQuery(
   if (cursor) {
     try {
       decodeCursor(cursor);
-    } catch {
-      throw new Error(AUDIT_MESSAGES.INVALID_CURSOR_FORMAT);
+    } catch (_error) {
+      throw new Error('Invalid cursor format');
     }
   }
 
@@ -154,26 +154,6 @@ export function parseAuditQuery(
 export class AuditService {
   private cache: AuditCache | null;
 
-  /**
-   * Optional callback invoked after every successful `log()` call.
-   *
-   * Set by external integrators (e.g. the audit webhook bridge) to react to
-   * new audit entries without modifying the core service.  The callback runs
-   * **after** the entry is persisted and the cache is invalidated; errors
-   * thrown by the callback are caught and logged so they never break the
-   * primary audit-logging flow.
-   *
-   * @example
-   * ```ts
-   * auditService.onAfterLog = (entry) => {
-   *   auditWebhook.notify(entry).catch((err) => {
-   *     console.error('[audit] webhook delivery failed', err);
-   *   });
-   * };
-   * ```
-   */
-  public onAfterLog: AfterLogCallback | null = null;
-
   constructor(
     private readonly repository: AuditLogRepository = createDefaultAuditRepository(),
     private readonly options: AuditServiceOptions = {},
@@ -197,20 +177,6 @@ export class AuditService {
         this.cache.invalidateByResourceId(input.resourceId);
       }
       
-      // Fire the after-log callback (fire-and-forget — errors are caught)
-      if (this.onAfterLog) {
-        try {
-          const result = this.onAfterLog(entry);
-          if (result instanceof Promise) {
-            result.catch((err) => {
-              console.error('[AuditService] onAfterLog callback failed:', err);
-            });
-          }
-        } catch (err) {
-          console.error('[AuditService] onAfterLog callback threw:', err);
-        }
-      }
-      
       return entry;
     } catch (err) {
       console.error('[AuditService] Failed to persist audit entry:', err);
@@ -219,73 +185,12 @@ export class AuditService {
   }
 
   /**
-   * Updates an existing audit entry and appends a mutation record.
-   */
-  updateEntry(id: string, payload: Partial<CreateAuditEntryInput>, context: { actor: string, ipAddress?: string, correlationId?: string }): AuditEntry {
-    const existing = this.getById(id);
-    if (!existing) {
-      throw new Error(AUDIT_MESSAGES.NOT_FOUND);
-    }
-    
-    const entry = this.repository.update(id, payload);
-
-    if (this.cache) {
-      this.cache.invalidateByResourceId(entry.resourceId);
-    }
-
-    this.repository.append({
-      action: AUDIT_ACTIONS.AUDIT_UPDATED,
-      severity: AUDIT_SEVERITIES.WARNING,
-      actor: context.actor,
-      resource: AUDIT_RESOURCES.AUDIT_LOG,
-      resourceId: entry.id,
-      metadata: {
-        before_summary: JSON.stringify(redactObject(existing.metadata as Record<string, unknown>)),
-        after_summary: JSON.stringify(redactObject(entry.metadata as Record<string, unknown>)),
-      },
-      ipAddress: context.ipAddress,
-      correlationId: context.correlationId,
-    });
-
-    return entry;
-  }
-
-  /**
-   * Deletes an existing audit entry and appends a mutation record.
-   */
-  deleteEntry(id: string, context: { actor: string, ipAddress?: string, correlationId?: string }): void {
-    const existing = this.getById(id);
-    if (!existing) {
-      throw new Error(AUDIT_MESSAGES.NOT_FOUND);
-    }
-
-    this.repository.delete(id);
-
-    if (this.cache) {
-      this.cache.invalidateByResourceId(existing.resourceId);
-    }
-
-    this.repository.append({
-      action: AUDIT_ACTIONS.AUDIT_DELETED,
-      severity: AUDIT_SEVERITIES.CRITICAL,
-      actor: context.actor,
-      resource: AUDIT_RESOURCES.AUDIT_LOG,
-      resourceId: id,
-      metadata: {
-        before_summary: JSON.stringify(redactObject(existing.metadata as Record<string, unknown>)),
-      },
-      ipAddress: context.ipAddress,
-      correlationId: context.correlationId,
-    });
-  }
-
-  /**
    * Validates payload fields and creates an audit entry.
    * Throws Error if any required field is missing.
    */
   createEntry(input: CreateAuditEntryInput): AuditEntry {
     if (!input.action || !input.severity || !input.actor || !input.resource || !input.resourceId) {
-      throw new Error(AUDIT_MESSAGES.MISSING_REQUIRED_FIELDS);
+      throw new Error('Missing required fields: action, severity, actor, resource, resourceId');
     }
     return this.log(input);
   }
@@ -333,16 +238,6 @@ export class AuditService {
   }
 
   /**
-   * Retrieves mutations for a specific audit entry.
-   */
-  getMutations(auditId: string): AuditEntry[] {
-    return this.query({
-      resource: AUDIT_RESOURCES.AUDIT_LOG,
-      resourceId: auditId,
-    });
-  }
-
-  /**
    * Orchestrates NDJSON compliance log exports and records an ADMIN_ACTION audit log.
    */
   async exportAuditLogs(
@@ -366,10 +261,10 @@ export class AuditService {
     const exportResult = await exportService.createNdjsonExport(filters);
 
     this.log({
-      action: AUDIT_ACTIONS.ADMIN_ACTION,
-      severity: AUDIT_SEVERITIES.CRITICAL,
-      actor: context.actor ?? AUDIT_DEFAULTS.ANONYMOUS_ACTOR,
-      resource: AUDIT_RESOURCES.AUDIT_LOG,
+      action: 'ADMIN_ACTION',
+      severity: 'CRITICAL',
+      actor: context.actor ?? 'anonymous',
+      resource: 'audit-log',
       resourceId: 'export',
       metadata: {
         operation: 'export',
@@ -405,9 +300,9 @@ export class AuditService {
   ): AuditEntry {
     return this.log({
       action,
-      severity: AUDIT_SEVERITIES.INFO,
+      severity: 'INFO',
       actor,
-      resource: AUDIT_RESOURCES.CONTRACT,
+      resource: 'contract',
       resourceId: contractId,
       metadata,
       ...context,
@@ -434,12 +329,12 @@ export class AuditService {
     metadata: Record<string, unknown> = {},
     context: { ipAddress?: string; correlationId?: string } = {},
   ): AuditEntry {
-    const severity: AuditSeverity = action === AUDIT_ACTIONS.MILESTONES_DELETED ? AUDIT_SEVERITIES.WARNING : AUDIT_SEVERITIES.INFO;
+    const severity: AuditSeverity = action === 'MILESTONES_DELETED' ? 'WARNING' : 'INFO';
     return this.log({
       action,
       severity,
       actor,
-      resource: AUDIT_RESOURCES.MILESTONES,
+      resource: 'milestones',
       resourceId: contractId,
       metadata,
       ...context,
@@ -459,9 +354,9 @@ export class AuditService {
   ): AuditEntry {
     return this.log({
       action,
-      severity: AUDIT_SEVERITIES.CRITICAL,
+      severity: 'CRITICAL',
       actor,
-      resource: AUDIT_RESOURCES.PAYMENT,
+      resource: 'payment',
       resourceId: paymentId,
       metadata,
       ...context,
@@ -478,12 +373,12 @@ export class AuditService {
     metadata: Record<string, unknown> = {},
     context: { ipAddress?: string; correlationId?: string } = {},
   ): AuditEntry {
-    const severity: AuditSeverity = action === AUDIT_ACTIONS.AUTH_FAILED ? AUDIT_SEVERITIES.WARNING : AUDIT_SEVERITIES.INFO;
+    const severity: AuditSeverity = action === 'AUTH_FAILED' ? 'WARNING' : 'INFO';
     return this.log({
       action,
       severity,
       actor,
-      resource: AUDIT_RESOURCES.AUTH,
+      resource: 'auth',
       resourceId: actor,
       metadata,
       ...context,
@@ -501,12 +396,12 @@ export class AuditService {
     metadata: Record<string, unknown> = {},
     context: { ipAddress?: string; correlationId?: string } = {},
   ): AuditEntry {
-    const severity: AuditSeverity = action === AUDIT_ACTIONS.USER_DELETED ? AUDIT_SEVERITIES.WARNING : AUDIT_SEVERITIES.INFO;
+    const severity: AuditSeverity = action === 'USER_DELETED' ? 'WARNING' : 'INFO';
     return this.log({
       action,
       severity,
       actor,
-      resource: AUDIT_RESOURCES.USER,
+      resource: 'user',
       resourceId: targetUserId,
       metadata,
       ...context,
@@ -524,12 +419,12 @@ export class AuditService {
     metadata: Record<string, unknown> = {},
     context: { ipAddress?: string; correlationId?: string } = {},
   ): AuditEntry {
-    const severity: AuditSeverity = action === 'DISPUTE_UPDATED' ? AUDIT_SEVERITIES.WARNING : AUDIT_SEVERITIES.INFO;
+    const severity: AuditSeverity = action === 'DISPUTE_UPDATED' ? 'WARNING' : 'INFO';
     return this.log({
       action,
       severity,
       actor,
-      resource: AUDIT_RESOURCES.DISPUTE,
+      resource: 'dispute',
       resourceId: disputeId,
       metadata,
       ...context,
@@ -643,39 +538,12 @@ export class AuditService {
   }
 
   /**
-   * Helper used by router GET /integrity returning both the report and the HTTP status.
+   * Checks hash chain integrity and returns report with HTTP status code.
    */
   checkIntegrity(): { report: IntegrityReport; status: number } {
     const report = this.verifyIntegrity();
     const status = report.valid ? 200 : 409;
     return { report, status };
-  }
-
-  /**
-   * Soft-deletes an audit entry by ID.
-   * @returns true if successful, false if not found or already deleted.
-   */
-  softDelete(id: string): boolean {
-    return this.repository.softDelete(id);
-  }
-
-  /**
-   * Restores a soft-deleted audit entry if within retention window.
-   * @param id The ID of the entry to restore.
-   * @param retentionDays The retention window in days (default: 30).
-   * @returns true if restored, false if not found. Throws error if past retention.
-   */
-  restore(id: string, retentionDays: number = 30): boolean {
-    return this.repository.restore(id, retentionDays);
-  }
-
-  /**
-   * Purges soft-deleted audit entries that are past the retention window.
-   * @param retentionDays The retention window in days (default: 30).
-   * @returns The number of records deleted.
-   */
-  purgeExpiredAuditLogs(retentionDays: number = 30): number {
-    return this.repository.purgeExpired(retentionDays);
   }
 }
 
