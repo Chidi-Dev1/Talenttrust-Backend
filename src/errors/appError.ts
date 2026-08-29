@@ -32,6 +32,8 @@ export interface ErrorPayload {
     requestId: string;
     correlationId?: string;
     details?: ValidationIssue[];
+    correlationId?: string;
+    currentVersion?: number;
   };
 }
 
@@ -96,8 +98,12 @@ export class InvalidVersionError extends AppExrror {
 }
 
 export class VersionConflictError extends AppError {
-  constructor() {
+  /** The current stored version, returned so clients can retry with a fresh value. */
+  public readonly currentVersion?: number;
+
+  constructor(currentVersion?: number) {
     super(409, APP_ERROR_CODES.VERSION_CONFLICT, 'Version conflict');
+    this.currentVersion = currentVersion;
   }
 }
 
@@ -267,6 +273,10 @@ export function mapErrorToPayload(
           message,
           requestId,
           ...(correlationId !== undefined && { correlationId }),
+          ...(error instanceof VersionConflictError &&
+            error.currentVersion !== undefined && {
+              currentVersion: error.currentVersion,
+            }),
         },
       },
     };
