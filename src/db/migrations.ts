@@ -615,36 +615,80 @@ MIGRATIONS.push({
   },
 });
 
-// Version 14: poll lease columns on the transactions table.
-//
-// Lease fencing prevents two poller instances from updating the same
-// transaction after a lease owner has changed: `lease_owner` names the poller
-// instance that currently owns the transaction and `lease_expires_at` bounds
-// that ownership. Writes are only applied while the stored owner matches the
-// writer's token, so a poller whose lease expired (or was taken over) while an
-// RPC call was in flight abandons its poll instead of clobbering the new
-// owner's state.
+// Version 14: add call_count to api_keys
 MIGRATIONS.push({
   version: 14,
-  name: "add_transaction_lease_columns",
+  name: "add_call_count_to_api_keys",
   checksumSource: [
-    "ALTER TABLE transactions ADD COLUMN lease_owner TEXT",
-    "ALTER TABLE transactions ADD COLUMN lease_expires_at TEXT",
+    "CREATE TABLE IF NOT EXISTS api_keys (",
+    "ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0",
   ].join("\n"),
   up: (db) => {
-    const columns = db.pragma("table_info(transactions)") as Array<{
+    // Create api_keys table if it doesn't exist
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS api_keys (
+        id              TEXT    PRIMARY KEY,
+        name            TEXT    NOT NULL,
+        key_hash        TEXT    NOT NULL,
+        role            TEXT    NOT NULL,
+        expires_at      TEXT,
+        created_at      TEXT    NOT NULL,
+        last_used_at    TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON api_keys(expires_at);
+    `);
+
+    // Check if the column already exists to prevent errors during repeated migrations
+    const columns = db.pragma("table_info(api_keys)") as Array<{
       name: string;
     }>;
-    const hasLeaseOwner = columns.some((column) => column.name === "lease_owner");
-    const hasLeaseExpiresAt = columns.some(
-      (column) => column.name === "lease_expires_at",
-    );
+    const hasCallCount = columns.some((column) => column.name === "call_count");
 
-    if (!hasLeaseOwner) {
-      db.exec("ALTER TABLE transactions ADD COLUMN lease_owner TEXT");
+    if (!hasCallCount) {
+      db.exec("ALTER TABLE api_keys ADD COLUMN call_count INTEGER NOT NULL DEFAULT 0");
     }
-    if (!hasLeaseExpiresAt) {
-      db.exec("ALTER TABLE transactions ADD COLUMN lease_expires_at TEXT");
-    }
+  },
+});
+
+// Version 15: create reputation_corrections table for manual reputation corrections with provenance
+MIGRATIONS.push({
+  version: 15,
+  name: "create_reputation_corrections_table",
+  checksumSource: [
+    "CREATE TABLE IF NOT EXISTS reputation_corrections (",
+    "UNIQUE(target_id, context_id, reference)",
+  ].join("\n"),
+  up: (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS reputation_corrections (
+        id              TEXT    PRIMARY KEY,
+        target_id       TEXT    NOT NULL REFERENCES users(id),
+        context_id      TEXT    NOT NULL REFERENCES contracts(id),
+        reason          TEXT    NOT NULL CHECK (length(reason) >= 10 AND length(reason) <= 5000),
+        reference       TEXT    NOT NULL,
+        before_score    REAL    NOT NULL,
+        after_score     REAL    NOT NULL,
+        before_weighted REAL    NOT NULL,
+        after_weighted  REAL    NOT NULL,
+        before_total    INTEGER NOT NULL,
+        after_total     INTEGER NOT NULL,
+        operator_id     TEXT    NOT NULL REFERENCES users(id),
+        operator_role   TEXT    NOT NULL,
+        created_at      TEXT    NOT NULL,
+        UNIQUE(target_id, context_id, reference)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_reputation_corrections_target_id
+        ON reputation_corrections(target_id);
+
+      CREATE INDEX IF NOT EXISTS idx_reputation_corrections_context_id
+        ON reputation_corrections(context_id);
+
+      CREATE INDEX IF NOT EXISTS idx_reputation_corrections_operator_id
+        ON reputation_corrections(operator_id);
+
+      CREATE INDEX IF NOT EXISTS idx_reputation_corrections_created_at
+        ON reputation_corrections(created_at);
+    `);
   },
 });
